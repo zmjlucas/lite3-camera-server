@@ -143,20 +143,3 @@ The RealSense and V4L2 pages check the incoming video data. If the stream ends, 
 | Video is delayed or stops briefly | For RealSense or V4L2, try `--quality 55` or a lower supported resolution or frame rate. You can also repeat the test on the vendor's specified wired network. For both backends, `/healthz` shows whether the server received a recent frame. |
 
 Offline tests use simulated camera input to check the browser and video server. Depth preview and video delay require separate hardware tests.
-
-## Offline test record: 2026-11-20
-
-On that date, the Mac passed 32 unit tests and a separate Chrome test. Chrome decoded and displayed JPEG frames. It hid the last frame and reconnected after a normal stream end and a data transfer timeout. The tests covered jump hosts, V4L2 arguments, and readiness checks that bypass local proxies.
-
-The server passed a Python 3.6 syntax check. The launcher passed a Python 3.8 syntax check. The offline tests ran with Python 3.13 on the Mac.
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
-# Optional: use a temporary Chrome profile for the browser test.
-# The test does not use your existing profile or connect to a robot.
-PYTHONDONTWRITEBYTECODE=1 python3 tests/camera_browser_smoke.py
-```
-
-The browser test requires Chrome or another Chromium browser. To select a browser, use `--browser /absolute/path/to/browser`. The test uses a random local port and a JPEG fixture in `tests/fixtures/`.
-
-Vendor references: [network configuration](https://developer.deeprobotics.cn/docs/lite3/guide/software/network/), [camera interface](https://developer.deeprobotics.cn/docs/lite3/interfaces/device/camera/), and [camera example](https://developer.deeprobotics.cn/docs/lite3/examples/software/camera-example/). See [web_video_server](https://github.com/RobotWebTools/web_video_server) for ROS preview and snapshot parameters.
