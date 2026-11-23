@@ -1,94 +1,108 @@
-# 在 Mac 浏览器查看 Lite3 相机
+# View the Lite3 camera in a Mac browser
 
-Mac 用 SSH 连接感知主机，通过本地浏览器播放相机画面。Mac 这端只需要 Python 3.8 或更新版本、OpenSSH 和浏览器。相机预览的命令不会发送运动指令。
+The Mac connects to the perception host through SSH. The browser shows the camera stream through this connection. The Mac needs Python 3.8 or later, OpenSSH, and a browser. The camera commands do not send motion commands.
 
-以下命令在仓库根目录运行。实机命令以厂商默认的感知主机 `ysc@192.168.1.103` 为例，按机器人的实际账户和 IP 替换。
+Run these commands from the repository root. The examples use the vendor's default perception host, `ysc@192.168.1.103`. Replace this account and IP address with the values for your robot.
 
-## 现在没有机器人
+## Run the local demo
 
 ```bash
 python3 scripts/lite3_camera.py demo
 ```
 
-浏览器会打开 `http://127.0.0.1:18080/`，显示持续变化的合成画面。加 `--no-open` 可以手动打开。终端按 Ctrl+C 结束。
+The browser opens `http://127.0.0.1:18080/` and shows synthetic frames that change. To open the address manually, add `--no-open`. To stop the demo, press Ctrl+C in the terminal.
 
-演示画面固定为 160×120；它用于检查播放链路，实际相机分辨率由所选设备和参数决定。RealSense、V4L2 和演示页面直接检查视频数据是否到达；连接结束或约 2.5 秒未收到可解码画面时，会隐藏旧画面并重连。
+The demo uses a fixed resolution of 160 x 120 pixels to check video playback. Camera resolution depends on the selected device and options. The RealSense, V4L2, and demo pages check the incoming video data. If the stream ends, the page hides the last frame and reconnects. The page does the same if no decodable frame arrives for approximately 2.5 seconds.
 
-## 连上机器人后
+## Connect to the robot
 
-先让 Mac 接入机器狗 Wi-Fi 或指定的有线网络，再检查感知主机可用的相机接口。首次 SSH 连接先核对主机密钥。
+1. Connect the Mac to the robot's Wi-Fi or the specified wired network.
+2. Before the first SSH connection, check the host key.
+3. Check the camera interfaces on the perception host:
 
 ```bash
 python3 scripts/lite3_camera.py doctor ysc@192.168.1.103
 ```
 
-`doctor` 读取系统、Python 依赖、ROS 环境、相机服务状态和视频设备信息。三个远程子命令 `doctor`、`deploy` 和 `view` 都支持 `--dry-run`：读取本地路由并打印选择结果与命令，不登录或探测机器人。
+The `doctor` command reads system details, Python dependencies, ROS environments, camera service status, and video device information. It does not open a camera. To inspect the route and commands, add `--dry-run` to `doctor`, `deploy`, or `view`. This option reads local routes and prints the selected path and commands. It does not log in to or probe the robot.
 
-### 自动适配狗 Wi-Fi 与手机 USB 热点
+### Select routes for robot Wi-Fi and phone USB networks
 
-Mac 仅接入机器狗 Wi-Fi，或同时接入机器狗 Wi-Fi + 手机 USB 热点时，都使用同一条命令，无需手动增删 `--jump`：
+Use the same commands with robot Wi-Fi alone or with robot Wi-Fi and a phone USB hotspot. The launcher selects the connection path. You do not need to add or remove `--jump` for these two network conditions.
 
 ```bash
 python3 scripts/lite3_camera.py doctor ysc@192.168.1.103
 python3 scripts/lite3_camera.py view ysc@192.168.1.103
-# 仅在下方 RealSense 或 V4L2 方式需要部署服务时运行：
+# Deploy only when you need the RealSense or V4L2 server described below.
 python3 scripts/lite3_camera.py deploy ysc@192.168.1.103
-# 查看当前解析结果，不连接机器人：
+# Inspect the selected route without a robot connection.
 python3 scripts/lite3_camera.py view ysc@192.168.1.103 --dry-run
 ```
 
-启动工具使用 macOS `route -n get` 读取感知主机与机器人网关的实际路由，并通过 `networksetup -listallhardwareports` 识别 Wi-Fi 硬件接口，不依赖手机型号或 USB 接口编号：
+The launcher uses macOS `route -n get` to read routes to the perception host and robot gateway. It uses `networksetup -listallhardwareports` to find Wi-Fi hardware interfaces. Selection does not depend on the phone model or USB interface number.
 
-| 当前路由 | 自动选择 |
+| Current route | Selected path |
 | --- | --- |
-| 目标经机器人 Wi-Fi 直连，或经 Wi-Fi 上的机器人网关 `192.168.2.1` 转发 | 直接 SSH 连接目标。 |
-| 目标走其他接口/网关，且 `192.168.2.1` 在 Wi-Fi 上直连 | 自动加 `-J ysc@192.168.2.1`。手机热点与机器人网段重叠时也优先使用机器人 Wi-Fi。 |
-| 目标路由缺失或读取失败，但已确认机器人网关在 Wi-Fi 上直连 | 经已确认的机器人网关跳转。 |
-| 未确认 Wi-Fi 上有直连的机器人网关，或接口信息读取失败 | 沿用直接 SSH；目标也非直连时提示原因和手动选项。 |
+| The target uses a direct robot Wi-Fi link or the Wi-Fi gateway `192.168.2.1`. | Connect directly to the target through SSH. |
+| The target uses another interface or gateway, and `192.168.2.1` has a direct Wi-Fi link. | Add `-J ysc@192.168.2.1`. Use robot Wi-Fi when the phone and robot subnets overlap. |
+| The target route is missing or cannot be read, but the robot gateway has a confirmed direct Wi-Fi link. | Connect through the confirmed robot gateway. |
+| No direct Wi-Fi link to the robot gateway is confirmed, or interface information is missing. | Use the existing direct SSH command. If the target also lacks a direct link, show the reason and manual options. |
 
-终端的 `Route:` 信息会显示选择及相关接口/网关；这是本地路由判断，不代表已经通过 SSH 连通验证。`deploy` 的 SSH 和 SCP 使用同一次判断结果。自动跳转沿用目标中显式指定的用户名；省略用户名时交给 OpenSSH 决定。
+The terminal's `Route:` message shows the selected path and related interface or gateway. This message reports a local route decision. It does not confirm SSH connectivity. The `deploy` command uses the same route decision for SSH and SCP. An automatic jump uses the username in the target address. If the target has no username, OpenSSH selects one.
 
-自动识别范围是 **macOS + 显式 `192.168.1.*` IPv4 目标 + Wi-Fi 上的默认机器人网关 `192.168.2.1`**，不是按 Wi-Fi 名称识别设备，也不扫描或自动发现感知主机 IP。SSH 别名/主机名、其他网段和其他系统沿用已有 SSH 配置；非默认拓扑、需要优先走有线接口或网关账户不同请显式覆盖：
+Automatic selection requires macOS and an explicit `192.168.1.*` IPv4 target. Automatic jump selection also requires the default robot gateway, `192.168.2.1`, on a direct Wi-Fi link. The launcher does not identify devices by Wi-Fi name or discover the perception host's IP address. SSH aliases, hostnames, other subnets, and other operating systems use the existing SSH configuration.
+
+Use a manual option for another network layout, a preferred wired interface, or a different gateway account:
 
 ```bash
 python3 scripts/lite3_camera.py view ysc@192.168.1.103 --jump otheruser@192.168.2.1
 python3 scripts/lite3_camera.py view ysc@192.168.1.103 --direct
 ```
 
-`--jump` 与 `--direct` 互斥，并跳过自动解析。`--direct` 不添加自动跳转，但仍尊重已有 SSH 配置中的代理。`--jump` 接受单个 SSH 别名、主机名或 `user@IPv4`，对 SSH 和 SCP 都使用 OpenSSH `-J`。跳转主机只转发 SSH 连接，相机命令仍在感知主机执行，不启动运动控制器。两台主机均需正常身份验证及主机密钥核对；脚本不保存密码，也不修改路由或 SSH 配置。
+The `--jump` and `--direct` options both bypass automatic selection. You cannot use them together. The `--direct` option adds no automatic jump but still uses proxies from the existing SSH configuration. The `--jump` option accepts one SSH alias, hostname, or `user@IPv4` address. It uses OpenSSH `-J` for SSH and SCP.
 
-每次启动都会重新解析；预览期间插拔 USB 或切换 Wi-Fi 后，请结束并重新运行命令。当前自动选择已用离线路由样本覆盖两种场景，仍需分别连接真实网络验收。
+The jump host only forwards the SSH connection. Camera commands still run on the perception host. The launcher does not start a motion controller. Both hosts require authentication and host key checks. The launcher does not save passwords or change routes or SSH configuration.
 
-### 已有 ROS 相机话题
+The launcher selects the route each time a command starts. After a USB or Wi-Fi connection change, stop the preview. Then run the command again. Offline route samples cover both network conditions. Each condition still requires a test on the real network.
 
-优先复用正在发布的 RGB 图像话题。感知主机需要运行相机发布节点，且目标 ROS 环境中需要有 `web_video_server`。`view` 启动预览服务并转发端口，浏览器首页列出可用图像话题。
+### Use an existing ROS image topic
+
+Use an active RGB image topic when one is available. The perception host must run a camera publisher node. Its ROS environment must contain `web_video_server`. The `view` command starts the preview service and forwards its port. The browser page lists the available image topics.
 
 ```bash
 python3 scripts/lite3_camera.py view ysc@192.168.1.103
 ```
 
-有多个 ROS 环境时，用 `--ros-setup` 指定与相机节点相同的环境，例如 `--ros-setup /opt/ros/melodic/setup.bash`。也可指定包含所需包的工作空间 `setup.bash`。脚本根据环境中的 `ROS_VERSION` 选择 ROS 1 或 ROS 2。找到实际话题后，用 `--topic /实际话题名` 直接打开该路画面。
+If the host has multiple ROS environments, use `--ros-setup` to select the camera node's environment. For example, use `--ros-setup /opt/ros/melodic/setup.bash`. You can also select a workspace `setup.bash` that provides the required packages. The launcher uses `ROS_VERSION` to select ROS 1 or ROS 2. After you find the image topic, use `--topic /camera/image_topic` with its actual name.
 
-ROS 1 预览使用独立节点名，避免挤掉其他预览。ROS 2 请求 `sensor_data` 订阅配置，以兼容相机常用的 best-effort 发布方式；这要求 `web_video_server` 支持 `default_qos_profile`。旧构建若不支持该参数且没有画面，需核对其订阅 QoS 与相机发布 QoS，不要仅凭话题存在判断相机预览成功。
+ROS 1 uses a separate node name for each preview to prevent conflicts with other previews. ROS 2 requests the `sensor_data` subscription profile to support cameras that use best-effort publishing. This requires a `web_video_server` build with `default_qos_profile` support. If an older build shows no image, compare its subscription QoS with the camera's publishing QoS. A topic in the list does not confirm that the preview works.
 
-ROS 模式使用上游的预览页面；发布端停帧时，该页面可能保留最后一帧。需结合 `rostopic hz`／`ros2 topic hz` 判断是否仍在更新。本仓库的自动断流提示和隐藏旧画面适用于下方 RealSense、V4L2 模式及本地演示。
+ROS mode uses the page from `web_video_server`. That page can keep the last frame when the publisher stops. Use `rostopic hz` or `ros2 topic hz` to check whether new frames arrive. This repository's stream failure messages and automatic frame hiding apply to RealSense, V4L2, and the local demo.
 
-如果缺少 `web_video_server`，先在感知主机加载匹配的 ROS 环境，再用 `apt-cache policy "ros-${ROS_DISTRO}-web-video-server"` 检查配置的软件源是否有对应版本。确认有候选版本后，可在感知主机安装 `sudo apt install "ros-${ROS_DISTRO}-web-video-server"`。对 Melodic、Foxy 等旧环境，找不到候选包时应使用与厂商系统匹配的构建，或选下方的 RealSense 方式。新版上游源码的依赖可能超出旧镜像的支持范围。
+If `web_video_server` is missing, use this procedure on the perception host:
 
-### 直接读取 RealSense
+1. Load the ROS environment that matches the camera node.
+2. Check the configured package sources with `apt-cache policy "ros-${ROS_DISTRO}-web-video-server"`.
+3. If a candidate version is available, install it with `sudo apt install "ros-${ROS_DISTRO}-web-video-server"`.
 
-当相机空闲时，可以从感知主机直接读取 RGB。该方式需要感知主机的 Python 3 能导入 `pyrealsense2`、`numpy` 和 `cv2`。厂商手册说明镜像预装原生 librealsense，但 Python 绑定需以 `doctor` 实测为准。
+Older environments, such as Melodic or Foxy, might have no candidate package. In that case, use a build that matches the vendor system or the RealSense method below. Dependencies in newer upstream code can exceed what an older system image supports.
+
+### Read RealSense directly
+
+You can read RGB frames directly when the camera is not in use. Python 3 on the perception host must import `pyrealsense2`, `numpy`, and `cv2`. The vendor manual states that the system image includes native librealsense. Use `doctor` to check whether the Python bindings are available.
 
 ```bash
 python3 scripts/lite3_camera.py deploy ysc@192.168.1.103
 python3 scripts/lite3_camera.py view ysc@192.168.1.103 --backend realsense
 ```
 
-`deploy` 将服务脚本上传到感知主机的 `~/robo-comp-camera/`。默认使用 `640×480`、`15 fps` 和 JPEG 质量 `70`。可用 `--width`、`--height`、`--fps`、`--quality` 调整，连接了多台相机时用 `--serial` 选定设备。加 `--depth` 可在 RGB 旁边查看伪彩深度预览，画面颜色仅用于观察，不能当作距离读数。
+The `deploy` command uploads the server script to `~/robo-comp-camera/` on the perception host. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. To change these values, use `--width`, `--height`, `--fps`, and `--quality`. If multiple cameras are connected, use `--serial` to select one.
 
-### 通过 V4L2 读取 RGB
+To show a depth preview beside RGB, add `--depth`. The preview uses false colors. Do not use these colors as distance measurements.
 
-感知主机缺少 `pyrealsense2` 或 `web_video_server`，但已有支持 V4L2 的 OpenCV 时，可以读取相机的 RGB 视频节点。先在感知主机核对设备及支持的格式，不要猜测 `/dev/video0` 就是 RGB。以下以已确认的 `/dev/video4` 为例：
+### Read RGB through V4L2
+
+Use V4L2 when the host has OpenCV with V4L2 support but lacks `pyrealsense2` or `web_video_server`. First, check the device and its supported formats on the perception host. Do not assume that `/dev/video0` is the RGB device node. This example uses a confirmed RGB device at `/dev/video4`:
 
 ```bash
 v4l2-ctl --list-devices
@@ -96,45 +110,56 @@ v4l2-ctl --device /dev/video4 --list-formats-ext
 fuser /dev/video4
 ```
 
-确认它是 RGB 节点、支持所选分辨率和帧率，且没有 ROS 相机节点、厂商查看器或其他程序占用后，再从 Mac 部署并预览。若相机正在发布 ROS 图像，优先使用现有话题，不要为预览停止厂商服务。
+Before you deploy the server, confirm these conditions:
+
+- The node provides RGB frames.
+- The device supports the selected resolution and frame rate.
+- No ROS camera node, vendor viewer, or other program uses the device.
+
+If the camera already publishes ROS images, use the existing topic. Do not stop vendor services for a preview.
+
+From the Mac, run these commands in order:
 
 ```bash
 python3 scripts/lite3_camera.py deploy ysc@192.168.1.103
 python3 scripts/lite3_camera.py view ysc@192.168.1.103 --backend v4l2 --device /dev/video4
 ```
 
-连接路径默认按上方规则自动选择。`--device` 必须显式给出 `/dev/videoN` 或 `/dev/v4l/by-id/名称`；设备编号可能随系统重启或 USB 连接变化。该模式只提供 RGB，不支持 `--depth` 或 `--serial`。可用 `--width`、`--height`、`--fps` 和 `--quality` 请求设备支持的设置，实际画面及帧率仍需验证。
+The launcher selects the connection path with the rules above. Set `--device` to a confirmed `/dev/videoN` or `/dev/v4l/by-id/name` path. Device numbers can change after a restart or a USB connection change. V4L2 mode provides RGB only. It does not support `--depth` or `--serial`.
 
-本次机器人连接的 RGB 实测、帧率、浏览器显示及退出释放结果见 [2026-11-20 实机测试记录](CAMERA_HARDWARE_TEST_2026-11-20.md)。
+Use `--width`, `--height`, `--fps`, and `--quality` to request settings that the device supports. Check the actual image resolution and frame rate after the stream starts. See the [hardware record from 2026-11-20](CAMERA_HARDWARE_TEST_2026-11-20.md) for RGB capture, frame rate, browser display, and device release results.
 
-## 退出和排查
+## Stop the preview and find faults
 
-`view` 默认通过 SSH 将 Mac 的 `127.0.0.1:18080` 转发至感知主机的 `127.0.0.1:8080`。可加 `--no-open` 后手动打开终端打印的地址。在运行 `view` 的终端按 Ctrl+C，结束这次预览服务和隧道。
+By default, `view` forwards the Mac's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080` through SSH. To open the printed URL manually, add `--no-open`. To stop the preview service and tunnel, press Ctrl+C in the terminal that runs `view`.
 
-| 现象 | 检查 |
+| Symptom | Checks and actions |
 | --- | --- |
-| SSH 连不上 | 确认 Mac 所连网络及感知主机 IP，确认 SSH 端口可达。 |
-| 端口被占用 | 本机改用 `--local-port 18081`。感知主机改用 `--remote-port 8081`。 |
-| ROS 页面没有图像或画面冻结 | 确认 `--ros-setup` 与相机节点所用环境一致。在该环境中用 `rostopic list`／`rostopic hz` 或 `ros2 topic list`／`ros2 topic hz` 检查实际图像话题是否持续有帧。 |
-| RealSense 报设备忙 | 检查是否有 ROS 相机节点或 `realsense-viewer` 正在读取。若 ROS 正在发布图像，优先选 ROS 方式。 |
-| RealSense 缺 Python 绑定 | 用 `doctor` 确认 Python 版本及缺少的模块。所用绑定须与感知主机的架构、Python 和厂商 SDK 匹配。 |
-| V4L2 没有图像 | 核对 `--device` 是 RGB 节点、未被其他程序占用，且 OpenCV 支持 V4L2；按设备支持的格式选择分辨率和帧率。 |
-| V4L2 参数与实际画面不符，或读取终止 | OpenCV 的参数设置是请求，设备可能协商其他值；核对实际分辨率和帧率。终止性读取错误需先排除占用或连接问题，再重新运行 `view`。 |
-| 本地页面出现 502 | 检查浏览器代理是否拦截 `127.0.0.1`。启动器的就绪检查已绕过代理；可用 `curl --noproxy '*' http://127.0.0.1:18080/healthz` 排查，或仅在临时 Chrome 验证会话使用 `--no-proxy-server`，不修改系统代理。 |
-| 画面延迟或断续 | RealSense 或 V4L2 模式可试 `--quality 55`，也可选相机支持的较低分辨率或帧率，或使用厂商指定的有线网络复测。RealSense、V4L2 及演示服务的 `/healthz` 可检查最近是否收到帧。 |
+| SSH cannot connect | Check the Mac's network and the perception host's IP address. Check access to the SSH port. |
+| A port is in use | For the local port, use `--local-port 18081`. For the perception host's port, use `--remote-port 8081`. |
+| The ROS page has no image or keeps the same frame | Check that `--ros-setup` matches the camera node's environment. In that environment, use `rostopic list` and `rostopic hz`, or `ros2 topic list` and `ros2 topic hz`. Confirm that the image topic receives new frames. |
+| RealSense reports a busy device | Check for a ROS camera node or `realsense-viewer` that uses the camera. If ROS publishes images, use ROS mode. |
+| RealSense Python bindings are missing | Use `doctor` to check the Python version and missing modules. The bindings must match the host architecture, Python version, and vendor SDK. |
+| V4L2 shows no image | Confirm that `--device` is an RGB node and no other program uses it. Check that OpenCV supports V4L2. Select a resolution and frame rate that the device supports. |
+| V4L2 ignores requested settings or stops capture | OpenCV requests settings, but the device can select other values. Check the actual resolution and frame rate. After a capture failure, correct device conflicts or connection faults. Then run `view` again. |
+| The local page returns HTTP 502 | Check whether the browser proxy intercepts `127.0.0.1`. The launcher's readiness check bypasses proxies. Use `curl --noproxy '*' http://127.0.0.1:18080/healthz` to check the server. Alternatively, use `--no-proxy-server` only in a temporary Chrome test session. Keep the system proxy settings unchanged. |
+| Video is delayed or stops briefly | For RealSense or V4L2, try `--quality 55` or a lower supported resolution or frame rate. You can also repeat the test on the vendor's specified wired network. For RealSense, V4L2, and the demo, `/healthz` shows whether the server received a recent frame. |
 
-离线演示只验证 Mac 上的浏览器和视频服务。实机 RGB 结果见上方测试记录；深度预览和端到端延迟仍需单独验证。
+The local demo checks only the browser and video server on the Mac. The hardware record covers the measured RGB results. Depth preview and video delay require separate tests.
 
-## 离线验证记录（2026-11-20）
+## Offline test record: 2026-11-20
 
-在当前 Mac 上通过了 32 项标准库测试，以及独立的 Chrome 浏览器检查：JPEG 解码显示、正常流结束和传输停顿时隐藏旧图并重连。测试覆盖跳转连接、V4L2 参数及本地代理不影响就绪检查。Python 3.6 服务端／3.8 启动工具通过语法检查，离线测试实际使用本机 Python 3.13；机器人上的实际版本与结果见实机测试记录。
+On that date, the Mac passed 32 unit tests and a separate Chrome test. Chrome decoded and displayed JPEG frames. It hid the last frame and reconnected after a normal stream end and a data transfer timeout. The tests covered jump hosts, V4L2 arguments, and readiness checks that bypass local proxies.
+
+The server passed a Python 3.6 syntax check. The launcher passed a Python 3.8 syntax check. The offline tests ran with Python 3.13 on the Mac. See the hardware record for the robot's Python version and results.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
-# 可选：用本机 Chrome 的临时配置测试浏览器；不接触已有浏览器资料或机器人。
+# Optional: use a temporary Chrome profile for the browser test.
+# The test does not use your existing profile or connect to a robot.
 PYTHONDONTWRITEBYTECODE=1 python3 tests/camera_browser_smoke.py
 ```
 
-浏览器检查需要 Chrome，或用 `--browser /浏览器可执行文件绝对路径` 指定 Chromium 系列浏览器。测试使用随机本机端口，可与演示同时运行。
+The browser test requires Chrome or another Chromium browser. To select a browser, use `--browser /absolute/path/to/browser`. The test uses a random local port and can run at the same time as the demo.
 
-厂商资料见 [网络配置](https://developer.deeprobotics.cn/docs/lite3/guide/software/network/)、[相机接口](https://developer.deeprobotics.cn/docs/lite3/interfaces/device/camera/) 和 [相机开发示例](https://developer.deeprobotics.cn/docs/lite3/examples/software/camera-example/)。ROS 的预览与快照参数见 [web_video_server](https://github.com/RobotWebTools/web_video_server)。
+Vendor references: [network configuration](https://developer.deeprobotics.cn/docs/lite3/guide/software/network/), [camera interface](https://developer.deeprobotics.cn/docs/lite3/interfaces/device/camera/), and [camera example](https://developer.deeprobotics.cn/docs/lite3/examples/software/camera-example/). See [web_video_server](https://github.com/RobotWebTools/web_video_server) for ROS preview and snapshot parameters.

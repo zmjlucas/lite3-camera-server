@@ -1,32 +1,32 @@
-# Lite3 相机实机检查：2026-11-20
+# Lite3 camera hardware check: 2026-11-20
 
-本次只检查相机、网络与视频显示。未执行运动脚本，未发送运动、起立、步态或机械臂指令；没有启动、停止或重启原厂控制服务，没有升级系统或安装依赖。
+This check covered the camera, network, and video display. It did not run motion scripts or send motion, stand, gait, or arm commands. It did not start, stop, or restart vendor control services. It did not upgrade the system or install dependencies.
 
-## 实际连接与环境
+## Connection and environment
 
-- Mac 的机器人 Wi-Fi 地址为 `192.168.2.47`，同时存在 iPhone USB 网络；直接访问 `192.168.1.*` 会走 USB 默认网关。
-- 通过 SSH 网关 `ysc@192.168.2.1` 到感知主机 `ysc@192.168.1.103`。本次没有修改 Mac 路由。
-- 感知主机：Jetson Xavier NX / aarch64、Ubuntu 20.04.6、Python 3.8.10。
-- 已有 numpy 1.23.1、OpenCV 4.9.0、FFmpeg、v4l2-ctl 和原生 RealSense SDK。
-- Python 中没有 `pyrealsense2`；ROS Foxy 和 Noetic 中都没有 `web_video_server`。Foxy 查询到点云话题，未查询到可用 RGB 图像话题；Noetic ROS master 不可达。
-- 原厂 `realsense` / `realsense_ros2` 服务均为 inactive。开始采集前，`fuser` 未发现视频设备占用。
-- RealSense 工具识别 D435i、固件 `05.13.00.50`。`v4l2-ctl` 确认 `/dev/video4` 为 RGB 节点，支持 `YUYV 640×480 @ 15 fps`；此节点编号只对本次设备检查成立。
+- The Mac used `192.168.2.47` on the robot's Wi-Fi. An iPhone USB network was also active. Direct traffic to `192.168.1.*` used the USB default gateway.
+- SSH connected through `ysc@192.168.2.1` to the perception host at `ysc@192.168.1.103`. The check did not change Mac routes.
+- The perception host was a Jetson Xavier NX with aarch64, Ubuntu 20.04.6, and Python 3.8.10.
+- The host already had numpy 1.23.1, OpenCV 4.9.0, FFmpeg, v4l2-ctl, and the native RealSense SDK.
+- Python had no `pyrealsense2`. Neither ROS Foxy nor Noetic had `web_video_server`. Foxy listed a point cloud topic but no usable RGB image topic. The Noetic ROS master was unreachable.
+- The vendor services `realsense` and `realsense_ros2` were both `inactive`. Before capture, `fuser` found no process that used the video devices.
+- RealSense tools identified a D435i with firmware `05.13.00.50`. The `v4l2-ctl` output confirmed that `/dev/video4` was the RGB node. It supported YUYV at 640 x 480 pixels and 15 fps. This node number applies only to the device check on that date.
 
-## 实测结果
+## Measured results
 
-1. 使用现有 OpenCV 从已核实的 RGB 节点采集 30 帧，图像为 `640×480×3`，共 2.552 秒（包括启动开销），驱动报告 15 fps；随后释放设备。
-2. 仅部署 `~/robo-comp-camera/lite3_camera_server.py`，使用 `--source v4l2 --device /dev/video4 --width 640 --height 480 --fps 15 --quality 70`。HTTP 服务只监听感知主机回环地址 `127.0.0.1:8080`，SSH 转发到 Mac 的 `127.0.0.1:18080`。
-3. 三次健康检查均为 `source=v4l2, status=live`，本次帧龄采样为 0.027 / 0.049 / 0.001 秒。帧龄是服务端采集新鲜度，**不是端到端视频延迟**。
-4. Mac 连续读取 8.055 秒，收到 122 帧、122 个不同的 JPEG 内容，接收速率约 15.15 fps，平均 JPEG 大小 31,532 字节。FFprobe 解码确认图像为 `640×480`。
-5. 本机 Chrome 实际显示了相机现场画面，状态为 `Live`；2 秒内 10 次采样均指向不同的已渲染视频帧。另在用户 Chrome 中打开了预览网址。
-6. 退出本次预览后，`fuser /dev/video4` 确认为无占用，连接远端 8080 端口返回 connection refused，两项原厂相机服务仍为 inactive。相机释放与预览关闭路径通过实测。
-7. 为实际网络和依赖补充了 `--jump`、V4L2 后端及本地 HTTP 检查绕过代理。最终 32 项离线回归测试通过；新代理检查路径也已在实际 Mac 上成功读取实时相机健康状态。
+1. OpenCV captured 30 frames from the confirmed RGB node. Each image had a shape of 640 x 480 x 3. Capture took 2.552 seconds, including startup. The driver reported 15 fps. The capture process then released the device.
+2. The session deployed only `~/robo-comp-camera/lite3_camera_server.py`. It used `--source v4l2 --device /dev/video4 --width 640 --height 480 --fps 15 --quality 70`. The HTTP server listened only on the perception host's loopback address, `127.0.0.1:8080`. SSH forwarded this port to `127.0.0.1:18080` on the Mac.
+3. Three health checks returned `source=v4l2, status=live`. Frame age samples were 0.027, 0.049, and 0.001 seconds. Frame age measures the time since capture at the server. It does not measure video delay from the camera to the browser.
+4. The Mac received 122 frames during 8.055 seconds. All 122 JPEG images had different content. The receive rate was approximately 15.15 fps. The mean JPEG size was 31,532 bytes. FFprobe decoded the images and confirmed a resolution of 640 x 480 pixels.
+5. Local Chrome displayed the live camera image with status `Live`. Ten samples over two seconds each showed a different rendered frame. The session also opened the preview URL in the user's Chrome browser.
+6. After the preview stopped, `fuser /dev/video4` found no process that used the device. A connection to remote port 8080 returned `connection refused`. Both vendor camera services remained `inactive`. These results confirmed device release and preview shutdown for this session.
+7. The implementation added `--jump`, the V4L2 backend, and local HTTP checks that bypass proxies. All 32 offline regression tests passed. The updated proxy check also read the live camera health response on the Mac.
 
-本次运行没有调用 NoMachine。实际使用的是 V4L2 RGB；**深度预览、断开实体 USB 后恢复、Wi-Fi 长时间稳定性和端到端延迟未验收**。
+The session did not use NoMachine. It used V4L2 RGB. It did not verify depth preview, recovery after physical USB disconnection, extended Wi-Fi operation, or video delay.
 
-## 再次运行
+## Repeat the procedure
 
-在仓库根目录运行，按提示进行 SSH 身份验证：
+Run this command from the repository root. Complete SSH authentication when the terminal requests it.
 
 ```bash
 python3 scripts/lite3_camera.py view ysc@192.168.1.103 \
@@ -34,18 +34,18 @@ python3 scripts/lite3_camera.py view ysc@192.168.1.103 \
   --backend v4l2 --device /dev/video4
 ```
 
-本次已完成部署；换设备或修改服务端代码后，先运行：
+The session deployed the server before this check. If you change the device or server code, first run:
 
 ```bash
 python3 scripts/lite3_camera.py deploy ysc@192.168.1.103 --jump ysc@192.168.2.1
 ```
 
-若本次测试的预览仍占用 18080 端口，先结束它，再运行上述命令。正常用启动工具运行时，在其终端按 Ctrl+C 即结束预览。
+If the test preview still uses port 18080, stop it before you run these commands. For a preview that uses the launcher, press Ctrl+C in its terminal to stop it.
 
-本次助手为浏览器保留了临时 SSH 预览连接。关闭浏览器标签页只停止播放；要结束本次相机服务和隧道，可在 Mac 终端运行以下命令（仅适用于本次临时连接）：
+The assistant left a temporary SSH preview connection open for the browser during this session. Closing the browser tab stops playback only. To stop that camera service and tunnel, run this command on the Mac. This command applies only to the temporary connection from this session.
 
 ```bash
 ssh -S /private/tmp/lite3-camera-perception-20261120.sock -O exit ysc@192.168.1.103
 ```
 
-发现 Mac 系统网页代理会让 Python 默认 HTTP 客户端访问回环地址返回 502；启动工具已改为对本机就绪检查绕过代理，不更改系统代理设置。
+The Mac's system web proxy caused Python's default HTTP client to return HTTP 502 for loopback requests. The launcher now bypasses proxies for local readiness checks. It does not change the system proxy settings.

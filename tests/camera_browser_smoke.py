@@ -1,7 +1,7 @@
-"""Optional real-browser regression: live JPEG, clean EOF and stalled transport.
+"""Check JPEG playback, stream completion, and transfer timeouts in a browser.
 
-Run on this Mac: python3 tests/camera_browser_smoke.py
-Uses an isolated Chrome profile and loopback only. No robot or camera is needed.
+Run locally: python3 tests/camera_browser_smoke.py
+The test uses a temporary Chrome profile and loopback addresses. It needs no robot or camera.
 """
 import argparse
 import base64
@@ -26,7 +26,7 @@ def main():
     observations = queue.Queue()
     requests = []
     frame = base64.b64decode(DEMO_JPEGS[0])
-    # Observe the real UI without replacing its networking or decoding behavior.
+    # Observe the page with its network requests and image decoder unchanged.
     observer = """<script>
 setInterval(() => fetch('/observe', {method: 'POST', body: JSON.stringify({
   time: performance.now(), hidden: document.getElementById('stream').hidden,
@@ -63,7 +63,7 @@ setInterval(() => fetch('/observe', {method: 'POST', body: JSON.stringify({
                     self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
                     self.end_headers()
                     part = b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
-                    # A header may straddle TCP reads; exercise that boundary too.
+                    # Split the header across TCP reads to check partial header handling.
                     self.wfile.write(part[:30])
                     time.sleep(0.03)
                     self.wfile.write(part[30:])
@@ -95,11 +95,11 @@ setInterval(() => fetch('/observe', {method: 'POST', body: JSON.stringify({
                 browser.kill()
                 browser.wait()
             server.shutdown()
-    assert len(requests) >= 3, "video did not reconnect after EOF and timeout"
-    assert any(not row["hidden"] and row["width"] == 160 and row["status"] == "Live" for row in rows), "JPEG never decoded and displayed"
-    assert any(row["hidden"] and "ended" in row["status"] for row in rows), "last frame remained visible after EOF"
-    assert any(row["hidden"] and "timed out" in row["status"] for row in rows), "last frame remained visible after a transport stall"
-    print("PASS: Chrome displayed JPEG frames, hid EOF/stalled video, and reconnected ({} streams).".format(len(requests)))
+    assert len(requests) >= 3, "The viewer did not reconnect after stream completion and timeout"
+    assert any(not row["hidden"] and row["width"] == 160 and row["status"] == "Live" for row in rows), "The browser did not decode and display a JPEG frame"
+    assert any(row["hidden"] and "ended" in row["status"] for row in rows), "The viewer kept the last frame after stream completion"
+    assert any(row["hidden"] and "timed out" in row["status"] for row in rows), "The viewer kept the last frame after a transfer timeout"
+    print("PASS: Chrome displayed JPEG frames, hid frames after stream completion and timeout, and reconnected ({} streams).".format(len(requests)))
 
 
 if __name__ == "__main__":

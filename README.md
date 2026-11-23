@@ -3,13 +3,13 @@
 [![CI](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml/badge.svg)](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-通过 SSH 在 Mac 浏览器中查看 Lite3 机器狗的相机画面。支持复用 ROS 图像话题、直接读取 RealSense、V4L2 RGB，以及无需机器人的本地演示。
+View the camera on a Lite3 robot in a Mac browser through SSH. Use an existing ROS image topic, RealSense, or V4L2 RGB. A local demo works without a robot.
 
-本项目只负责相机预览，不发送运动指令。客户端无需安装 ROS；本地演示和自动化测试只使用 Python 标准库。
+This tool shows camera images. It does not send motion commands. The client does not need ROS. The local demo and unit tests use only the Python standard library.
 
-## 快速开始
+## Quick start
 
-需要 Python 3.8+。连接机器人还需要 OpenSSH（`ssh` / `scp`）和能访问感知主机的网络。日常开发推荐使用受维护的 Python 版本；3.8 兼容性用于旧设备环境。
+The launcher requires Python 3.8 or later. A robot connection also requires OpenSSH (`ssh` and `scp`) and network access to the perception host. Use a maintained Python version for development. Python 3.8 support is for older devices.
 
 ```bash
 git clone https://github.com/zmjlucas/lite3-camera-server.git
@@ -17,81 +17,83 @@ cd lite3-camera-server
 python3 scripts/lite3_camera.py demo
 ```
 
-浏览器打开 `http://127.0.0.1:18080/`，播放 160×120 的合成画面。在终端按 Ctrl+C 退出。无桌面环境时加 `--no-open`。
+The browser opens `http://127.0.0.1:18080/` and shows synthetic frames at 160 x 120 pixels. To stop the demo, press Ctrl+C in the terminal. If no desktop is available, add `--no-open`.
 
-这是直接运行脚本的工具仓库，无需 `pip install`。完整使用方法见 [相机预览指南](scripts/CAMERA_STREAM.md)。
+Run the scripts directly. You do not need `pip install`. See the [camera guide](scripts/CAMERA_STREAM.md) for all procedures.
 
-## 连接机器人
+## Connect to a robot
 
-以下为示例地址，替换为实际感知主机；首次连接需核对 SSH 主机密钥。
+Replace the example address with your perception host. Before the first connection, check the SSH host key.
 
 ```bash
-# 只读检查主机、依赖、相机服务和 ROS 环境
+# Check the host, dependencies, camera services, and ROS environment.
 python3 scripts/lite3_camera.py doctor ysc@192.168.1.103
 
-# 默认复用 ROS 图像话题，需要相匹配的 web_video_server
+# Use an existing ROS image topic and a compatible web_video_server.
 python3 scripts/lite3_camera.py view ysc@192.168.1.103
 ```
 
-| 模式 | 感知主机要求 | 用法 |
+| Mode | Requirements on the perception host | Command |
 | --- | --- | --- |
-| ROS（默认） | 已发布图像话题、匹配的 ROS 环境及 `web_video_server` | `view HOST` |
-| RealSense | 空闲相机、兼容的 `pyrealsense2`、`numpy`、`cv2` | `deploy HOST` 后执行 `view HOST --backend realsense` |
-| V4L2 RGB | Linux、支持 V4L2 的 OpenCV、已核实且空闲的 RGB 设备节点 | `deploy HOST` 后执行 `view HOST --backend v4l2 --device /dev/videoN` |
-| 演示 | 本机 Python 标准库 | `demo` |
+| ROS (default) | An active image topic, the matching ROS environment, and `web_video_server` | `view HOST` |
+| RealSense | A camera that is not in use, compatible `pyrealsense2`, `numpy`, and `cv2` | Run `deploy HOST`. Then run `view HOST --backend realsense`. |
+| V4L2 RGB | Linux, OpenCV with V4L2 support, and a confirmed RGB device node that is not in use | Run `deploy HOST`. Then run `view HOST --backend v4l2 --device /dev/videoN`. |
+| Demo | The local Python standard library | `demo` |
 
-相机依赖须与设备架构、Python 和厂商 SDK 匹配，因此不通过统一的依赖文件自动安装。服务端保持 Python 3.6 语法兼容；当前完整测试套件的运行要求为 Python 3.8+，不声称已验证 Python 3.6 运行时。
+Camera dependencies must match the device architecture, Python version, and vendor SDK. The repository does not install these dependencies from a shared requirements file. The server uses Python 3.6-compatible syntax. The full test suite requires Python 3.8 or later. Python 3.6 runtime operation remains unverified.
 
-在 macOS 上，三个远程子命令默认读取路由与 Wi-Fi 接口，自动选择 `192.168.1.*` 目标的连接路径：目标走机器人 Wi-Fi 时直接连接；同时连接手机 USB 热点、目标流量走其他接口或网关时，若检测到 Wi-Fi 直连的 `192.168.2.1`，自动通过它进行 SSH 跳转。手机与机器人网段重叠时优先使用机器人 Wi-Fi。两种网络使用相同命令，无需修改系统路由。
+On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces to select a path to `192.168.1.*` targets. If the target route uses robot Wi-Fi, the launcher connects directly. If the target route uses another interface or gateway, the launcher checks for a direct Wi-Fi link to `192.168.2.1`. If that link is available, the launcher uses `192.168.2.1` as an SSH jump host. When the phone and robot subnets overlap, the launcher uses robot Wi-Fi. The same commands work with robot Wi-Fi alone or with a phone USB hotspot, without changes to system routes.
 
-可用 `--jump ysc@192.168.2.1` 手动指定跳转，或用 `--direct` 跳过自动选择、沿用已有 SSH 配置。`--dry-run` 会读取本地路由并显示选择结果及命令，不连接机器人。自动选择限于 macOS 的显式 `192.168.1.*` IPv4 地址；SSH 别名、其他网段和其他系统仍沿用已有 SSH 配置。切换网络后重新运行命令。`deploy` 只上传服务脚本到 `~/robo-comp-camera/`。
+To select a jump host manually, use `--jump ysc@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
 
-HTTP 服务和 SSH 转发均绑定 `127.0.0.1`，默认本机端口为 `18080`、感知主机端口为 `8080`。本项目的 HTTP 服务没有独立认证，应通过 SSH 隧道使用。
+Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads only the server script to `~/robo-comp-camera/`.
 
-## 服务接口
+The HTTP server and SSH tunnel bind to `127.0.0.1`. The default ports are `18080` on the client and `8080` on the perception host. The HTTP server has no separate authentication. Use it through the SSH tunnel.
 
-以下接口适用于演示、RealSense 和 V4L2 服务；ROS 模式使用上游 `web_video_server` 的接口。
+## HTTP endpoints
 
-| 路径 | 内容 |
+These endpoints apply to the demo, RealSense, and V4L2 servers. ROS mode uses the endpoints from `web_video_server`.
+
+| Path | Response |
 | --- | --- |
-| `/` | 浏览器预览，断流时隐藏旧帧并重连 |
-| `/stream.mjpg` | MJPEG 视频流 |
-| `/snapshot.jpg` | 最近的有效 JPEG 帧 |
-| `/healthz` | JSON 状态及服务端帧龄；无有效帧时返回 HTTP 503 |
+| `/` | Camera page. It hides the last frame and reconnects when the stream stops. |
+| `/stream.mjpg` | MJPEG stream |
+| `/snapshot.jpg` | The latest valid JPEG frame |
+| `/healthz` | JSON status and frame age at the server. Returns HTTP 503 when no valid frame is available. |
 
-`frame_age_s` 表示服务端采集新鲜度，不代表端到端延迟。
+The `frame_age_s` field measures the time since the server captured the latest frame. It does not measure video delay from the camera to the browser.
 
-## 开发与验证
+## Development and checks
 
 ```bash
-make check                 # 语法兼容性检查 + 标准库测试
-make browser-test          # 可选：本机 Chrome 的真实浏览器检查
-# Linux 或其他 Chromium 路径：
+make check                 # Run syntax checks and unit tests.
+make browser-test          # Optional: run the test in local Chrome.
+# For Linux or a different Chromium path:
 make browser-test BROWSER=/usr/bin/google-chrome
 ```
 
-不使用 Make 时：
+To run the tests without Make:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 python3 tests/camera_browser_smoke.py
 ```
 
-CI 在 Linux 的多个 Python 版本和 macOS 上运行测试，并单独运行 Chrome 检查；不连接机器人。贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+CI runs the tests with multiple Python versions on Linux and with Python on macOS. A separate CI job runs the Chrome test. CI does not connect to a robot. See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution procedure.
 
-## 当前范围与已知限制
+## Test status and limits
 
-- [2026-11-20 实机记录](scripts/CAMERA_HARDWARE_TEST_2026-11-20.md)记录了单台 D435i / Jetson Xavier NX 的 V4L2 RGB 验证，不能推广为所有设备或后端均已验收。
-- RealSense 的 `--depth` 提供伪彩深度预览，不提供距离测量。深度预览、实体 USB 断连恢复、长时间 Wi-Fi 稳定性和端到端延迟仍待实机验收。
-- 独立原生深度助手模式 `native-depth` **尚未实现**。现有 4 项对应测试保留并明确跳过；它们不计入已通过的功能验证。实现该功能时须移除跳过标记并通过全部测试。
-- ROS 页面断帧后可能保留最后一帧，需结合 ROS 话题频率判断是否仍在更新。
+- The [hardware record from 2026-11-20](scripts/CAMERA_HARDWARE_TEST_2026-11-20.md) covers V4L2 RGB on one D435i and Jetson Xavier NX. It does not confirm other devices or backends.
+- RealSense `--depth` shows a depth preview with false colors. It does not give distance measurements. Depth preview, recovery after USB disconnection, extended Wi-Fi operation, and video delay still require hardware tests.
+- The separate `native-depth` helper backend is not implemented. Its four tests remain skipped. Skipped tests do not count as passed checks. After you implement this backend, remove the skip markers. All tests must pass.
+- The ROS page can keep the last frame after the publisher stops. Check the ROS topic frequency to confirm that new frames arrive.
 
-## 仓库结构
+## Repository layout
 
 ```text
-scripts/       SSH 启动工具、独立相机服务及操作/实机记录
-tests/         标准库测试与可选 Chrome 检查
-.github/       CI、依赖更新和协作模板
+scripts/       SSH launcher, camera server, user guide, and hardware record
+tests/         Unit tests and the optional Chrome test
+.github/       CI, dependency updates, and contribution templates
 ```
 
-MIT 许可证，见 [LICENSE](LICENSE)。
+The project uses the MIT license. See [LICENSE](LICENSE).

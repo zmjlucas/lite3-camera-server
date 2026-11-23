@@ -1,7 +1,7 @@
 # Security
 
-本项目通过 SSH 访问感知主机。相机 HTTP 服务没有独立认证，仅绑定回环地址；不要通过反向代理或端口转发将它公开到互联网。
+This project uses SSH to access the perception host. The camera HTTP server has no separate authentication and binds only to the loopback address. Do not expose it to the internet through a reverse proxy or port forwarding.
 
-保留 SSH 主机密钥校验，不提交密码、私钥、令牌或含凭据的日志。设备诊断输出和相机画面也可能包含私人信息，报告问题前请删除无关内容。
+Keep SSH host key checks enabled. Do not commit passwords, private keys, tokens, or logs with credentials. Device diagnostics and camera images can contain private information. Before you report a problem, remove unrelated private information.
 
-安全修复优先针对 `main`。如发现命令注入、认证绕过或其他安全问题，请使用 GitHub 仓库 **Security → Report a vulnerability** 私下报告，附上受影响版本、复现步骤与影响。不要在公开 Issue 中发布凭据或未修复漏洞的敏感细节。
+Security fixes target `main` first. To report command injection, authentication bypass, or another security issue, use the repository's GitHub **Security > Report a vulnerability** form. Include the affected version, steps to reproduce the issue, and its effects. Do not publish credentials or sensitive details of an unfixed vulnerability in a public issue.

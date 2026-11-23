@@ -1,28 +1,28 @@
 name: Bug report
-description: 报告可复现的相机预览问题
+description: Report a camera preview problem with steps to reproduce it
 body:
   - type: textarea
     id: environment
     attributes:
-      label: 环境
-      description: 本机系统/Python、感知主机环境、相机型号、所用后端及提交版本。
+      label: Environment
+      description: Give the client OS and Python version, perception host environment, camera model, backend, and commit ID.
     validations:
       required: true
   - type: textarea
     id: reproduction
     attributes:
-      label: 复现步骤
-      description: 提供运行命令及必要步骤，删除账号凭据和私人信息。
+      label: Steps to reproduce
+      description: Give the commands and steps to reproduce the problem. Remove credentials and private information.
     validations:
       required: true
   - type: textarea
     id: behavior
     attributes:
-      label: 预期与实际结果
+      label: Expected and actual results
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
-      label: 日志与验证范围
-      description: 附上相关错误或 healthz 输出，并注明是本地演示、模拟测试还是真实相机。
+      label: Logs and test conditions
+      description: Include relevant errors or /healthz output. State whether you used the local demo, a simulated device, or a real camera.

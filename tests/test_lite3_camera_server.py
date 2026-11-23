@@ -22,8 +22,8 @@ class CameraServerTests(unittest.TestCase):
         from scripts.lite3_camera_server import CameraHTTPServer, LatestFrame
 
         frames = LatestFrame("demo")
-        # Loopback HTTP must remain usable when the host's DNS resolver stalls.
-        with patch("socket.getfqdn", side_effect=AssertionError("unexpected reverse DNS lookup")):
+        # Loopback HTTP must work when the host's DNS resolver stops responding.
+        with patch("socket.getfqdn", side_effect=AssertionError("The server made an unexpected reverse DNS lookup")):
             with CameraHTTPServer(0, frames) as server:
                 self.assertEqual(server.server_address[0], "127.0.0.1")
                 self.assertGreater(server.server_port, 0)
@@ -53,9 +53,9 @@ class CameraServerTests(unittest.TestCase):
             if health["status"] == expected:
                 return status, health
             time.sleep(0.025)
-        self.fail("health never reached {}: {}".format(expected, health))
+        self.fail("The health status did not become {}: {}".format(expected, health))
 
-    @unittest.skip("Pending feature: native-depth backend is not implemented; see README.md")
+    @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_requires_helper_and_rejects_rgb_options(self):
         from scripts.lite3_camera_server import parse_args
 
@@ -70,7 +70,7 @@ class CameraServerTests(unittest.TestCase):
         options = parse_args(["--source", "native-depth", "--depth-helper", "/tmp/helper"])
         self.assertEqual(options.depth_helper, "/tmp/helper")
 
-    @unittest.skip("Pending feature: native-depth backend is not implemented; see README.md")
+    @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_serves_helper_jpeg_and_releases_child_on_signals(self):
         from scripts.lite3_camera_server import DEMO_JPEGS
         import base64
@@ -99,9 +99,9 @@ class CameraServerTests(unittest.TestCase):
                 process.send_signal(signum)
                 _, stderr = process.communicate(timeout=4)
                 self.assertEqual(process.returncode, 0, stderr.decode())
-                self.assertTrue(Path(str(helper) + ".released").exists(), "helper was not stopped")
+                self.assertTrue(Path(str(helper) + ".released").exists(), "The helper did not stop")
 
-    @unittest.skip("Pending feature: native-depth backend is not implemented; see README.md")
+    @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_rejects_bad_records_and_eof(self):
         cases = (
             ("os.write(1, struct.pack('<I', 9000000))\ntime.sleep(10)\n", "length"),
@@ -117,7 +117,7 @@ class CameraServerTests(unittest.TestCase):
                 self.assertIn(diagnostic, health["error"])
                 self.assertEqual(self.request(port, "/snapshot.jpg")[0], 503)
 
-    @unittest.skip("Pending feature: native-depth backend is not implemented; see README.md")
+    @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_eof_and_timeout_hide_previously_published_frame(self):
         from scripts.lite3_camera_server import DEMO_JPEGS
         import base64
@@ -145,7 +145,7 @@ class CameraServerTests(unittest.TestCase):
         self.addCleanup(self.stop_process, process)
         with selectors.DefaultSelector() as poller:
             poller.register(process.stdout, selectors.EVENT_READ)
-            self.assertTrue(poller.select(4), "camera server did not announce a URL")
+            self.assertTrue(poller.select(4), "The camera server did not print a URL")
         url = process.stdout.readline().decode().strip()
         if not url:
             _, stderr = process.communicate(timeout=4)
@@ -163,7 +163,7 @@ class CameraServerTests(unittest.TestCase):
                 self.assertEqual(json.loads(body)["source"], "demo")
                 return process, port
             time.sleep(0.025)
-        self.fail("demo never published a frame")
+        self.fail("The demo did not publish a frame")
 
     @staticmethod
     def stop_process(process):
@@ -220,7 +220,7 @@ class CameraServerTests(unittest.TestCase):
             if self.read_frame(response, boundary) != initial_frame:
                 break
         else:
-            self.fail("demo stream never changed")
+            self.fail("The demo stream did not change")
 
     def test_demo_snapshot_and_page_identify_their_content(self):
         _, port = self.start_demo()
@@ -264,7 +264,7 @@ class CameraServerTests(unittest.TestCase):
                 break
             time.sleep(0.025)
         else:
-            self.fail("{} startup failure never reached health endpoint".format(source))
+            self.fail("The health endpoint did not report the {} startup failure".format(source))
         self.assertEqual(status, 503)
         self.assertEqual(health["source"], source)
         self.assertIn(dependency, health["error"])

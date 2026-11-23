@@ -1,12 +1,12 @@
-## 改动
+## Changes
 
-说明解决的问题和新的行为。
+Describe the problem and the new behavior.
 
-## 验证
+## Checks
 
 - [ ] `make check`
-- [ ] 浏览器检查（如涉及页面或视频流；否则说明不适用）
-- [ ] 区分自动化测试与真实硬件结果，注明未验证的部分
-- [ ] 没有提交凭据、现场影像或 `.superpowers/**`
+- [ ] Run the browser test for page or stream changes, or state why it does not apply.
+- [ ] Report automated tests and hardware results separately. State what remains unverified.
+- [ ] Exclude credentials, images from the test site, and `.superpowers/**` files.
 
-实机环境与结果（如有）：
+Hardware environment and results, if applicable:

@@ -1,4 +1,4 @@
-"""Exercise route selection with OS route fixtures; never contact a robot."""
+"""Check route selection with sample OS routes. These tests do not connect to a robot."""
 import contextlib
 import importlib.util
 import io
@@ -13,7 +13,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lite3_camera.py"
 TARGET = "ysc@192.168.1.103"
 GATEWAY = "192.168.2.1"
 
-# macOS route output includes a MAC/link gateway even for an on-link route.
+# macOS route output includes a MAC address or link identifier as the gateway for an on-link route.
 WIFI_GATEWAY = """   route to: 192.168.2.1
 destination: 192.168.2.1
   interface: en0
@@ -70,7 +70,7 @@ class CameraRoutingTest(unittest.TestCase):
         self.remote_commands = []
 
     def route_command(self, command, **kwargs):
-        # Catch accidental probes, writes, unbounded commands or shell execution.
+        # Reject network probes, writes, commands without time limits, and shell execution.
         self.assertFalse(kwargs.get("shell", False))
         self.assertGreater(kwargs["timeout"], 0)
         self.assertLessEqual(kwargs["timeout"], 3)

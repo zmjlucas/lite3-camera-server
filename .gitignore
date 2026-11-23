@@ -1,4 +1,4 @@
-# Local planning state must never be committed.
+# Do not commit local plans or specifications.
 .superpowers/
 docs/superpowers/
 
@@ -15,7 +15,7 @@ build/
 dist/
 *.egg-info/
 
-# Credentials, local settings, recordings and generated output
+# Credentials, local settings, recordings, and generated output
 .env
 .env.*
 !.env.example

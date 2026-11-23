@@ -1,16 +1,16 @@
 name: Feature request
-description: 提议功能或改进
+description: Propose a feature or improvement
 body:
   - type: textarea
     id: problem
     attributes:
-      label: 使用场景与问题
+      label: Use case and problem
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: 期望行为
-      description: 说明预期效果、设备环境及可接受的替代方案。
+      label: Expected behavior
+      description: Describe the expected result, device environment, and acceptable alternatives.
     validations:
       required: true

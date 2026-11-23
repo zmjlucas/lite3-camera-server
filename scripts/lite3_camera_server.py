@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Loopback-only Lite3 camera viewer for use over an SSH tunnel."""
+"""Serve Lite3 camera frames on the loopback address. Use an SSH tunnel for remote access."""
 
 import argparse
 import base64
@@ -20,8 +20,8 @@ LOOPBACK = "127.0.0.1"
 BOUNDARY = b"--frame\r\n"
 SOURCE_LABELS = {"demo": "Synthetic demo", "realsense": "RealSense", "v4l2": "V4L2 RGB"}
 
-# Four 160x120 frames of a moving test pattern. No camera or JPEG encoder is
-# needed to play the demo.
+# Four 160 x 120 frames show a test pattern that moves.
+# The demo needs no camera or JPEG encoder.
 DEMO_JPEGS = (
         "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABIMDRANCxIQDhAUExIVGywdGxgYGzYnKSAsQDlEQz85Pj1HUGZXR0thTT0+"
         "WXlaYWltcnNyRVV9hnxvhWZwcm7/2wBDARMUFBsXGzQdHTRuST5Jbm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5u"
@@ -117,13 +117,13 @@ PAGE = r"""<!doctype html>
 <header><h1>Lite3 camera</h1><span class="source">__SOURCE_LABEL__</span></header>
 <figure>
   <img id="stream" alt="__SOURCE_LABEL__ video stream" hidden>
-  <p id="placeholder">Waiting for video</p>
+  <p id="placeholder">No video yet</p>
 </figure>
 <footer>
-  <p id="status" role="status">Connecting</p>
+  <p id="status" role="status">Connection pending</p>
   <a id="snapshot" href="/snapshot.jpg" hidden>JPEG snapshot</a>
 </footer>
-<noscript><p>Enable JavaScript for video or open a <a href="/snapshot.jpg">JPEG snapshot</a>.</p></noscript>
+<noscript><p>To view video, enable JavaScript. You can also open a <a href="/snapshot.jpg">JPEG snapshot</a>.</p></noscript>
 </main>
 <script>
 const image = document.getElementById('stream');
@@ -140,8 +140,8 @@ function showNoVideo(message) {
   snapshot.hidden = true;
   statusText.textContent = message;
 }
-// Read the response ourselves: native <img> MJPEG can silently retain its last
-// frame after EOF. Only a successfully decoded, newly received frame is live.
+// Read the response directly. A native <img> MJPEG stream can keep its last frame after EOF.
+// Mark video as live only after a new frame arrives and the decoder reads it.
 async function streamVideo() {
   const controller = new AbortController();
   let timeout;
@@ -154,19 +154,19 @@ async function streamVideo() {
     const response = await fetch('/stream.mjpg', {cache: 'no-store', signal: controller.signal});
     if (!response.ok) {
       const health = await response.json();
-      throw new Error(health.error || 'Waiting for the first frame');
+      throw new Error(health.error || 'No frame received yet');
     }
     const reader = response.body.getReader();
     let buffer = new Uint8Array(0);
     const decoder = new TextDecoder();
     while (true) {
       const {value, done} = await reader.read();
-      if (done) throw new Error('Video ended. Reconnecting.');
+      if (done) throw new Error('Video ended. The viewer will reconnect.');
       const combined = new Uint8Array(buffer.length + value.length);
       combined.set(buffer);
       combined.set(value, buffer.length);
       buffer = combined;
-      if (buffer.length > 16 * 1024 * 1024) throw new Error('Video frame too large');
+      if (buffer.length > 16 * 1024 * 1024) throw new Error('The video frame is too large');
       let latest;
       while (true) {
         let end = -1;
@@ -190,7 +190,7 @@ async function streamVideo() {
       decoded.src = nextURL;
       try {
         await decoded.decode();
-        if (controller.signal.aborted) throw new Error('Video timed out. Reconnecting.');
+        if (controller.signal.aborted) throw new Error('Video timed out. The viewer will reconnect.');
       } catch (error) {
         URL.revokeObjectURL(nextURL);
         throw error;
@@ -201,11 +201,11 @@ async function streamVideo() {
       image.hidden = false;
       placeholder.hidden = true;
       snapshot.hidden = false;
-      statusText.textContent = '__SOURCE_LABEL__' === 'Synthetic demo' ? 'Demo streaming' : 'Live';
+      statusText.textContent = '__SOURCE_LABEL__' === 'Synthetic demo' ? 'Demo live' : 'Live';
       frameDeadline();
     }
   } catch (error) {
-    showNoVideo(error.name === 'AbortError' ? 'Video timed out. Reconnecting.' : error.message);
+    showNoVideo(error.name === 'AbortError' ? 'Video timed out. The viewer will reconnect.' : error.message);
   } finally {
     clearTimeout(timeout);
     controller.abort();
@@ -219,7 +219,7 @@ streamVideo();
 
 
 class LatestFrame:
-    """One frame shared by the producer and all viewer requests."""
+    """Share the latest frame between the capture thread and all viewer requests."""
 
     def __init__(self, source, stale_after=2.0):
         self.source = source
@@ -264,7 +264,7 @@ class LatestFrame:
                 status = "starting"
             elif age >= self.stale_after:
                 status = "stale"
-                error = "No recent frames. Waiting for video."
+                error = "No recent frames. The server will wait for video."
             else:
                 status = "live"
             health = {
@@ -297,8 +297,8 @@ class CameraHTTPServer(ThreadingMixIn, HTTPServer):
         super().__init__((LOOPBACK, port), CameraRequestHandler)
 
     def server_bind(self):
-        # HTTPServer resolves its address to a hostname, which can block on DNS
-        # even for loopback. This viewer only needs its numeric local address.
+        # HTTPServer resolves its address to a hostname. DNS can delay this call, even for loopback.
+        # This server needs only its numeric local address.
         TCPServer.server_bind(self)
         self.server_name, self.server_port = self.server_address[:2]
 
@@ -309,14 +309,14 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         super().setup()
 
     def log_message(self, *args):
-        # Polling health and opening streams should not flood the SSH shell.
+        # Omit request logs to keep repeated health checks out of the SSH terminal.
         pass
 
     def do_GET(self):
         try:
             self._get()
         except (ConnectionError, socket.timeout):
-            # Closing or refreshing a tab interrupts any write in progress.
+            # A tab close or reload can interrupt a write.
             pass
 
     def _get(self):
@@ -391,7 +391,7 @@ def realsense_frames(options, frames, stop):
         import cv2
     except ImportError as error:
         raise RuntimeError(
-            "Could not load RealSense Python dependencies (pyrealsense2, numpy, cv2): {}".format(error)
+            "Cannot load the RealSense Python dependencies (pyrealsense2, numpy, cv2): {}".format(error)
         ) from error
 
     config = rs.config()
@@ -407,7 +407,7 @@ def realsense_frames(options, frames, stop):
         pipeline.start(config)
     except RuntimeError as error:
         raise RuntimeError(
-            "RealSense could not start. Check device availability, camera ownership and stream profile. "
+            "Cannot start RealSense. Check the device connection, other camera users, and stream profile. "
             "{}".format(error)
         ) from error
     try:
@@ -416,18 +416,18 @@ def realsense_frames(options, frames, stop):
                 captured = pipeline.wait_for_frames(1000)
                 color = captured.get_color_frame()
                 if not color:
-                    raise RuntimeError("No RGB frame received")
+                    raise RuntimeError("The camera returned no RGB frame")
                 image = np.asanyarray(color.get_data())
                 if options.depth:
                     depth = captured.get_depth_frame()
                     if not depth:
-                        raise RuntimeError("No depth frame received")
+                        raise RuntimeError("The camera returned no depth frame")
                     depth_rgb = np.asanyarray(colorizer.colorize(depth).get_data())
                     depth_bgr = cv2.cvtColor(depth_rgb, cv2.COLOR_RGB2BGR)
                     image = np.hstack((image, depth_bgr))
                 jpeg = encode_jpeg(cv2, image, options.quality)
             except Exception as error:
-                _report_capture_error(frames, "RealSense frame unavailable: {}".format(error))
+                _report_capture_error(frames, "Cannot read the RealSense frame: {}".format(error))
                 stop.wait(0.25)
                 continue
             if not stop.is_set():
@@ -440,13 +440,13 @@ def v4l2_frames(options, stop):
     try:
         import cv2
     except ImportError as error:
-        raise RuntimeError("Could not load OpenCV (cv2) for V4L2: {}".format(error)) from error
+        raise RuntimeError("Cannot load OpenCV (cv2) for V4L2: {}".format(error)) from error
 
     device = options.device
     camera = cv2.VideoCapture(device, cv2.CAP_V4L2)
     try:
         if not camera.isOpened():
-            raise RuntimeError("Could not open V4L2 device {}. Check availability and permissions.".format(device))
+            raise RuntimeError("Cannot open V4L2 device {}. Check the device connection, other camera users, and permissions.".format(device))
         settings = (
             ("pixel format", cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV")),
             ("width", cv2.CAP_PROP_FRAME_WIDTH, options.width),
@@ -455,11 +455,11 @@ def v4l2_frames(options, stop):
         )
         for name, prop, value in settings:
             if not camera.set(prop, value):
-                raise RuntimeError("Could not set {} on V4L2 device {}".format(name, device))
+                raise RuntimeError("Cannot set {} on V4L2 device {}".format(name, device))
         while not stop.is_set():
             ok, image = camera.read()
             if not ok or image is None:
-                raise RuntimeError("Could not read a frame from V4L2 device {}".format(device))
+                raise RuntimeError("Cannot read a frame from V4L2 device {}".format(device))
             if not stop.is_set():
                 yield encode_jpeg(cv2, image, options.quality)
     finally:
@@ -484,20 +484,20 @@ def capture(options, frames, stop):
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=SOURCE_LABELS, default="realsense")
-    parser.add_argument("--port", type=int, default=8080, help="loopback port (0 chooses a free port)")
-    parser.add_argument("--width", type=int, default=640, help="camera width per stream")
-    parser.add_argument("--height", type=int, default=480, help="camera height per stream")
+    parser.add_argument("--port", type=int, default=8080, help="loopback port (use 0 for a free port)")
+    parser.add_argument("--width", type=int, default=640, help="frame width in pixels for each stream")
+    parser.add_argument("--height", type=int, default=480, help="frame height in pixels for each stream")
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument("--quality", type=int, default=70, help="camera JPEG quality (1 to 100)")
-    parser.add_argument("--depth", action="store_true", help="show colorized RealSense depth beside RGB")
-    parser.add_argument("--serial", help="select a RealSense by serial number")
+    parser.add_argument("--depth", action="store_true", help="show RealSense depth with false colors beside RGB")
+    parser.add_argument("--serial", help="select a RealSense camera by serial number")
     parser.add_argument("--device", help="V4L2 RGB device path (required for --source v4l2)")
     options = parser.parse_args(argv)
     if options.source == "v4l2":
         if not re.fullmatch(r"/dev/(?:video[0-9]+|v4l/by-id/[A-Za-z0-9_][A-Za-z0-9_.:+-]*)", options.device or ""):
             parser.error("--source v4l2 requires --device /dev/videoN or /dev/v4l/by-id/NAME")
         if options.depth or options.serial is not None:
-            parser.error("--depth and --serial cannot be used with --source v4l2")
+            parser.error("--source v4l2 does not support --depth or --serial")
     elif options.device is not None:
         parser.error("--device requires --source v4l2")
     if not 0 <= options.port <= 65535:
@@ -525,7 +525,7 @@ def main(argv=None):
     try:
         server = CameraHTTPServer(options.port, frames)
     except OSError as error:
-        print("Could not listen on {}:{}: {}".format(LOOPBACK, options.port, error), file=sys.stderr)
+        print("Cannot listen on {}:{}: {}".format(LOOPBACK, options.port, error), file=sys.stderr)
         return 1
 
     producer = threading.Thread(target=capture, args=(options, frames, stop), daemon=True)
@@ -537,10 +537,10 @@ def main(argv=None):
                 server.handle_request()
         finally:
             stop.set()
-            frames.fail("Viewer stopped")
+            frames.fail("The server stopped")
     producer.join(timeout=3)
     if producer.is_alive():
-        print("Camera cleanup timed out", file=sys.stderr)
+        print("Camera shutdown timed out", file=sys.stderr)
         return 1
     return 0
 

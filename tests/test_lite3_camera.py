@@ -1,4 +1,4 @@
-"""Exercise Mac commands with local fake SSH/SCP; never connect to a robot."""
+"""Check Mac commands with local SSH and SCP substitutes. These tests do not connect to a robot."""
 import json
 import importlib.util
 import os
@@ -16,7 +16,7 @@ SCRIPT = ROOT / "scripts/lite3_camera.py"
 
 class CameraCommandsTest(unittest.TestCase):
     def setUp(self):
-        self.assertTrue(SCRIPT.is_file(), "Mac camera launcher has not been implemented")
+        self.assertTrue(SCRIPT.is_file(), "The Mac camera launcher script is missing")
         spec = importlib.util.spec_from_file_location("camera_cli", SCRIPT)
         self.cli = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.cli)
@@ -36,8 +36,8 @@ class CameraCommandsTest(unittest.TestCase):
             path = self.directory / name
             path.write_text(executable)
             path.chmod(0o755)
-        # Route-selection fixtures live in test_camera_routing.py. Keep these
-        # subprocess tests independent of the developer's active Wi-Fi/USB route.
+        # The route samples are in test_camera_routing.py.
+        # Keep these subprocess tests independent of the developer's active Wi-Fi and USB routes.
         route = self.directory / "route"
         route.write_text("#!" + sys.executable + "\nimport sys\nsys.exit(1)\n")
         route.chmod(0o755)
@@ -134,7 +134,7 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertIn("127.0.0.1:18081:127.0.0.1:8081", call)
         self.assertIn("ExitOnForwardFailure=yes", call)
         self.assertNotIn("StrictHostKeyChecking=no", call)
-        # Parse both quoting layers. The serial must remain one argument.
+        # Parse both levels of shell quotes. The serial number must remain one argument.
         import shlex
         remote = shlex.split(call[-1])
         self.assertEqual(remote[:2], ["bash", "-lc"])
@@ -215,7 +215,7 @@ class CameraCommandsTest(unittest.TestCase):
             import shlex
             setup.write_text("export ROS_VERSION={}\nexport PATH={}:$PATH\n".format(version, shlex.quote(str(self.directory))))
             args = self.cli.parser().parse_args(["view", "robot", "--ros-setup", str(setup), "--remote-port", str(port)])
-            # Execute the exact remote shell string locally; all ROS commands are fakes.
+            # Run the remote shell string locally. All ROS commands use test substitutes.
             result = subprocess.run(["/bin/sh", "-c", self.cli.shell_command(self.cli.ros_script(args))],
                                     env=self.env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -236,7 +236,7 @@ class CameraCommandsTest(unittest.TestCase):
             deadline = time.monotonic() + 3
             while not pid_file.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
-            self.assertTrue(pid_file.exists(), "fake SSH never started")
+            self.assertTrue(pid_file.exists(), "The SSH test substitute did not start")
             child_pid = int(pid_file.read_text())
             process.terminate()
             process.wait(timeout=7)
@@ -299,7 +299,7 @@ class CameraCommandsTest(unittest.TestCase):
                 with patch.dict(os.environ, proxy_env), patch.object(self.cli.webbrowser, "open", opened.append):
                     result = self.cli.run_foreground([sys.executable, "-c", server_code], url, True)
                 self.assertEqual(result, 0)
-                self.assertEqual(opened, [url], "local viewer readiness was intercepted by the proxy")
+                self.assertEqual(opened, [url], "The proxy intercepted the local readiness check")
             finally:
                 proxy.shutdown()
                 worker.join(timeout=2)
