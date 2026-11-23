@@ -80,7 +80,7 @@ setInterval(() => fetch('/observe', {method: 'POST', body: JSON.stringify({
         browser = subprocess.Popen([args.browser, "--headless", "--disable-gpu", "--disable-background-networking",
                                     "--disable-extensions", "--no-first-run", "--user-data-dir=" + profile,
                                     "http://127.0.0.1:{}/".format(server.server_port)],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                   stdout=subprocess.DEVNULL, stderr=None)
         try:
             while True:
                 row = observations.get(timeout=10)
