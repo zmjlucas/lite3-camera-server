@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from socketserver import ThreadingMixIn
+from socketserver import TCPServer, ThreadingMixIn
 
 
 LOOPBACK = "127.0.0.1"
@@ -295,6 +295,12 @@ class CameraHTTPServer(ThreadingMixIn, HTTPServer):
     def __init__(self, port, frames):
         self.frames = frames
         super().__init__((LOOPBACK, port), CameraRequestHandler)
+
+    def server_bind(self):
+        # HTTPServer resolves its address to a hostname, which can block on DNS
+        # even for loopback. This viewer only needs its numeric local address.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class CameraRequestHandler(BaseHTTPRequestHandler):

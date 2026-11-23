@@ -18,6 +18,25 @@ SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lite3_camera_serv
 
 
 class CameraServerTests(unittest.TestCase):
+    def test_loopback_server_starts_without_reverse_dns(self):
+        from scripts.lite3_camera_server import CameraHTTPServer, LatestFrame
+
+        frames = LatestFrame("demo")
+        # Loopback HTTP must remain usable when the host's DNS resolver stalls.
+        with patch("socket.getfqdn", side_effect=AssertionError("unexpected reverse DNS lookup")):
+            with CameraHTTPServer(0, frames) as server:
+                self.assertEqual(server.server_address[0], "127.0.0.1")
+                self.assertGreater(server.server_port, 0)
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    status, _, body = self.request(server.server_port, "/healthz")
+                    self.assertEqual(status, 503)
+                    self.assertEqual(json.loads(body)["status"], "starting")
+                finally:
+                    server.shutdown()
+                    worker.join(timeout=4)
+
     def depth_helper(self, body):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
