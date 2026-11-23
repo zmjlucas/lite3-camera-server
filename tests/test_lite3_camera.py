@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts/lite3_camera.py"
+SCRIPT = ROOT / "src/lite3_camera.py"
 
 
 class CameraCommandsTest(unittest.TestCase):
@@ -119,8 +119,8 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], ["ssh", "scp"])
         self.assertIn("mkdir -p", calls[0][-1])
         self.assertIn("-r", calls[1])
-        self.assertEqual(calls[1][-4:-1], [str(ROOT / "scripts/lite3_camera_server.py"),
-                                         str(ROOT / "scripts/web"), str(ROOT / "scripts/assets")])
+        self.assertEqual(calls[1][calls[1].index("-r") + 1:-1],
+                         [str(ROOT / "src/lite3_camera_server.py"), str(ROOT / "src/web")])
         self.assertEqual(calls[1][-1], "robot:robo-comp-camera/")
 
     def test_deploy_failure_prevents_copy(self):

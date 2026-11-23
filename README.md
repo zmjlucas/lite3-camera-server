@@ -3,9 +3,9 @@
 [![CI](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml/badge.svg)](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-View the camera on a Lite3 robot in a Mac browser through SSH. Use an existing ROS image topic, RealSense, or V4L2 RGB. A local demo works without a robot.
+View the camera on a Lite3 robot in a Mac browser through SSH. Use an existing ROS image topic, RealSense, or V4L2 RGB.
 
-This tool shows camera images. It does not send motion commands. The client does not need ROS. The local demo and unit tests use only the Python standard library.
+This tool shows camera images. It does not send motion commands. The client does not need ROS. The client and unit tests use only the Python standard library.
 
 ## Quick start
 
@@ -14,12 +14,10 @@ The launcher requires Python 3.8 or later. A robot connection also requires Open
 ```bash
 git clone https://github.com/zmjlucas/lite3-camera-server.git
 cd lite3-camera-server
-python3 scripts/lite3_camera.py demo
+python3 src/lite3_camera.py --help
 ```
 
-The browser opens `http://127.0.0.1:18080/` and shows synthetic frames at 160 x 120 pixels. To stop the demo, press Ctrl+C in the terminal. If no desktop is available, add `--no-open`.
-
-Run the scripts directly. You do not need `pip install`. See the [camera guide](docs/CAMERA_STREAM.md) for all procedures.
+Run the Python entry points in `src/` directly. You do not need `pip install`. See the [camera guide](docs/CAMERA_STREAM.md) for all procedures.
 
 ## Connect to a robot
 
@@ -27,10 +25,10 @@ Replace the example address with your perception host. Before the first connecti
 
 ```bash
 # Check the host, dependencies, camera services, and ROS environment.
-python3 scripts/lite3_camera.py doctor ysc@192.168.1.103
+python3 src/lite3_camera.py doctor ysc@192.168.1.103
 
 # Use an existing ROS image topic and a compatible web_video_server.
-python3 scripts/lite3_camera.py view ysc@192.168.1.103
+python3 src/lite3_camera.py view ysc@192.168.1.103
 ```
 
 | Mode | Requirements on the perception host | Command |
@@ -38,7 +36,6 @@ python3 scripts/lite3_camera.py view ysc@192.168.1.103
 | ROS (default) | An active image topic, the matching ROS environment, and `web_video_server` | `view HOST` |
 | RealSense | A camera that is not in use, compatible `pyrealsense2`, `numpy`, and `cv2` | Run `deploy HOST`. Then run `view HOST --backend realsense`. |
 | V4L2 RGB | Linux, OpenCV with V4L2 support, and a confirmed RGB device node that is not in use | Run `deploy HOST`. Then run `view HOST --backend v4l2 --device /dev/videoN`. |
-| Demo | The local Python standard library | `demo` |
 
 Camera dependencies must match the device architecture, Python version, and vendor SDK. The repository does not install these dependencies from a shared requirements file. The server uses Python 3.6-compatible syntax. The full test suite requires Python 3.8 or later. Python 3.6 runtime operation remains unverified.
 
@@ -46,13 +43,13 @@ On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces 
 
 To select a jump host manually, use `--jump ysc@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
 
-Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script, viewer page, and demo assets to `~/robo-comp-camera/`.
+Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script and viewer page to `~/robo-comp-camera/`.
 
 The HTTP server and SSH tunnel bind to `127.0.0.1`. The default ports are `18080` on the client and `8080` on the perception host. The HTTP server has no separate authentication. Use it through the SSH tunnel.
 
 ## HTTP endpoints
 
-These endpoints apply to the demo, RealSense, and V4L2 servers. ROS mode uses the endpoints from `web_video_server`.
+These endpoints apply to the RealSense and V4L2 servers. ROS mode uses the endpoints from `web_video_server`.
 
 | Path | Response |
 | --- | --- |
@@ -90,13 +87,14 @@ CI runs the tests with multiple Python versions on Linux and with Python on macO
 ## Repository layout
 
 ```text
-scripts/         SSH launcher and camera server
-scripts/remote/  Remote diagnostic and startup helpers
-scripts/web/     Browser viewer page
-scripts/assets/  Synthetic JPEG frames for the local demo
+src/             SSH launcher and camera server
+src/remote/      Remote diagnostic and startup helpers
+src/web/         Browser viewer page
 docs/            Camera usage guide
 tests/           Unit tests and the optional Chrome test
 .github/         CI, dependency updates, and contribution templates
 ```
+
+Reserve `scripts/` for repository maintenance scripts. Runtime helpers belong in `src/remote/`. Offline camera inputs and browser fixtures belong in `tests/fixtures/` and are not deployed.
 
 The project uses the MIT license. See [LICENSE](LICENSE).

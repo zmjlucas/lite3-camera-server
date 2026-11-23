@@ -14,14 +14,22 @@ from unittest.mock import Mock, call, patch
 from urllib.parse import urlsplit
 
 
-SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lite3_camera_server.py"
+SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "src/lite3_camera_server.py"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class CameraServerTests(unittest.TestCase):
-    def test_loopback_server_starts_without_reverse_dns(self):
-        from scripts.lite3_camera_server import CameraHTTPServer, LatestFrame
+    def test_removed_source_is_rejected(self):
+        from src.lite3_camera_server import parse_args
 
-        frames = LatestFrame("demo")
+        with patch("sys.stderr"), self.assertRaises(SystemExit) as caught:
+            parse_args(["--source", "demo"])
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_loopback_server_starts_without_reverse_dns(self):
+        from src.lite3_camera_server import CameraHTTPServer, LatestFrame
+
+        frames = LatestFrame("realsense")
         # Loopback HTTP must work when the host's DNS resolver stops responding.
         with patch("socket.getfqdn", side_effect=AssertionError("The server made an unexpected reverse DNS lookup")):
             with CameraHTTPServer(0, frames) as server:
@@ -57,13 +65,13 @@ class CameraServerTests(unittest.TestCase):
 
     @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_requires_helper_and_rejects_rgb_options(self):
-        from scripts.lite3_camera_server import parse_args
+        from src.lite3_camera_server import parse_args
 
         for arguments in (
             ["--source", "native-depth"],
             ["--source", "native-depth", "--depth-helper", "/tmp/helper", "--depth"],
             ["--source", "native-depth", "--depth-helper", "/tmp/helper", "--serial", "123"],
-            ["--source", "demo", "--depth-helper", "/tmp/helper"],
+            ["--source", "realsense", "--depth-helper", "/tmp/helper"],
         ):
             with self.subTest(arguments=arguments), patch("sys.stderr"), self.assertRaises(SystemExit):
                 parse_args(arguments)
@@ -72,9 +80,7 @@ class CameraServerTests(unittest.TestCase):
 
     @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_serves_helper_jpeg_and_releases_child_on_signals(self):
-        from scripts.lite3_camera_server import ASSET_DIR
-
-        jpeg = (ASSET_DIR / "demo" / "frame-01.jpg").read_bytes()
+        jpeg = (FIXTURES / "camera-frame.jpg").read_bytes()
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             with self.subTest(signum=signum):
                 helper = self.depth_helper(
@@ -118,9 +124,7 @@ class CameraServerTests(unittest.TestCase):
 
     @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_eof_and_timeout_hide_previously_published_frame(self):
-        from scripts.lite3_camera_server import ASSET_DIR
-
-        jpeg = (ASSET_DIR / "demo" / "frame-01.jpg").read_bytes()
+        jpeg = (FIXTURES / "camera-frame.jpg").read_bytes()
         for after_frame, diagnostic in (("time.sleep(0.3)\n", "EOF"), ("time.sleep(10)\n", "timed out")):
             with self.subTest(diagnostic=diagnostic):
                 helper = self.depth_helper(
@@ -134,11 +138,15 @@ class CameraServerTests(unittest.TestCase):
                 self.assertIn(diagnostic, health["error"])
                 self.assertEqual(self.request(port, "/snapshot.jpg")[0], 503)
 
-    def start_server(self, source, *options):
+    def start_server(self, source, *options, simulated_capture=False):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
+        command = [sys.executable, "-S"]
+        if simulated_capture:
+            command.append(str(FIXTURES / "camera_server.py"))
+        command.extend([str(SERVER_SCRIPT), "--source", source, "--port", "0", *options])
         process = subprocess.Popen(
-            [sys.executable, "-S", str(SERVER_SCRIPT), "--source", source, "--port", "0", *options],
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=directory.name,
@@ -155,16 +163,16 @@ class CameraServerTests(unittest.TestCase):
         self.assertEqual(address.hostname, "127.0.0.1")
         return process, address.port
 
-    def start_demo(self):
-        process, port = self.start_server("demo")
+    def start_camera(self):
+        process, port = self.start_server("v4l2", "--device", "/dev/video4", simulated_capture=True)
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             status, _, body = self.request(port, "/healthz")
             if status == 200:
-                self.assertEqual(json.loads(body)["source"], "demo")
+                self.assertEqual(json.loads(body)["source"], "v4l2")
                 return process, port
             time.sleep(0.025)
-        self.fail("The demo did not publish a frame")
+        self.fail("The simulated camera did not publish a frame")
 
     @staticmethod
     def stop_process(process):
@@ -212,32 +220,33 @@ class CameraServerTests(unittest.TestCase):
         self.assertTrue(frame.endswith(b"\xff\xd9"))
         self.assertIn(b"\xff\xda", frame)
 
-    def test_demo_serves_changing_multipart_jpegs(self):
-        _, port = self.start_demo()
+    def test_stream_delivers_newly_published_jpegs(self):
+        frames, port = self.buffered_server()
+        first = (FIXTURES / "camera-frame.jpg").read_bytes()
+        # Insert a JPEG comment to distinguish a second valid frame on the wire.
+        second = first[:2] + b"\xff\xfe\x00\x06next" + first[2:]
+        frames.publish(first)
         response, boundary = self.open_stream(port)
-        initial_frame = self.read_frame(response, boundary)
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            if self.read_frame(response, boundary) != initial_frame:
-                break
-        else:
-            self.fail("The demo stream did not change")
+        self.assertEqual(self.read_frame(response, boundary), first)
+        frames.publish(second)
+        self.assertEqual(self.read_frame(response, boundary), second)
 
-    def test_demo_snapshot_and_page_identify_their_content(self):
-        _, port = self.start_demo()
+    def test_camera_snapshot_and_page_identify_their_content(self):
+        _, port = self.start_camera()
         status, headers, body = self.request(port, "/snapshot.jpg")
         self.assertEqual(status, 200)
         self.assertEqual(headers.get_content_type(), "image/jpeg")
         self.assert_jpeg(body)
+        self.assertEqual(body, (FIXTURES / "camera-frame.jpg").read_bytes())
         status, headers, body = self.request(port, "/")
         self.assertEqual(status, 200)
         self.assertEqual(headers.get_content_type(), "text/html")
-        self.assertIn(b"Synthetic demo", body)
+        self.assertIn(b"V4L2 RGB", body)
 
     def test_signals_shut_down_with_an_active_stream(self):
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             with self.subTest(signum=signum):
-                process, port = self.start_demo()
+                process, port = self.start_camera()
                 response, boundary = self.open_stream(port)
                 self.read_frame(response, boundary)
                 process.send_signal(signum)
@@ -289,7 +298,7 @@ class CameraServerTests(unittest.TestCase):
                 self.assertIn(diagnostic, result.stderr.splitlines()[-1])
 
     def test_v4l2_configures_only_selected_device_and_releases_after_read_failure(self):
-        from scripts.lite3_camera_server import LatestFrame, capture, parse_args
+        from src.lite3_camera_server import LatestFrame, capture, parse_args
 
         device = "/dev/v4l/by-id/usb-Intel_RealSense-video-index0"
         options = parse_args([
@@ -326,7 +335,7 @@ class CameraServerTests(unittest.TestCase):
         self.assertIsNone(frame)
 
     def test_v4l2_releases_device_when_open_fails(self):
-        from scripts.lite3_camera_server import LatestFrame, capture, parse_args
+        from src.lite3_camera_server import LatestFrame, capture, parse_args
 
         options = parse_args(["--source", "v4l2", "--device", "/dev/video4"])
         camera = Mock()
@@ -346,7 +355,7 @@ class CameraServerTests(unittest.TestCase):
 
     def buffered_server(self, stale_after=2):
         try:
-            from scripts.lite3_camera_server import CameraHTTPServer, LatestFrame
+            from src.lite3_camera_server import CameraHTTPServer, LatestFrame
         except ModuleNotFoundError as failure:
             self.fail(str(failure))
 

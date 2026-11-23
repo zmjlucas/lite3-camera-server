@@ -15,7 +15,7 @@ import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.lite3_camera_server import ASSET_DIR, PAGE
+from src.lite3_camera_server import PAGE
 
 
 def main():
@@ -24,7 +24,7 @@ def main():
     args = parser.parse_args()
     observations = queue.Queue()
     requests = []
-    frame = (ASSET_DIR / "demo" / "frame-01.jpg").read_bytes()
+    frame = (Path(__file__).resolve().parent / "fixtures" / "camera-frame.jpg").read_bytes()
     # Observe the page with its network requests and image decoder unchanged.
     observer = (Path(__file__).resolve().parent / "fixtures" / "browser_observer.html").read_text(encoding="utf-8")
     page = (PAGE.replace("__SOURCE_LABEL__", "RealSense") + observer).encode()

@@ -25,4 +25,4 @@ body:
     id: logs
     attributes:
       label: Logs and test conditions
-      description: Include relevant errors or /healthz output. State whether you used the local demo, a simulated device, or a real camera.
+      description: Include relevant errors or /healthz output. State whether the issue occurred in an offline test or with a real camera.

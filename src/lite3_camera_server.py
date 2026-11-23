@@ -3,7 +3,6 @@
 
 import argparse
 import contextlib
-import itertools
 import json
 from pathlib import Path
 import re
@@ -18,9 +17,8 @@ from socketserver import TCPServer, ThreadingMixIn
 
 LOOPBACK = "127.0.0.1"
 BOUNDARY = b"--frame\r\n"
-SOURCE_LABELS = {"demo": "Synthetic demo", "realsense": "RealSense", "v4l2": "V4L2 RGB"}
+SOURCE_LABELS = {"realsense": "RealSense", "v4l2": "V4L2 RGB"}
 
-ASSET_DIR = Path(__file__).resolve().parent / "assets"
 PAGE = (Path(__file__).resolve().parent / "web" / "camera.html").read_text(encoding="utf-8")
 
 
@@ -167,18 +165,6 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"--frame--\r\n")
 
 
-def demo_frames(options, stop):
-    frames = [(ASSET_DIR / "demo" / "frame-{:02d}.jpg".format(index)).read_bytes()
-              for index in range(1, 5)]
-    animation = frames + frames[-2:0:-1]
-    frames_per_step = max(1, options.fps // 4)
-    for index in itertools.count():
-        if stop.is_set():
-            break
-        yield animation[(index // frames_per_step) % len(animation)]
-        stop.wait(1.0 / options.fps)
-
-
 def _report_capture_error(frames, message):
     if frames.fail(message):
         print(message, file=sys.stderr, flush=True)
@@ -274,9 +260,7 @@ def v4l2_frames(options, stop):
 
 
 def capture(options, frames, stop):
-    if options.source == "demo":
-        source = demo_frames(options, stop)
-    elif options.source == "v4l2":
+    if options.source == "v4l2":
         source = v4l2_frames(options, stop)
     else:
         source = realsense_frames(options, frames, stop)

@@ -17,7 +17,7 @@ import webbrowser
 
 SERVER = Path(__file__).resolve().with_name("lite3_camera_server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
-SERVER_BUNDLE = (SERVER, SERVER.parent / "web", SERVER.parent / "assets")
+SERVER_BUNDLE = (SERVER, SERVER.parent / "web")
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
 ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")
@@ -239,22 +239,19 @@ def parser():
     commands = result.add_subparsers(dest="command", required=True)
     for name, help_text in (("doctor", "check the host environment through SSH without changes"),
                             ("deploy", "copy the camera server to the perception host"),
-                            ("view", "start the remote camera server and SSH tunnel"),
-                            ("demo", "show synthetic frames locally without a robot")):
+                            ("view", "start the remote camera server and SSH tunnel")):
         command = commands.add_parser(name, help=help_text)
-        if name != "demo":
-            command.add_argument("target", type=target, help="SSH alias or user@perception-host")
-            routing = command.add_mutually_exclusive_group()
-            routing.add_argument("--jump", type=target,
-                                 help="set the SSH jump host (default: automatic selection on macOS for 192.168.1.*)")
-            routing.add_argument("--direct", action="store_true",
-                                 help="use the existing SSH configuration without automatic route selection")
+        command.add_argument("target", type=target, help="SSH alias or user@perception-host")
+        routing = command.add_mutually_exclusive_group()
+        routing.add_argument("--jump", type=target,
+                             help="set the SSH jump host (default: automatic selection on macOS for 192.168.1.*)")
+        routing.add_argument("--direct", action="store_true",
+                             help="use the existing SSH configuration without automatic route selection")
         command.add_argument("--dry-run", action="store_true",
                              help="print commands without a connection. The launcher can read local routes.")
-        if name in ("view", "demo"):
+        if name == "view":
             command.add_argument("--local-port", type=bounded_int(1, 65535), default=18080)
             command.add_argument("--no-open", action="store_true", help="do not open a browser automatically")
-        if name == "view":
             command.add_argument("--backend", choices=("ros", "realsense", "v4l2"), default="ros")
             command.add_argument("--remote-port", type=bounded_int(1, 65535), default=8080)
             command.add_argument("--ros-setup", help="absolute path to the ROS or workspace setup.bash on the perception host")
@@ -286,7 +283,7 @@ def main(argv=None):
         if args.ros_setup and not args.ros_setup.startswith("/"):
             cli.error("--ros-setup must be an absolute path on the perception host")
     try:
-        jump = resolve_jump(args) if args.command != "demo" else None
+        jump = resolve_jump(args)
         if args.command == "doctor":
             diagnostic = remote_shell("run_doctor.sh", remote_source("camera_doctor.py"),
                                       remote_source("diagnose_ros.sh"), remote_source("probe_python_module.py"))
@@ -308,15 +305,12 @@ def main(argv=None):
                         return code
             return 0
         url = "http://127.0.0.1:{}/".format(args.local_port)
-        if args.command == "demo":
-            command = [sys.executable, str(SERVER), "--source", "demo", "--port", str(args.local_port)]
-        else:
-            if args.backend == "ros" and args.topic:
-                url += "stream_viewer?" + urlencode({"topic": args.topic, "type": "mjpeg", "width": 640, "height": 480, "quality": 70}, safe="/")
-            remote = ros_script(args) if args.backend == "ros" else real_script(args)
-            command = ["ssh"] + ssh_options(jump) + ["-tt", "-o", "ExitOnForwardFailure=yes", "-L",
-                       "127.0.0.1:{}:127.0.0.1:{}".format(args.local_port, args.remote_port),
-                       args.target, remote]
+        if args.backend == "ros" and args.topic:
+            url += "stream_viewer?" + urlencode({"topic": args.topic, "type": "mjpeg", "width": 640, "height": 480, "quality": 70}, safe="/")
+        remote = ros_script(args) if args.backend == "ros" else real_script(args)
+        command = ["ssh"] + ssh_options(jump) + ["-tt", "-o", "ExitOnForwardFailure=yes", "-L",
+                   "127.0.0.1:{}:127.0.0.1:{}".format(args.local_port, args.remote_port),
+                   args.target, remote]
         if args.dry_run:
             show_command(command)
             print("Viewer: " + url)

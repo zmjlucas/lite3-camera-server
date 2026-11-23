@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts/lite3_camera.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "src/lite3_camera.py"
 TARGET = "ysc@192.168.1.103"
 GATEWAY = "192.168.2.1"
 
@@ -255,8 +255,10 @@ class CameraRoutingTest(unittest.TestCase):
                 self.assertEqual(self.route_queries, [])
                 self.assertEqual(self.hardware_queries, [])
 
-    def test_demo_never_inspects_robot_routes(self):
-        self.run_cli("demo", "--dry-run")
+    def test_removed_command_is_rejected_before_route_lookup(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.run_cli("demo", "--dry-run")
+        self.assertEqual(caught.exception.code, 2)
         self.assertEqual(self.route_queries, [])
         self.assertEqual(self.hardware_queries, [])
         self.assertEqual(self.remote_commands, [])
