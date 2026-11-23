@@ -12,12 +12,13 @@ help:
 check: syntax test
 
 syntax:
-	$(PYTHON) -c 'import ast; from pathlib import Path; [ast.parse(path.read_text(), feature_version=(3, 8)) for folder in ("scripts", "tests") for path in Path(folder).glob("*.py")]; print("PASS: Python 3.8 syntax for scripts and tests")'
+	$(PYTHON) -c 'import ast; from pathlib import Path; [ast.parse(path.read_text(), feature_version=(3, 8)) for folder in ("scripts", "tests") for path in Path(folder).rglob("*.py")]; print("PASS: Python 3.8 syntax for scripts and tests")'
+	@for script in scripts/remote/*.sh tests/fixtures/*.sh; do bash -n "$$script" || exit; done
 
 # Python 3.13+ no longer documents support for the Python 3.6 grammar.
 # CI runs this check with Python 3.8.
 syntax-legacy:
-	$(PYTHON) -c 'import ast, sys; from pathlib import Path; sys.version_info < (3, 13) or sys.exit("Use Python 3.8-3.12 to check Python 3.6 syntax"); ast.parse(Path("scripts/lite3_camera_server.py").read_text(), feature_version=(3, 6)); print("PASS: server Python 3.6 syntax. Runtime operation remains unverified.")'
+	$(PYTHON) -c 'import ast, sys; from pathlib import Path; sys.version_info < (3, 13) or sys.exit("Use Python 3.8-3.12 to check Python 3.6 syntax"); [ast.parse(path.read_text(), feature_version=(3, 6)) for path in [Path("scripts/lite3_camera_server.py"), *Path("scripts/remote").glob("*.py")]]; print("PASS: server and remote helper Python 3.6 syntax. Runtime operation remains unverified.")'
 
 test:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover -s tests -v

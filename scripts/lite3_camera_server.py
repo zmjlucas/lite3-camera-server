@@ -2,10 +2,10 @@
 """Serve Lite3 camera frames on the loopback address. Use an SSH tunnel for remote access."""
 
 import argparse
-import base64
 import contextlib
 import itertools
 import json
+from pathlib import Path
 import re
 import signal
 import socket
@@ -20,202 +20,8 @@ LOOPBACK = "127.0.0.1"
 BOUNDARY = b"--frame\r\n"
 SOURCE_LABELS = {"demo": "Synthetic demo", "realsense": "RealSense", "v4l2": "V4L2 RGB"}
 
-# Four 160 x 120 frames show a test pattern that moves.
-# The demo needs no camera or JPEG encoder.
-DEMO_JPEGS = (
-        "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"
-        "SN5cunOTjFRcnjtf9yZepU1Xto1qbUlH3k4vKcX8f2NbQr1Lept0pOMuzJlOPHe/rK1SxhZyp+zlJqeeEvhj/p+6RJqv"
-        "OOeDjl8/9mLcXNa5knWm5NcFwxgztJotbVZ54+6v17xeHb+OV6RxjDXLlRiorMXhLHFxTZrTN1q4jdatc1YY2XLZTTym"
-        "ksZz+uMmEazj1ziYACqAAomACCgAKAAAmACCgAKN30f6QxsaStbtN0U/cnFcYZfHPeuLff8AP4dIrayvV7S3qRlFPDdG"
-        "SayfPAcXFxlhK+huytLZOrWniEe11JJRRptc6QU5UalnY4aeYTqYWzs47I/tnl3nMgTH1JhImADpooACiYAIKAAomACA"
-        "AAKA3vWy+8q29MvuOtl95Vt6Zfcm7453fHPA33W+/wDJtvTL+Q633/k23pl/Ibvi7vjSg3vWy+8q29MvuOtl95Vt6Zfc"
-        "bvibvjngZO/VfDDkxv1Xww5MrpIGRvlTujyG+VO6PIowwZO/VfDDkxv1Xww5MgkDI3yp3R5DfKndHkUYYMnfqvhhyY36"
-        "r4YcmQSABQAAEwAQUABRMAEFAAUTABBQAFEwAQUABRMAEAAAUABRMAEFAAUTABBQAFEwAQUABRMAEFAAUf/Z",
-        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABIMDRANCxIQDhAUExIVGywdGxgYGzYnKSAsQDlEQz85Pj1HUGZXR0thTT0+"
-        "WXlaYWltcnNyRVV9hnxvhWZwcm7/2wBDARMUFBsXGzQdHTRuST5Jbm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5u"
-        "bm5ubm5ubm5ubm5ubm5ubm5ubm7/wAARCAB4AKADASIAAhEBAxEB/8QAGwABAQADAQEBAAAAAAAAAAAAAAMEBQYCBwH/"
-        "xAA0EAACAQMBAwkHBAMAAAAAAAAAAQIDBBEFEhYhBhMUMVFTkZLRIkFScYGx0iNCYfCh4fH/xAAYAQEBAQEBAAAAAAAA"
-        "AAAAAAAAAQMCBP/EABwRAQEAAwEBAQEAAAAAAAAAAAABAhFRMQMhQf/aAAwDAQACEQMRAD8A5gAGjNMAEFAAUTABBQAF"
-        "EwAQUABRMAEFAAUTABAAAFAAUTABBQAFEwAQUABRMAEFAAUTABBQAFAAATABBQAFEwAQUABR4hGU5qEIuUpPCSWW2bmj"
-        "yU1GrBufM0XnGzOeX8+CZv8ARdMp6PYOtcQXSZL9Rp5ws8Ir/H1+gq6nWnL9PFNdmMmdyv8AGWX0140tXkrqEKblGVGo"
-        "1+2M3l+KSNRXoVLatKjWg4VIPDizsKepV4yzNqa7GkvsXvbWjrenNbKVWOdiT4bEvn2dQmVnqY/TbgAeqtOdGrOlUWJw"
-        "k4yWeprrPJ22UABRMAEAAAUABRMAEFAAUTMnTYxnqdrCcVKMq0E01lNbSMYraVujXdGvs7XNTjPZzjOHnBB3esSajSjn"
-        "g22/79TH020jeXLpzk4xUXJ463/cmXqVNV7aNam1JR9pOLynF+/7GtoV6lvU26UnGXVkynjx339ZWqWMLOVPm5SannhL"
-        "3Y/6fukSarzjng45fj/sxbi5rXMk603JrguGMGdpNFrarPPH2V/PaL4e38cryjjGGuXKjFRWYvCWOLimzWmbrVxG61a5"
-        "qwxsuWymnlNJYzn+cZMI1nj1zxMABVAAUAABMAEFAAUTABBQAFG75P8AKGNjSVrdpuin7E4rjDL457Vxb7fn7ukVtZXq"
-        "5y3qRlFPDdGSayfPAcXFxlhK+huytLZOrWniEet1JJRRptc5QU5UalnY4aeYTqYWzs46o/bPh2nMgTHqTCRMAHTRQAFE"
-        "wAQAABQG93svu6tvLL1G9l93Vt5ZepN3jnd454G+3vv+5tvLL8hvff8Ac23ll+Q3eLu8aUG93svu6tvLL1G9l93Vt5Ze"
-        "o3eJu8c8Dfb33/c23ll+Q3vv+5tvLL8hu8Xd40oN7vZfd1beWXqN7L7urbyy9Ru8Td454GT06r8MPBjp1X4YeDK6SBkd"
-        "MqdkfAdMqdkfAowwZPTqvww8GOnVfhh4MgkACgAAJgAgoACiYAIKAAomACCgAKJgAgoACiYAIAAAoACiYAIKAAomACCg"
-        "AKJgAgoACiYAIKAAo//Z",
-        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABIMDRANCxIQDhAUExIVGywdGxgYGzYnKSAsQDlEQz85Pj1HUGZXR0thTT0+"
-        "WXlaYWltcnNyRVV9hnxvhWZwcm7/2wBDARMUFBsXGzQdHTRuST5Jbm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5ubm5u"
-        "bm5ubm5ubm5ubm5ubm5ubm5ubm7/wAARCAB4AKADASIAAhEBAxEB/8QAGwABAQEBAQEBAQAAAAAAAAAAAAMFBgQCBwH/"
-        "xAA0EAACAQMBBQQIBgMAAAAAAAAAAQIDBBEFEhYhU5IGMVHRExQiQXGBkdIjQlJhsfCh4fH/xAAYAQEBAQEBAAAAAAAA"
-        "AAAAAAAAAQMCBP/EABwRAQEAAwEBAQEAAAAAAAAAAAABAhFRMQMhQf/aAAwDAQACEQMRAD8A5gAGjNMAEFAAUTABBQAF"
-        "EwAQUABRMAEFAAUTABAAAFAAUTABBQAFEwAQUABRMAEFAAUTABBQAFAAATABBQAFEwAQUABRMAEFAAUfEIynNQhFylJ4"
-        "SSy2zZo9lNRqwbn6Gi842Zzy/jwTN/RdMp6PYOtcQXrMl+I084WeEV/j5/IVdTrTl+HimvDGTO5X+Msvprxi1eyuoQpu"
-        "UZUajX5YzeX9UkZFehUtq0qNaDhUg8OLOwp6lXjLM2prwaS/gve2tHW9Oa2Uqsc7Enw2JfHw7hMrPUx+m3AA+qtOdGrO"
-        "lUWJwk4yWe5rvPk7bAAAoACiYAIKAAomACCgAKJnp02MZ6nawnFSjKtBNNZTW0jzFbSt6td0a+zteinGeznGcPOCDu9Y"
-        "k1GlHPBtt/35nn020jeXLpzk4xUXJ473/cnr1Kmq9tGtTako+0nF5Ti/f/Bm0K9S3qbdKTjLuyZTx477+vVqljCzlT9H"
-        "KTU88Je7H/T+6RJqvOOeDjl/X/Z5bi5rXMk603JrguGMHu0mi1tVnnj7K/fxF8Pb+OV7RxjDXLlRiorMXhLHFxTZmnt1"
-        "q4jdatc1YY2XLZTTymksZz++MniNZ49c8AAVUwAQUABRMAEFAAUTABBQAFG32f7QxsaStbtN0U/YnFcYZfHPiuLfj8fd"
-        "0itrK9XpLepGUU8N0ZJrJ+eA4uLjLCV+huytLZOrWniEe91JJRRja52gpyo1LOxw08wnUwtnZx3R/jP08TmQJj1JhImA"
-        "DpoAACgN3ey+5Vt0y8xvZfcq26ZeZN3jnd454G9vff8AJtumX3De+/5Nt0y+4bvF3eMUG7vZfcq26ZeY3svuVbdMvMbv"
-        "E3eOeBvb33/JtumX3De+/wCTbdMvuG7xd3jFBu72X3KtumXmN7L7lW3TLzG7xN3jngb299/ybbpl9w3vv+TbdMvuG7xd"
-        "3jFBu72X3KtumXmN7L7lW3TLzG7xN3jngen16r+mH0Y9eq/ph9GV0kACgAAJgAgoACiYAIKAAomACCgAKJgAgoACiYAI"
-        "AAAoACiYAIKAAomACCgAKJgAgoACiYAIKAAo/9k=",
-)
-
-PAGE = r"""<!doctype html>
-<html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lite3 camera</title>
-<style>
-  :root { color-scheme: dark; font-family: system-ui, sans-serif; }
-  body { margin: 0; color: #e7eef3; background: #101822; }
-  main { max-width: 880px; margin: 0 auto; padding: 2rem 1rem; }
-  header { display: flex; flex-wrap: wrap; justify-content: space-between;
-           align-items: center; gap: .75rem; margin-bottom: 1rem; }
-  h1 { margin: 0; font-size: 1.75rem; }
-  .source { color: #a8e9c5; background: #1b342f; padding: .35rem .65rem;
-            border-radius: .35rem; }
-  figure { margin: 0; display: grid; place-items: center; min-height: 15rem;
-           background: #192633; border: 1px solid #364759; border-radius: .6rem;
-           overflow: hidden; }
-  img { width: 100%; max-height: 75vh; object-fit: contain; }
-  #placeholder { color: #a6b8c7; padding: 1rem; text-align: center; }
-  footer { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; }
-  a { color: #a8e9c5; white-space: nowrap; }
-</style>
-<main>
-<header><h1>Lite3 camera</h1><span class="source">__SOURCE_LABEL__</span></header>
-<figure>
-  <img id="stream" alt="__SOURCE_LABEL__ video stream" hidden>
-  <p id="placeholder">No video yet</p>
-</figure>
-<footer>
-  <p id="status" role="status">Connection pending</p>
-  <a id="snapshot" href="/snapshot.jpg" hidden>JPEG snapshot</a>
-</footer>
-<noscript><p>To view video, enable JavaScript. You can also open a <a href="/snapshot.jpg">JPEG snapshot</a>.</p></noscript>
-</main>
-<script>
-const image = document.getElementById('stream');
-const statusText = document.getElementById('status');
-const placeholder = document.getElementById('placeholder');
-const snapshot = document.getElementById('snapshot');
-let currentFrameURL;
-function showNoVideo(message) {
-  image.hidden = true;
-  image.removeAttribute('src');
-  if (currentFrameURL) URL.revokeObjectURL(currentFrameURL);
-  currentFrameURL = null;
-  placeholder.hidden = false;
-  snapshot.hidden = true;
-  statusText.textContent = message;
-}
-// Read the response directly. A native <img> MJPEG stream can keep its last frame after EOF.
-// Mark video as live only after a new frame arrives and the decoder reads it.
-async function streamVideo() {
-  const controller = new AbortController();
-  let timeout;
-  function frameDeadline() {
-    clearTimeout(timeout);
-    timeout = setTimeout(() => controller.abort(), 2500);
-  }
-  frameDeadline();
-  try {
-    const response = await fetch('/stream.mjpg', {cache: 'no-store', signal: controller.signal});
-    if (!response.ok) {
-      const health = await response.json();
-      throw new Error(health.error || 'No frame received yet');
-    }
-    const reader = response.body.getReader();
-    let buffer = new Uint8Array(0);
-    const decoder = new TextDecoder();
-    while (true) {
-      const {value, done} = await reader.read();
-      if (done) throw new Error('Video ended. The viewer will reconnect.');
-      const combined = new Uint8Array(buffer.length + value.length);
-      combined.set(buffer);
-      combined.set(value, buffer.length);
-      buffer = combined;
-      if (buffer.length > 16 * 1024 * 1024) throw new Error('The video frame is too large');
-      let latest;
-      while (true) {
-        let end = -1;
-        for (let i = 0; i + 3 < buffer.length; i++) {
-          if (buffer[i] === 13 && buffer[i+1] === 10 && buffer[i+2] === 13 && buffer[i+3] === 10) {
-            end = i + 4;
-            break;
-          }
-        }
-        if (end < 0) break;
-        const match = /Content-Length:\s*(\d+)/i.exec(decoder.decode(buffer.subarray(0, end)));
-        const size = match ? Number(match[1]) : 0;
-        if (!size || size > 8 * 1024 * 1024) throw new Error('Invalid video frame');
-        if (buffer.length < end + size + 2) break;
-        latest = buffer.slice(end, end + size);
-        buffer = buffer.slice(end + size + 2);
-      }
-      if (!latest) continue;
-      const nextURL = URL.createObjectURL(new Blob([latest], {type: 'image/jpeg'}));
-      const decoded = new Image();
-      decoded.src = nextURL;
-      try {
-        await decoded.decode();
-        if (controller.signal.aborted) throw new Error('Video timed out. The viewer will reconnect.');
-      } catch (error) {
-        URL.revokeObjectURL(nextURL);
-        throw error;
-      }
-      image.src = nextURL;
-      if (currentFrameURL) URL.revokeObjectURL(currentFrameURL);
-      currentFrameURL = nextURL;
-      image.hidden = false;
-      placeholder.hidden = true;
-      snapshot.hidden = false;
-      statusText.textContent = '__SOURCE_LABEL__' === 'Synthetic demo' ? 'Demo live' : 'Live';
-      frameDeadline();
-    }
-  } catch (error) {
-    showNoVideo(error.name === 'AbortError' ? 'Video timed out. The viewer will reconnect.' : error.message);
-  } finally {
-    clearTimeout(timeout);
-    controller.abort();
-    setTimeout(streamVideo, 800);
-  }
-}
-streamVideo();
-</script>
-</html>
-"""
+ASSET_DIR = Path(__file__).resolve().parent / "assets"
+PAGE = (Path(__file__).resolve().parent / "web" / "camera.html").read_text(encoding="utf-8")
 
 
 class LatestFrame:
@@ -362,7 +168,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
 
 
 def demo_frames(options, stop):
-    frames = [base64.b64decode(jpeg) for jpeg in DEMO_JPEGS]
+    frames = [(ASSET_DIR / "demo" / "frame-{:02d}.jpg".format(index)).read_bytes()
+              for index in range(1, 5)]
     animation = frames + frames[-2:0:-1]
     frames_per_step = max(1, options.fps // 4)
     for index in itertools.count():

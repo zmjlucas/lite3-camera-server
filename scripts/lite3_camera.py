@@ -16,46 +16,12 @@ import webbrowser
 
 
 SERVER = Path(__file__).resolve().with_name("lite3_camera_server.py")
-REMOTE_SERVER = '"$HOME/robo-comp-camera/lite3_camera_server.py"'
+REMOTE_SCRIPTS = SERVER.parent / "remote"
+SERVER_BUNDLE = (SERVER, SERVER.parent / "web", SERVER.parent / "assets")
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
 ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")
 ROBOT_GATEWAY = "192.168.2.1"
-
-# Only doctor runs this code on the perception host. It does not open a camera.
-DOCTOR = r'''
-import glob, json, os, platform, shlex, subprocess, sys
-def check(label, argv):
-    print("\n" + label, flush=True)
-    try:
-        result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                universal_newlines=True, timeout=10)
-        print(result.stdout[:16000].strip() or "(no output)", flush=True)
-        print("exit=" + str(result.returncode), flush=True)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(str(exc), flush=True)
-print("Host: " + platform.platform(), flush=True)
-print("Python: " + sys.version.split()[0], flush=True)
-check("OS", ["cat", "/etc/os-release"])
-for module in ("numpy", "cv2", "pyrealsense2"):
-    check("Python binding: " + module, [sys.executable, "-c",
-          "import " + module + "; print(getattr(" + module + ", '__version__', 'import OK'))"])
-print("Video device nodes: " + json.dumps(glob.glob("/dev/video*") + glob.glob("/dev/v4l/by-id/*")), flush=True)
-check("Camera service status", ["systemctl", "is-active", "realsense", "realsense_ros2"])
-setups = sorted(glob.glob("/opt/ros/*/setup.bash"))
-print("ROS setup files: " + json.dumps(setups), flush=True)
-for setup in setups:
-    prefix = "source " + shlex.quote(setup) + "; "
-    check("ROS environment: " + setup, ["bash", "-lc", prefix +
-          "printf 'ROS_VERSION=%s ROS_DISTRO=%s ROS_MASTER_URI=%s ROS_DOMAIN_ID=%s\\n' "
-          '"$ROS_VERSION" "$ROS_DISTRO" "$ROS_MASTER_URI" "$ROS_DOMAIN_ID"'])
-    check("web_video_server: " + setup, ["bash", "-lc", prefix +
-          'if [ "$ROS_VERSION" = 1 ]; then exec rospack find web_video_server; '
-          'else exec ros2 pkg prefix web_video_server; fi'])
-    check("ROS topics (check the image topic name): " + setup, ["bash", "-lc", prefix +
-          'if [ "$ROS_VERSION" = 1 ]; then exec rostopic list -v; '
-          'else exec ros2 topic list -t --no-daemon; fi'])
-'''
 
 
 def target(value):
@@ -79,8 +45,16 @@ def bounded_int(low, high):
     return parse
 
 
-def shell_command(script):
-    return "bash -lc " + shlex.quote(script)
+def quoted_command(arguments):
+    return " ".join(shlex.quote(str(argument)) for argument in arguments)
+
+
+def remote_source(name):
+    return (REMOTE_SCRIPTS / name).read_text(encoding="utf-8")
+
+
+def remote_shell(name, *arguments):
+    return quoted_command(["bash", "-lc", remote_source(name), "lite3-camera", *arguments])
 
 
 def macos_route(address):
@@ -180,57 +154,17 @@ def ssh_options(jump=None):
     return SSH_OPTIONS + (["-J", jump] if jump else [])
 
 
-def ssh_command(host, script, jump=None):
-    return ["ssh"] + ssh_options(jump) + [host, shell_command(script)]
+def ssh_command(host, command, jump=None):
+    return ["ssh"] + ssh_options(jump) + [host, command]
 
 
 def show_command(command):
     print(" ".join(shlex.quote(arg) for arg in command), flush=True)
 
 
-def remote_preflight(port):
-    # Check the port before startup. An existing server must not pass this session's readiness check.
-    code = ("import socket, sys\n"
-            "s=socket.socket()\n"
-            "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
-            "try:\n"
-            "    s.bind(('127.0.0.1', {})); s.listen(1)\n".format(port) +
-            "except OSError as exc:\n"
-            "    sys.exit('Cannot use the remote camera port. Select another port with --remote-port: ' + str(exc))\n"
-            "finally:\n"
-            "    s.close()")
-    return "python3 -c " + shlex.quote(code) + "\n"
-
-
 def ros_script(args):
-    if args.ros_setup:
-        setup = "setup=" + shlex.quote(args.ros_setup)
-    else:
-        setup = '''shopt -s nullglob
-setups=(/opt/ros/*/setup.bash)
-if [ "${#setups[@]}" != 1 ]; then
-  printf '%s\n' 'Cannot select the ROS environment. Use --ros-setup /absolute/path/setup.bash.' >&2
-  exit 2
-fi
-setup="${setups[0]}"'''
-    return "set -e\n" + remote_preflight(args.remote_port) + setup + '''
-if [ ! -r "$setup" ]; then printf 'Cannot read the ROS setup file: %s\n' "$setup" >&2; exit 2; fi
-source "$setup"
-case "$ROS_VERSION" in
-  1)
-    rospack find web_video_server >/dev/null || {
-      printf '%s\n' 'This ROS 1 environment has no web_video_server. See CAMERA_STREAM.md.' >&2
-      exit 2
-    }
-    exec rosrun web_video_server web_video_server _address:=127.0.0.1 _port:=''' + str(args.remote_port) + ''' __name:=lite3_camera_view_$$ ;;
-  2)
-    ros2 pkg prefix web_video_server >/dev/null || {
-      printf '%s\n' 'This ROS 2 environment has no web_video_server. See CAMERA_STREAM.md.' >&2
-      exit 2
-    }
-    exec ros2 run web_video_server web_video_server --ros-args -p address:=127.0.0.1 -p port:=''' + str(args.remote_port) + ''' -p default_qos_profile:=sensor_data ;;
-  *) printf '%s\n' 'ROS_VERSION must be 1 or 2 after you load the setup file.' >&2; exit 2 ;;
-esac'''
+    return remote_shell("view_ros.sh", args.remote_port, args.ros_setup or "",
+                        remote_source("check_camera_port.py"))
 
 
 def camera_options(args):
@@ -247,10 +181,8 @@ def camera_options(args):
 
 def real_script(args):
     options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args)
-    return ("set -e\n" + remote_preflight(args.remote_port) +
-            "if [ ! -f " + REMOTE_SERVER + " ]; then "
-            "printf '%s\\n' 'The camera server script is missing. Run the deploy command first.' >&2; exit 2; fi\n"
-            "exec python3 -u " + REMOTE_SERVER + " " + " ".join(shlex.quote(x) for x in options))
+    return remote_shell("view_camera.sh", remote_source("check_camera_port.py"),
+                        args.remote_port, *options)
 
 
 def run_foreground(command, url, open_browser):
@@ -356,14 +288,17 @@ def main(argv=None):
     try:
         jump = resolve_jump(args) if args.command != "demo" else None
         if args.command == "doctor":
-            command = ssh_command(args.target, "python3 - <<'LITE3_CAMERA_DOCTOR'\n" + DOCTOR + "\nLITE3_CAMERA_DOCTOR", jump)
+            diagnostic = remote_shell("run_doctor.sh", remote_source("camera_doctor.py"),
+                                      remote_source("diagnose_ros.sh"), remote_source("probe_python_module.py"))
+            command = ssh_command(args.target, diagnostic, jump)
             if args.dry_run:
                 show_command(command)
                 return 0
             return subprocess.call(command)
         if args.command == "deploy":
-            commands = [ssh_command(args.target, 'mkdir -p "$HOME/robo-comp-camera"', jump),
-                        ["scp"] + ssh_options(jump) + [str(SERVER), args.target + ":robo-comp-camera/lite3_camera_server.py"]]
+            commands = [ssh_command(args.target, remote_shell("prepare_deploy.sh"), jump),
+                        ["scp"] + ssh_options(jump) + ["-r"] + [str(path) for path in SERVER_BUNDLE] +
+                        [args.target + ":robo-comp-camera/"]]
             for command in commands:
                 if args.dry_run:
                     show_command(command)
@@ -381,7 +316,7 @@ def main(argv=None):
             remote = ros_script(args) if args.backend == "ros" else real_script(args)
             command = ["ssh"] + ssh_options(jump) + ["-tt", "-o", "ExitOnForwardFailure=yes", "-L",
                        "127.0.0.1:{}:127.0.0.1:{}".format(args.local_port, args.remote_port),
-                       args.target, shell_command(remote)]
+                       args.target, remote]
         if args.dry_run:
             show_command(command)
             print("Viewer: " + url)

@@ -96,7 +96,7 @@ python3 scripts/lite3_camera.py deploy ysc@192.168.1.103
 python3 scripts/lite3_camera.py view ysc@192.168.1.103 --backend realsense
 ```
 
-The `deploy` command uploads the server script to `~/robo-comp-camera/` on the perception host. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. To change these values, use `--width`, `--height`, `--fps`, and `--quality`. If multiple cameras are connected, use `--serial` to select one.
+The `deploy` command uploads the server script, viewer page, and demo assets to `~/robo-comp-camera/` on the perception host. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. To change these values, use `--width`, `--height`, `--fps`, and `--quality`. If multiple cameras are connected, use `--serial` to select one.
 
 To show a depth preview beside RGB, add `--depth`. The preview uses false colors. Do not use these colors as distance measurements.
 
@@ -127,7 +127,7 @@ python3 scripts/lite3_camera.py view ysc@192.168.1.103 --backend v4l2 --device /
 
 The launcher selects the connection path with the rules above. Set `--device` to a confirmed `/dev/videoN` or `/dev/v4l/by-id/name` path. Device numbers can change after a restart or a USB connection change. V4L2 mode provides RGB only. It does not support `--depth` or `--serial`.
 
-Use `--width`, `--height`, `--fps`, and `--quality` to request settings that the device supports. Check the actual image resolution and frame rate after the stream starts. See the [hardware record from 2026-11-20](CAMERA_HARDWARE_TEST_2026-11-20.md) for RGB capture, frame rate, browser display, and device release results.
+Use `--width`, `--height`, `--fps`, and `--quality` to request settings that the device supports. Check the actual image resolution and frame rate after the stream starts.
 
 ## Stop the preview and find faults
 
@@ -145,13 +145,13 @@ By default, `view` forwards the Mac's `127.0.0.1:18080` to the perception host's
 | The local page returns HTTP 502 | Check whether the browser proxy intercepts `127.0.0.1`. The launcher's readiness check bypasses proxies. Use `curl --noproxy '*' http://127.0.0.1:18080/healthz` to check the server. Alternatively, use `--no-proxy-server` only in a temporary Chrome test session. Keep the system proxy settings unchanged. |
 | Video is delayed or stops briefly | For RealSense or V4L2, try `--quality 55` or a lower supported resolution or frame rate. You can also repeat the test on the vendor's specified wired network. For RealSense, V4L2, and the demo, `/healthz` shows whether the server received a recent frame. |
 
-The local demo checks only the browser and video server on the Mac. The hardware record covers the measured RGB results. Depth preview and video delay require separate tests.
+The local demo checks only the browser and video server on the Mac. Depth preview and video delay require separate tests.
 
 ## Offline test record: 2026-11-20
 
 On that date, the Mac passed 32 unit tests and a separate Chrome test. Chrome decoded and displayed JPEG frames. It hid the last frame and reconnected after a normal stream end and a data transfer timeout. The tests covered jump hosts, V4L2 arguments, and readiness checks that bypass local proxies.
 
-The server passed a Python 3.6 syntax check. The launcher passed a Python 3.8 syntax check. The offline tests ran with Python 3.13 on the Mac. See the hardware record for the robot's Python version and results.
+The server passed a Python 3.6 syntax check. The launcher passed a Python 3.8 syntax check. The offline tests ran with Python 3.13 on the Mac.
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v

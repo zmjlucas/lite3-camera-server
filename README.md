@@ -19,7 +19,7 @@ python3 scripts/lite3_camera.py demo
 
 The browser opens `http://127.0.0.1:18080/` and shows synthetic frames at 160 x 120 pixels. To stop the demo, press Ctrl+C in the terminal. If no desktop is available, add `--no-open`.
 
-Run the scripts directly. You do not need `pip install`. See the [camera guide](scripts/CAMERA_STREAM.md) for all procedures.
+Run the scripts directly. You do not need `pip install`. See the [camera guide](docs/CAMERA_STREAM.md) for all procedures.
 
 ## Connect to a robot
 
@@ -46,7 +46,7 @@ On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces 
 
 To select a jump host manually, use `--jump ysc@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
 
-Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads only the server script to `~/robo-comp-camera/`.
+Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script, viewer page, and demo assets to `~/robo-comp-camera/`.
 
 The HTTP server and SSH tunnel bind to `127.0.0.1`. The default ports are `18080` on the client and `8080` on the perception host. The HTTP server has no separate authentication. Use it through the SSH tunnel.
 
@@ -79,11 +79,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 python3 tests/camera_browser_smoke.py
 ```
 
-CI runs the tests with multiple Python versions on Linux and with Python on macOS. A separate CI job runs the Chrome test. CI does not connect to a robot. See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution procedure.
+CI runs the tests with multiple Python versions on Linux and with Python on macOS. A separate CI job runs the Chrome test. CI does not connect to a robot.
 
 ## Test status and limits
 
-- The [hardware record from 2026-11-20](scripts/CAMERA_HARDWARE_TEST_2026-11-20.md) covers V4L2 RGB on one D435i and Jetson Xavier NX. It does not confirm other devices or backends.
 - RealSense `--depth` shows a depth preview with false colors. It does not give distance measurements. Depth preview, recovery after USB disconnection, extended Wi-Fi operation, and video delay still require hardware tests.
 - The separate `native-depth` helper backend is not implemented. Its four tests remain skipped. Skipped tests do not count as passed checks. After you implement this backend, remove the skip markers. All tests must pass.
 - The ROS page can keep the last frame after the publisher stops. Check the ROS topic frequency to confirm that new frames arrive.
@@ -91,9 +90,13 @@ CI runs the tests with multiple Python versions on Linux and with Python on macO
 ## Repository layout
 
 ```text
-scripts/       SSH launcher, camera server, user guide, and hardware record
-tests/         Unit tests and the optional Chrome test
-.github/       CI, dependency updates, and contribution templates
+scripts/         SSH launcher and camera server
+scripts/remote/  Remote diagnostic and startup helpers
+scripts/web/     Browser viewer page
+scripts/assets/  Synthetic JPEG frames for the local demo
+docs/            Camera usage guide
+tests/           Unit tests and the optional Chrome test
+.github/         CI, dependency updates, and contribution templates
 ```
 
 The project uses the MIT license. See [LICENSE](LICENSE).

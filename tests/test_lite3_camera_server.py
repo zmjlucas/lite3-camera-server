@@ -72,10 +72,9 @@ class CameraServerTests(unittest.TestCase):
 
     @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_serves_helper_jpeg_and_releases_child_on_signals(self):
-        from scripts.lite3_camera_server import DEMO_JPEGS
-        import base64
+        from scripts.lite3_camera_server import ASSET_DIR
 
-        jpeg = base64.b64decode(DEMO_JPEGS[0])
+        jpeg = (ASSET_DIR / "demo" / "frame-01.jpg").read_bytes()
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             with self.subTest(signum=signum):
                 helper = self.depth_helper(
@@ -119,10 +118,9 @@ class CameraServerTests(unittest.TestCase):
 
     @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_eof_and_timeout_hide_previously_published_frame(self):
-        from scripts.lite3_camera_server import DEMO_JPEGS
-        import base64
+        from scripts.lite3_camera_server import ASSET_DIR
 
-        jpeg = base64.b64decode(DEMO_JPEGS[0])
+        jpeg = (ASSET_DIR / "demo" / "frame-01.jpg").read_bytes()
         for after_frame, diagnostic in (("time.sleep(0.3)\n", "EOF"), ("time.sleep(10)\n", "timed out")):
             with self.subTest(diagnostic=diagnostic):
                 helper = self.depth_helper(
@@ -137,10 +135,13 @@ class CameraServerTests(unittest.TestCase):
                 self.assertEqual(self.request(port, "/snapshot.jpg")[0], 503)
 
     def start_server(self, source, *options):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
         process = subprocess.Popen(
             [sys.executable, "-S", str(SERVER_SCRIPT), "--source", source, "--port", "0", *options],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            cwd=directory.name,
         )
         self.addCleanup(self.stop_process, process)
         with selectors.DefaultSelector() as poller:

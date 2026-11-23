@@ -239,8 +239,9 @@ class CameraRoutingTest(unittest.TestCase):
     def test_dry_run_shows_resolved_jump_without_remote_execution(self):
         stdout, _ = self.run_cli("deploy", TARGET, "--dry-run")
         self.assertEqual(self.remote_commands, [])
-        for line in stdout.splitlines():
-            cmd = shlex.split(line)
+        tokens = shlex.split(stdout)
+        second_command = tokens.index("scp")
+        for cmd in (tokens[:second_command], tokens[second_command:]):
             self.assertIn("-J", cmd)
             self.assertEqual(cmd[cmd.index("-J") + 1], "ysc@192.168.2.1")
 

@@ -1,0 +1,6 @@
+<script>
+setInterval(() => fetch('/observe', {method: 'POST', body: JSON.stringify({
+  time: performance.now(), hidden: document.getElementById('stream').hidden,
+  width: document.getElementById('stream').naturalWidth,
+  status: document.getElementById('status').textContent})}), 100);
+</script>

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lite3 camera</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; color: #e7eef3; background: #101822; }
+  main { max-width: 880px; margin: 0 auto; padding: 2rem 1rem; }
+  header { display: flex; flex-wrap: wrap; justify-content: space-between;
+           align-items: center; gap: .75rem; margin-bottom: 1rem; }
+  h1 { margin: 0; font-size: 1.75rem; }
+  .source { color: #a8e9c5; background: #1b342f; padding: .35rem .65rem;
+            border-radius: .35rem; }
+  figure { margin: 0; display: grid; place-items: center; min-height: 15rem;
+           background: #192633; border: 1px solid #364759; border-radius: .6rem;
+           overflow: hidden; }
+  img { width: 100%; max-height: 75vh; object-fit: contain; }
+  #placeholder { color: #a6b8c7; padding: 1rem; text-align: center; }
+  footer { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; }
+  a { color: #a8e9c5; white-space: nowrap; }
+</style>
+<main>
+<header><h1>Lite3 camera</h1><span class="source">__SOURCE_LABEL__</span></header>
+<figure>
+  <img id="stream" alt="__SOURCE_LABEL__ video stream" hidden>
+  <p id="placeholder">No video yet</p>
+</figure>
+<footer>
+  <p id="status" role="status">Connection pending</p>
+  <a id="snapshot" href="/snapshot.jpg" hidden>JPEG snapshot</a>
+</footer>
+<noscript><p>To view video, enable JavaScript. You can also open a <a href="/snapshot.jpg">JPEG snapshot</a>.</p></noscript>
+</main>
+<script>
+const image = document.getElementById('stream');
+const statusText = document.getElementById('status');
+const placeholder = document.getElementById('placeholder');
+const snapshot = document.getElementById('snapshot');
+let currentFrameURL;
+function showNoVideo(message) {
+  image.hidden = true;
+  image.removeAttribute('src');
+  if (currentFrameURL) URL.revokeObjectURL(currentFrameURL);
+  currentFrameURL = null;
+  placeholder.hidden = false;
+  snapshot.hidden = true;
+  statusText.textContent = message;
+}
+// Read the response directly. A native <img> MJPEG stream can keep its last frame after EOF.
+// Mark video as live only after a new frame arrives and the decoder reads it.
+async function streamVideo() {
+  const controller = new AbortController();
+  let timeout;
+  function frameDeadline() {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => controller.abort(), 2500);
+  }
+  frameDeadline();
+  try {
+    const response = await fetch('/stream.mjpg', {cache: 'no-store', signal: controller.signal});
+    if (!response.ok) {
+      const health = await response.json();
+      throw new Error(health.error || 'No frame received yet');
+    }
+    const reader = response.body.getReader();
+    let buffer = new Uint8Array(0);
+    const decoder = new TextDecoder();
+    while (true) {
+      const {value, done} = await reader.read();
+      if (done) throw new Error('Video ended. The viewer will reconnect.');
+      const combined = new Uint8Array(buffer.length + value.length);
+      combined.set(buffer);
+      combined.set(value, buffer.length);
+      buffer = combined;
+      if (buffer.length > 16 * 1024 * 1024) throw new Error('The video frame is too large');
+      let latest;
+      while (true) {
+        let end = -1;
+        for (let i = 0; i + 3 < buffer.length; i++) {
+          if (buffer[i] === 13 && buffer[i+1] === 10 && buffer[i+2] === 13 && buffer[i+3] === 10) {
+            end = i + 4;
+            break;
+          }
+        }
+        if (end < 0) break;
+        const match = /Content-Length:\s*(\d+)/i.exec(decoder.decode(buffer.subarray(0, end)));
+        const size = match ? Number(match[1]) : 0;
+        if (!size || size > 8 * 1024 * 1024) throw new Error('Invalid video frame');
+        if (buffer.length < end + size + 2) break;
+        latest = buffer.slice(end, end + size);
+        buffer = buffer.slice(end + size + 2);
+      }
+      if (!latest) continue;
+      const nextURL = URL.createObjectURL(new Blob([latest], {type: 'image/jpeg'}));
+      const decoded = new Image();
+      decoded.src = nextURL;
+      try {
+        await decoded.decode();
+        if (controller.signal.aborted) throw new Error('Video timed out. The viewer will reconnect.');
+      } catch (error) {
+        URL.revokeObjectURL(nextURL);
+        throw error;
+      }
+      image.src = nextURL;
+      if (currentFrameURL) URL.revokeObjectURL(currentFrameURL);
+      currentFrameURL = nextURL;
+      image.hidden = false;
+      placeholder.hidden = true;
+      snapshot.hidden = false;
+      statusText.textContent = '__SOURCE_LABEL__' === 'Synthetic demo' ? 'Demo live' : 'Live';
+      frameDeadline();
+    }
+  } catch (error) {
+    showNoVideo(error.name === 'AbortError' ? 'Video timed out. The viewer will reconnect.' : error.message);
+  } finally {
+    clearTimeout(timeout);
+    controller.abort();
+    setTimeout(streamVideo, 800);
+  }
+}
+streamVideo();
+</script>
+</html>

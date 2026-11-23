@@ -97,7 +97,7 @@ class CameraCommandsTest(unittest.TestCase):
                             self.assertEqual(call.count("-J"), 1)
                             self.assertEqual(call[call.index("-J") + 1], jump)
                             destination = ("ysc@192.168.1.103" if call[0] == "ssh" else
-                                           "ysc@192.168.1.103:robo-comp-camera/lite3_camera_server.py")
+                                           "ysc@192.168.1.103:robo-comp-camera/")
                             self.assertLess(call.index("-J"), call.index(destination))
                         self.assertNotIn("StrictHostKeyChecking=no", call)
 
@@ -112,19 +112,29 @@ class CameraCommandsTest(unittest.TestCase):
                     self.assertIn("argument --jump", result.stderr)
         self.assertEqual(self.calls(), [])
 
-    def test_deploy_creates_directory_then_copies_only_camera_server(self):
+    def test_deploy_creates_directory_then_copies_server_and_runtime_assets(self):
         result = self.run_cli("deploy", "robot")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
         self.assertEqual([call[0] for call in calls], ["ssh", "scp"])
         self.assertIn("mkdir -p", calls[0][-1])
-        self.assertTrue(calls[1][-2].endswith("scripts/lite3_camera_server.py"))
-        self.assertEqual(calls[1][-1], "robot:robo-comp-camera/lite3_camera_server.py")
+        self.assertIn("-r", calls[1])
+        self.assertEqual(calls[1][-4:-1], [str(ROOT / "scripts/lite3_camera_server.py"),
+                                         str(ROOT / "scripts/web"), str(ROOT / "scripts/assets")])
+        self.assertEqual(calls[1][-1], "robot:robo-comp-camera/")
 
     def test_deploy_failure_prevents_copy(self):
         result = self.run_cli("deploy", "robot", exit_code=23)
         self.assertEqual(result.returncode, 23)
         self.assertEqual(len(self.calls()), 1)
+
+    def test_doctor_uses_login_environment_without_deploy(self):
+        import shlex
+        result = self.run_cli("doctor", "robot")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        command, = self.calls()
+        self.assertEqual(command[0], "ssh")
+        self.assertEqual(shlex.split(command[-1])[:2], ["bash", "-lc"])
 
     def test_view_uses_loopback_pty_and_preserves_ssh_verification(self):
         result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open", "--local-port", "18081", "--remote-port", "8081", "--serial", "abc; id")
@@ -138,8 +148,9 @@ class CameraCommandsTest(unittest.TestCase):
         import shlex
         remote = shlex.split(call[-1])
         self.assertEqual(remote[:2], ["bash", "-lc"])
-        self.assertIn("'abc; id'", remote[2])
-        self.assertNotIn("43893", remote[2])
+        self.assertEqual(remote[-2:], ["--serial", "abc; id"])
+        self.assertIn('"$@"', remote[2])
+        self.assertNotIn("43893", call[-1])
 
     def test_v4l2_view_forwards_explicit_device_and_capture_options(self):
         import shlex
@@ -150,9 +161,8 @@ class CameraCommandsTest(unittest.TestCase):
         call, = self.calls()
         remote = shlex.split(call[-1])
         self.assertEqual(remote[:2], ["bash", "-lc"])
-        capture = shlex.split(remote[2].splitlines()[-1])
-        self.assertEqual(capture[:4], ["exec", "python3", "-u", "$HOME/robo-comp-camera/lite3_camera_server.py"])
-        self.assertEqual(capture[4:], ["--source", "v4l2", "--port", "8081", "--width", "320",
+        self.assertEqual(remote[5], "8081")
+        self.assertEqual(remote[6:], ["--source", "v4l2", "--port", "8081", "--width", "320",
                                       "--height", "240", "--fps", "10", "--quality", "55",
                                       "--device", "/dev/video4"])
         self.assertNotIn("43893", remote[2])
@@ -213,10 +223,12 @@ class CameraCommandsTest(unittest.TestCase):
                 path.chmod(0o755)
             setup = self.directory / "setup with spaces.bash"
             import shlex
-            setup.write_text("export ROS_VERSION={}\nexport PATH={}:$PATH\n".format(version, shlex.quote(str(self.directory))))
+            template = (ROOT / "tests/fixtures/ros_setup.sh").read_text()
+            setup.write_text(template.replace("__ROS_VERSION__", str(version))
+                             .replace("__BIN_DIRECTORY__", shlex.quote(str(self.directory))))
             args = self.cli.parser().parse_args(["view", "robot", "--ros-setup", str(setup), "--remote-port", str(port)])
             # Run the remote shell string locally. All ROS commands use test substitutes.
-            result = subprocess.run(["/bin/sh", "-c", self.cli.shell_command(self.cli.ros_script(args))],
+            result = subprocess.run(["/bin/sh", "-c", self.cli.ros_script(args)],
                                     env=self.env, capture_output=True, text=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             actual = self.calls()[-1]
@@ -224,6 +236,20 @@ class CameraCommandsTest(unittest.TestCase):
                 self.assertRegex(actual[-1], r"^__name:=lite3_camera_view_[0-9]+$")
                 actual = actual[:-1]
             self.assertEqual(actual, [binary] + expected)
+
+    def test_ros_diagnostics_source_setup_without_passing_launcher_arguments(self):
+        import shlex
+        setup = self.directory / "setup with spaces.bash"
+        template = (ROOT / "tests/fixtures/ros_setup.sh").read_text()
+        for version in (1, 2):
+            with self.subTest(version=version):
+                setup.write_text(template.replace("__ROS_VERSION__", str(version))
+                                 .replace("__BIN_DIRECTORY__", shlex.quote(str(self.directory))))
+                command = self.cli.remote_shell("diagnose_ros.sh", str(setup), "environment")
+                result = subprocess.run(["/bin/sh", "-c", command], env=self.env,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("ROS_VERSION=" + str(version), result.stdout)
 
     def test_sigterm_stops_owned_ssh_process(self):
         import signal

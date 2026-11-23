@@ -4,7 +4,6 @@ Run locally: python3 tests/camera_browser_smoke.py
 The test uses a temporary Chrome profile and loopback addresses. It needs no robot or camera.
 """
 import argparse
-import base64
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,7 +15,7 @@ import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.lite3_camera_server import DEMO_JPEGS, PAGE
+from scripts.lite3_camera_server import ASSET_DIR, PAGE
 
 
 def main():
@@ -25,14 +24,9 @@ def main():
     args = parser.parse_args()
     observations = queue.Queue()
     requests = []
-    frame = base64.b64decode(DEMO_JPEGS[0])
+    frame = (ASSET_DIR / "demo" / "frame-01.jpg").read_bytes()
     # Observe the page with its network requests and image decoder unchanged.
-    observer = """<script>
-setInterval(() => fetch('/observe', {method: 'POST', body: JSON.stringify({
-  time: performance.now(), hidden: document.getElementById('stream').hidden,
-  width: document.getElementById('stream').naturalWidth,
-  status: document.getElementById('status').textContent})}), 100);
-</script>"""
+    observer = (Path(__file__).resolve().parent / "fixtures" / "browser_observer.html").read_text(encoding="utf-8")
     page = (PAGE.replace("__SOURCE_LABEL__", "RealSense") + observer).encode()
 
     class Handler(BaseHTTPRequestHandler):
