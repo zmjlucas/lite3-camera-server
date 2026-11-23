@@ -15,7 +15,7 @@ from urllib.request import ProxyHandler, build_opener
 import webbrowser
 
 
-SERVER = Path(__file__).resolve().with_name("lite3_camera_server.py")
+SERVER = Path(__file__).resolve().with_name("server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
 SERVER_BUNDLE = (SERVER, SERVER.parent / "web")
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
@@ -295,7 +295,7 @@ def main(argv=None):
         if args.command == "deploy":
             commands = [ssh_command(args.target, remote_shell("prepare_deploy.sh"), jump),
                         ["scp"] + ssh_options(jump) + ["-r"] + [str(path) for path in SERVER_BUNDLE] +
-                        [args.target + ":robo-comp-camera/"]]
+                        [args.target + ":lite3-camera-server/"]]
             for command in commands:
                 if args.dry_run:
                     show_command(command)

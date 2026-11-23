@@ -14,7 +14,7 @@ The launcher requires Python 3.8 or later. A robot connection also requires Open
 ```bash
 git clone https://github.com/zmjlucas/lite3-camera-server.git
 cd lite3-camera-server
-python3 src/lite3_camera.py --help
+python3 src/client.py --help
 ```
 
 Run the Python entry points in `src/` directly. You do not need `pip install`. See the [camera guide](docs/CAMERA_STREAM.md) for all procedures.
@@ -25,10 +25,10 @@ Replace the example address with your perception host. Before the first connecti
 
 ```bash
 # Check the host, dependencies, camera services, and ROS environment.
-python3 src/lite3_camera.py doctor ysc@192.168.1.103
+python3 src/client.py doctor ysc@192.168.1.103
 
 # Use an existing ROS image topic and a compatible web_video_server.
-python3 src/lite3_camera.py view ysc@192.168.1.103
+python3 src/client.py view ysc@192.168.1.103
 ```
 
 | Mode | Requirements on the perception host | Command |
@@ -43,7 +43,7 @@ On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces 
 
 To select a jump host manually, use `--jump ysc@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
 
-Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script and viewer page to `~/robo-comp-camera/`.
+Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script and viewer page to `~/lite3-camera-server/`.
 
 The HTTP server and SSH tunnel bind to `127.0.0.1`. The default ports are `18080` on the client and `8080` on the perception host. The HTTP server has no separate authentication. Use it through the SSH tunnel.
 

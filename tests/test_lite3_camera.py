@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "src/lite3_camera.py"
+SCRIPT = ROOT / "src/client.py"
 
 
 class CameraCommandsTest(unittest.TestCase):
@@ -97,7 +97,7 @@ class CameraCommandsTest(unittest.TestCase):
                             self.assertEqual(call.count("-J"), 1)
                             self.assertEqual(call[call.index("-J") + 1], jump)
                             destination = ("ysc@192.168.1.103" if call[0] == "ssh" else
-                                           "ysc@192.168.1.103:robo-comp-camera/")
+                                           "ysc@192.168.1.103:lite3-camera-server/")
                             self.assertLess(call.index("-J"), call.index(destination))
                         self.assertNotIn("StrictHostKeyChecking=no", call)
 
@@ -120,8 +120,8 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertIn("mkdir -p", calls[0][-1])
         self.assertIn("-r", calls[1])
         self.assertEqual(calls[1][calls[1].index("-r") + 1:-1],
-                         [str(ROOT / "src/lite3_camera_server.py"), str(ROOT / "src/web")])
-        self.assertEqual(calls[1][-1], "robot:robo-comp-camera/")
+                         [str(ROOT / "src/server.py"), str(ROOT / "src/web")])
+        self.assertEqual(calls[1][-1], "robot:lite3-camera-server/")
 
     def test_deploy_failure_prevents_copy(self):
         result = self.run_cli("deploy", "robot", exit_code=23)
