@@ -22,20 +22,42 @@ python3 scripts/lite3_camera.py demo
 python3 scripts/lite3_camera.py doctor ysc@192.168.1.103
 ```
 
-`doctor` 读取系统、Python 依赖、ROS 环境、相机服务状态和视频设备信息。三个远程子命令 `doctor`、`deploy` 和 `view` 都支持 `--dry-run`，只打印将执行的命令。
+`doctor` 读取系统、Python 依赖、ROS 环境、相机服务状态和视频设备信息。三个远程子命令 `doctor`、`deploy` 和 `view` 都支持 `--dry-run`：读取本地路由并打印选择结果与命令，不登录或探测机器人。
 
-### 通过机器人 Wi-Fi 跳转连接
+### 自动适配狗 Wi-Fi 与手机 USB 热点
 
-若 Mac 接入机器狗的 `192.168.2.*` Wi-Fi，但感知主机在内部 `192.168.1.*` 网段，可通过已确认能访问感知主机的机器人 SSH 主机跳转。例如，Mac 的 `192.168.1.*` 路由被 iPhone USB 网络占用时：
+Mac 仅接入机器狗 Wi-Fi，或同时接入机器狗 Wi-Fi + 手机 USB 热点时，都使用同一条命令，无需手动增删 `--jump`：
 
 ```bash
-python3 scripts/lite3_camera.py doctor ysc@192.168.1.103 --jump ysc@192.168.2.1
-python3 scripts/lite3_camera.py view ysc@192.168.1.103 --jump ysc@192.168.2.1
+python3 scripts/lite3_camera.py doctor ysc@192.168.1.103
+python3 scripts/lite3_camera.py view ysc@192.168.1.103
 # 仅在下方 RealSense 或 V4L2 方式需要部署服务时运行：
-python3 scripts/lite3_camera.py deploy ysc@192.168.1.103 --jump ysc@192.168.2.1
+python3 scripts/lite3_camera.py deploy ysc@192.168.1.103
+# 查看当前解析结果，不连接机器人：
+python3 scripts/lite3_camera.py view ysc@192.168.1.103 --dry-run
 ```
 
-`--jump` 接受单个 SSH 别名、主机名或 `user@IPv4`，对 SSH 和 SCP 都使用 OpenSSH `-J`。跳转主机只转发 SSH 连接，相机命令仍在感知主机执行，不启动运动控制器。两台主机均需正常身份验证及主机密钥核对；脚本不保存密码，也不修改路由或 SSH 配置。不加 `--jump` 时仍直接连接目标。
+启动工具使用 macOS `route -n get` 读取感知主机与机器人网关的实际路由，并通过 `networksetup -listallhardwareports` 识别 Wi-Fi 硬件接口，不依赖手机型号或 USB 接口编号：
+
+| 当前路由 | 自动选择 |
+| --- | --- |
+| 目标经机器人 Wi-Fi 直连，或经 Wi-Fi 上的机器人网关 `192.168.2.1` 转发 | 直接 SSH 连接目标。 |
+| 目标走其他接口/网关，且 `192.168.2.1` 在 Wi-Fi 上直连 | 自动加 `-J ysc@192.168.2.1`。手机热点与机器人网段重叠时也优先使用机器人 Wi-Fi。 |
+| 目标路由缺失或读取失败，但已确认机器人网关在 Wi-Fi 上直连 | 经已确认的机器人网关跳转。 |
+| 未确认 Wi-Fi 上有直连的机器人网关，或接口信息读取失败 | 沿用直接 SSH；目标也非直连时提示原因和手动选项。 |
+
+终端的 `Route:` 信息会显示选择及相关接口/网关；这是本地路由判断，不代表已经通过 SSH 连通验证。`deploy` 的 SSH 和 SCP 使用同一次判断结果。自动跳转沿用目标中显式指定的用户名；省略用户名时交给 OpenSSH 决定。
+
+自动识别范围是 **macOS + 显式 `192.168.1.*` IPv4 目标 + Wi-Fi 上的默认机器人网关 `192.168.2.1`**，不是按 Wi-Fi 名称识别设备，也不扫描或自动发现感知主机 IP。SSH 别名/主机名、其他网段和其他系统沿用已有 SSH 配置；非默认拓扑、需要优先走有线接口或网关账户不同请显式覆盖：
+
+```bash
+python3 scripts/lite3_camera.py view ysc@192.168.1.103 --jump otheruser@192.168.2.1
+python3 scripts/lite3_camera.py view ysc@192.168.1.103 --direct
+```
+
+`--jump` 与 `--direct` 互斥，并跳过自动解析。`--direct` 不添加自动跳转，但仍尊重已有 SSH 配置中的代理。`--jump` 接受单个 SSH 别名、主机名或 `user@IPv4`，对 SSH 和 SCP 都使用 OpenSSH `-J`。跳转主机只转发 SSH 连接，相机命令仍在感知主机执行，不启动运动控制器。两台主机均需正常身份验证及主机密钥核对；脚本不保存密码，也不修改路由或 SSH 配置。
+
+每次启动都会重新解析；预览期间插拔 USB 或切换 Wi-Fi 后，请结束并重新运行命令。当前自动选择已用离线路由样本覆盖两种场景，仍需分别连接真实网络验收。
 
 ### 已有 ROS 相机话题
 
@@ -77,11 +99,11 @@ fuser /dev/video4
 确认它是 RGB 节点、支持所选分辨率和帧率，且没有 ROS 相机节点、厂商查看器或其他程序占用后，再从 Mac 部署并预览。若相机正在发布 ROS 图像，优先使用现有话题，不要为预览停止厂商服务。
 
 ```bash
-python3 scripts/lite3_camera.py deploy ysc@192.168.1.103 --jump ysc@192.168.2.1
-python3 scripts/lite3_camera.py view ysc@192.168.1.103 --jump ysc@192.168.2.1 --backend v4l2 --device /dev/video4
+python3 scripts/lite3_camera.py deploy ysc@192.168.1.103
+python3 scripts/lite3_camera.py view ysc@192.168.1.103 --backend v4l2 --device /dev/video4
 ```
 
-可直接连接感知主机时省略 `--jump`。`--device` 必须显式给出 `/dev/videoN` 或 `/dev/v4l/by-id/名称`；设备编号可能随系统重启或 USB 连接变化。该模式只提供 RGB，不支持 `--depth` 或 `--serial`。可用 `--width`、`--height`、`--fps` 和 `--quality` 请求设备支持的设置，实际画面及帧率仍需验证。
+连接路径默认按上方规则自动选择。`--device` 必须显式给出 `/dev/videoN` 或 `/dev/v4l/by-id/名称`；设备编号可能随系统重启或 USB 连接变化。该模式只提供 RGB，不支持 `--depth` 或 `--serial`。可用 `--width`、`--height`、`--fps` 和 `--quality` 请求设备支持的设置，实际画面及帧率仍需验证。
 
 本次机器人连接的 RGB 实测、帧率、浏览器显示及退出释放结果见 [2026-11-20 实机测试记录](CAMERA_HARDWARE_TEST_2026-11-20.md)。
 

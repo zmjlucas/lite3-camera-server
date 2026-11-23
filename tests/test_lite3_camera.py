@@ -36,6 +36,11 @@ class CameraCommandsTest(unittest.TestCase):
             path = self.directory / name
             path.write_text(executable)
             path.chmod(0o755)
+        # Route-selection fixtures live in test_camera_routing.py. Keep these
+        # subprocess tests independent of the developer's active Wi-Fi/USB route.
+        route = self.directory / "route"
+        route.write_text("#!" + sys.executable + "\nimport sys\nsys.exit(1)\n")
+        route.chmod(0o755)
         self.env = dict(os.environ, PATH=str(self.directory) + os.pathsep + os.environ["PATH"],
                         CAMERA_TEST_LOG=str(self.log), PYTHONDONTWRITEBYTECODE="1")
 

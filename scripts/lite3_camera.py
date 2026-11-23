@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Mac camera viewer: SSH + browser, with no local ROS installation."""
 import argparse
+import ipaddress
 from pathlib import Path
 import re
 import shlex
@@ -18,6 +19,8 @@ SERVER = Path(__file__).resolve().with_name("lite3_camera_server.py")
 REMOTE_SERVER = '"$HOME/robo-comp-camera/lite3_camera_server.py"'
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
+ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")
+ROBOT_GATEWAY = "192.168.2.1"
 
 # Executed only by doctor, on the perception host. No camera is opened.
 DOCTOR = r'''
@@ -78,6 +81,99 @@ def bounded_int(low, high):
 
 def shell_command(script):
     return "bash -lc " + shlex.quote(script)
+
+
+def macos_route(address):
+    """Read the kernel's IPv4 route without sending packets or changing it."""
+    try:
+        result = subprocess.run(["route", "-n", "get", address],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode:
+        return None
+    fields = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition(":")
+        if separator:
+            fields[key.strip()] = value.strip()
+    if fields.get("route to") != address or not fields.get("destination"):
+        return None
+    flags = set(fields.get("flags", "").strip("<>").split(","))
+    if not fields.get("interface") or "UP" not in flags or flags & {"REJECT", "BLACKHOLE"}:
+        return None
+    if "GATEWAY" in flags and not fields.get("gateway"):
+        return None
+    fields["on_link"] = "GATEWAY" not in flags
+    return fields
+
+
+def macos_wifi_interfaces():
+    """Identify Wi-Fi hardware; USB tether interfaces also have enN names."""
+    try:
+        result = subprocess.run(["networksetup", "-listallhardwareports"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if result.returncode:
+        return set()
+    interfaces = set()
+    hardware_port = None
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition(":")
+        if not line.strip():
+            hardware_port = None
+        elif separator and key.strip() == "Hardware Port":
+            hardware_port = value.strip()
+        elif separator and key.strip() == "Device" and hardware_port in ("Wi-Fi", "AirPort"):
+            if re.fullmatch(r"en[0-9]+", value.strip()):
+                interfaces.add(value.strip())
+    return interfaces
+
+
+def resolve_jump(args):
+    """Choose one SSH/SCP path per invocation, respecting explicit overrides."""
+    if args.jump or args.direct:
+        return args.jump
+    if sys.platform != "darwin":
+        return None
+    username, separator, host = args.target.rpartition("@")
+    try:
+        address = ipaddress.IPv4Address(host)
+    except ValueError:
+        # Leave SSH aliases and DNS names to OpenSSH (including its proxy config).
+        return None
+    if address not in ROBOT_NETWORK:
+        return None
+
+    destination = macos_route(str(address))
+    gateway = macos_route(ROBOT_GATEWAY)
+    robot_link = (gateway is not None and gateway["on_link"] and
+                  gateway["interface"] in macos_wifi_interfaces())
+    path = "route unavailable"
+    if destination:
+        path = "{} via {}".format(destination["interface"],
+                                 "on-link" if destination["on_link"] else destination["gateway"])
+        # A phone can advertise the same subnet as the perception host. When
+        # robot Wi-Fi is present, prefer it over an on-link route on another NIC.
+        direct_link = (destination["on_link"] and
+                       (not robot_link or destination["interface"] == gateway["interface"]))
+        if direct_link or (robot_link and
+                destination.get("gateway") == ROBOT_GATEWAY and
+                destination["interface"] == gateway["interface"]):
+            print("Route: direct to {} ({})".format(host, path), file=sys.stderr)
+            return None
+    if robot_link:
+        jump = (username + separator if separator else "") + ROBOT_GATEWAY
+        print("Route: {} ({}); using SSH jump {} on {}".format(
+            host, path, jump, gateway["interface"]), file=sys.stderr)
+        return jump
+    print("Route: direct to {} ({}); no on-link robot Wi-Fi gateway detected. "
+          "Check robot Wi-Fi or use --jump USER@HOST / --direct.".format(host, path),
+          file=sys.stderr)
+    return None
 
 
 def ssh_options(jump=None):
@@ -216,8 +312,13 @@ def parser():
         command = commands.add_parser(name, help=help_text)
         if name != "demo":
             command.add_argument("target", type=target, help="SSH alias or user@perception-host")
-            command.add_argument("--jump", type=target, help="SSH jump host alias or user@host")
-        command.add_argument("--dry-run", action="store_true", help="print commands without executing them")
+            routing = command.add_mutually_exclusive_group()
+            routing.add_argument("--jump", type=target,
+                                 help="explicit SSH jump host; otherwise auto-select on macOS for 192.168.1.*")
+            routing.add_argument("--direct", action="store_true",
+                                 help="skip automatic route selection and use existing SSH configuration")
+        command.add_argument("--dry-run", action="store_true",
+                             help="print commands without connecting; may read local routes")
         if name in ("view", "demo"):
             command.add_argument("--local-port", type=bounded_int(1, 65535), default=18080)
             command.add_argument("--no-open", action="store_true", help="do not open a browser automatically")
@@ -253,15 +354,16 @@ def main(argv=None):
         if args.ros_setup and not args.ros_setup.startswith("/"):
             cli.error("--ros-setup must be an absolute path on the perception host")
     try:
+        jump = resolve_jump(args) if args.command != "demo" else None
         if args.command == "doctor":
-            command = ssh_command(args.target, "python3 - <<'LITE3_CAMERA_DOCTOR'\n" + DOCTOR + "\nLITE3_CAMERA_DOCTOR", args.jump)
+            command = ssh_command(args.target, "python3 - <<'LITE3_CAMERA_DOCTOR'\n" + DOCTOR + "\nLITE3_CAMERA_DOCTOR", jump)
             if args.dry_run:
                 show_command(command)
                 return 0
             return subprocess.call(command)
         if args.command == "deploy":
-            commands = [ssh_command(args.target, 'mkdir -p "$HOME/robo-comp-camera"', args.jump),
-                        ["scp"] + ssh_options(args.jump) + [str(SERVER), args.target + ":robo-comp-camera/lite3_camera_server.py"]]
+            commands = [ssh_command(args.target, 'mkdir -p "$HOME/robo-comp-camera"', jump),
+                        ["scp"] + ssh_options(jump) + [str(SERVER), args.target + ":robo-comp-camera/lite3_camera_server.py"]]
             for command in commands:
                 if args.dry_run:
                     show_command(command)
@@ -277,7 +379,7 @@ def main(argv=None):
             if args.backend == "ros" and args.topic:
                 url += "stream_viewer?" + urlencode({"topic": args.topic, "type": "mjpeg", "width": 640, "height": 480, "quality": 70}, safe="/")
             remote = ros_script(args) if args.backend == "ros" else real_script(args)
-            command = ["ssh"] + ssh_options(args.jump) + ["-tt", "-o", "ExitOnForwardFailure=yes", "-L",
+            command = ["ssh"] + ssh_options(jump) + ["-tt", "-o", "ExitOnForwardFailure=yes", "-L",
                        "127.0.0.1:{}:127.0.0.1:{}".format(args.local_port, args.remote_port),
                        args.target, shell_command(remote)]
         if args.dry_run:
