@@ -2,13 +2,18 @@
 """View the Lite3 camera in a Mac browser through SSH. The Mac does not need ROS."""
 import argparse
 import ipaddress
+import os
 from pathlib import Path
+import queue
 import re
 import shlex
 import signal
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 from urllib.parse import urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
@@ -17,11 +22,13 @@ import webbrowser
 
 SERVER = Path(__file__).resolve().with_name("lite3_camera_server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
-SERVER_BUNDLE = (SERVER, SERVER.parent / "web")
+SERVER_BUNDLE = ((SERVER, "robo-comp-camera/"),
+                 (SERVER.parent / "web" / "camera.html", "robo-comp-camera/web/"))
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
 ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")
 ROBOT_GATEWAY = "192.168.2.1"
+SESSION_START_TIMEOUT = 60
 
 
 def target(value):
@@ -185,7 +192,52 @@ def real_script(args):
                         args.remote_port, *options)
 
 
-def run_foreground(command, url, open_browser):
+def read_deploy_source(path):
+    """Capture a regular asset without following symlinks in any path component."""
+    path = path.absolute()
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(path.anchor, directory_flags)
+    try:
+        for component in path.parts[1:-1]:
+            child = os.open(component, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        source = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            if not stat.S_ISREG(os.fstat(source).st_mode):
+                raise OSError("Deployment source is not a regular file: " + str(path))
+            with os.fdopen(source, "rb", closefd=False) as stream:
+                return stream.read()
+        finally:
+            os.close(source)
+    finally:
+        os.close(directory)
+
+
+def deploy(args, jump):
+    # Capture both files before SSH can wait for login or another process can change the checkout.
+    with tempfile.TemporaryDirectory(prefix="lite3-camera-deploy-") as directory:
+        sources = []
+        for path, destination in SERVER_BUNDLE:
+            content = read_deploy_source(path)
+            staged = Path(directory) / path.name
+            staged.write_bytes(content)
+            staged.chmod(0o600)
+            sources.append((path if args.dry_run else staged, destination))
+        commands = [ssh_command(args.target, remote_shell("prepare_deploy.sh"), jump)]
+        commands.extend(["scp"] + ssh_options(jump) + [str(path), args.target + ":" + destination]
+                        for path, destination in sources)
+        for command in commands:
+            if args.dry_run:
+                show_command(command)
+            else:
+                code = subprocess.call(command)
+                if code:
+                    return code
+    return 0
+
+
+def run_foreground(command, url, open_browser, authenticated=False):
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -194,7 +246,39 @@ def run_foreground(command, url, open_browser):
         except OSError as exc:
             raise OSError("Cannot use the local camera port. Select another port with --local-port: " + str(exc)) from exc
     print("Viewer: " + url + "\nKeep this terminal open. To stop this session, press Ctrl+C.", flush=True)
-    process = subprocess.Popen(command)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE if authenticated else None,
+                               text=authenticated, encoding="utf-8" if authenticated else None,
+                               errors="replace" if authenticated else None)
+    output = queue.Queue()
+    viewer_url = None if authenticated else url
+    reader = None
+
+    def read_output():
+        for line in process.stdout:
+            output.put(line)
+
+    def consume_output():
+        nonlocal viewer_url
+        while True:
+            try:
+                line = output.get_nowait()
+            except queue.Empty:
+                break
+            match = re.fullmatch(r"http://127\.0\.0\.1:[0-9]+/#token=([a-f0-9]{64})", line.strip())
+            if match:
+                viewer_url = url + "#token=" + match.group(1)
+                if not open_browser:
+                    print("Session link (keep private): " + viewer_url, flush=True)
+            elif re.search(r"[?#]token=", line, re.IGNORECASE):
+                raise OSError("The server returned a malformed session link. Run deploy to update it, then retry.")
+            elif re.fullmatch(r"http://127\.0\.0\.1:[0-9]+/", line.strip()):
+                raise OSError("The server has no session authentication. Run deploy to update it, then start view again.")
+            else:
+                print(line, end="", flush=True)
+
+    if authenticated:
+        reader = threading.Thread(target=read_output, daemon=True)
+        reader.start()
     # Readiness checks use the loopback tunnel and bypass HTTP proxies.
     opener = build_opener(ProxyHandler({}))
     opened = not open_browser
@@ -206,19 +290,29 @@ def run_foreground(command, url, open_browser):
         previous_handlers[signum] = signal.signal(signum, stop_session)
     try:
         while process.poll() is None:
-            if not opened:
+            consume_output()
+            if authenticated and viewer_url is None and time.monotonic() - start >= SESSION_START_TIMEOUT:
+                raise OSError("Timed out waiting for a camera session link. Complete SSH login and run deploy to update the server, then retry.")
+            if not opened and viewer_url:
                 try:
                     with opener.open(url, timeout=0.4) as response:
                         ready = response.status == 200
                     if ready and process.poll() is None:
-                        webbrowser.open(url)
+                        if not webbrowser.open(viewer_url):
+                            print("Session link (keep private): " + viewer_url, flush=True)
                         opened = True
                 except OSError:
                     pass
                 if not opened and time.monotonic() - start > 60:
-                    print("The launcher did not open the browser. Complete SSH login. Then open the viewer URL.", flush=True)
+                    print("The launcher did not open the browser. Session link (keep private): " + viewer_url, flush=True)
                     opened = True
             time.sleep(0.15)
+        if reader:
+            reader.join(timeout=1)
+            consume_output()
+        if authenticated and not viewer_url and process.returncode == 0:
+            print("The server did not provide a session link. Run deploy to update it, then start view again.", file=sys.stderr)
+            return 1
         return process.returncode if process.returncode >= 0 else 128 - process.returncode
     except KeyboardInterrupt:
         return 130
@@ -232,6 +326,10 @@ def run_foreground(command, url, open_browser):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+        if reader:
+            reader.join(timeout=1)
+            if not reader.is_alive():
+                process.stdout.close()
 
 
 def parser():
@@ -293,17 +391,7 @@ def main(argv=None):
                 return 0
             return subprocess.call(command)
         if args.command == "deploy":
-            commands = [ssh_command(args.target, remote_shell("prepare_deploy.sh"), jump),
-                        ["scp"] + ssh_options(jump) + ["-r"] + [str(path) for path in SERVER_BUNDLE] +
-                        [args.target + ":robo-comp-camera/"]]
-            for command in commands:
-                if args.dry_run:
-                    show_command(command)
-                else:
-                    code = subprocess.call(command)
-                    if code:
-                        return code
-            return 0
+            return deploy(args, jump)
         url = "http://127.0.0.1:{}/".format(args.local_port)
         if args.backend == "ros" and args.topic:
             url += "stream_viewer?" + urlencode({"topic": args.topic, "type": "mjpeg", "width": 640, "height": 480, "quality": 70}, safe="/")
@@ -315,7 +403,7 @@ def main(argv=None):
             show_command(command)
             print("Viewer: " + url)
             return 0
-        return run_foreground(command, url, not args.no_open)
+        return run_foreground(command, url, not args.no_open, authenticated=args.backend != "ros")
     except KeyboardInterrupt:
         return 130
     except OSError as exc:

@@ -25,10 +25,10 @@ Replace the example address with your perception host. Before the first connecti
 
 ```bash
 # Check the host, dependencies, camera services, and ROS environment.
-python3 src/lite3_camera.py doctor ysc@192.168.1.103
+python3 src/lite3_camera.py doctor user@192.168.1.100
 
 # Use an existing ROS image topic and a compatible web_video_server.
-python3 src/lite3_camera.py view ysc@192.168.1.103
+python3 src/lite3_camera.py view user@192.168.1.100
 ```
 
 | Mode | Requirements on the perception host | Command |
@@ -41,15 +41,19 @@ Camera dependencies must match the device architecture, Python version, and vend
 
 On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces to select a path to `192.168.1.*` targets. If the target route uses robot Wi-Fi, the launcher connects directly. If the target route uses another interface or gateway, the launcher checks for a direct Wi-Fi link to `192.168.2.1`. If that link is available, the launcher uses `192.168.2.1` as an SSH jump host. When the phone and robot subnets overlap, the launcher uses robot Wi-Fi. The same commands work with robot Wi-Fi alone or with a phone USB hotspot, without changes to system routes.
 
-To select a jump host manually, use `--jump ysc@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
+To select a jump host manually, use `--jump user@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
 
 Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script and viewer page to `~/robo-comp-camera/`.
 
-The HTTP server and SSH tunnel bind to `127.0.0.1`. The default ports are `18080` on the client and `8080` on the perception host. The HTTP server has no separate authentication. Use it through the SSH tunnel.
+The HTTP server and SSH tunnel bind to `127.0.0.1`. The default ports are `18080` on the client and `8080` on the perception host. RealSense and V4L2 sessions generate a new access token on every server start. The launcher receives it over SSH and opens the authenticated viewer. With `--no-open`, use the private session link printed by the launcher. Redeploy the server when updating the launcher.
+
+The viewer removes the token from the address bar and retains it in this tab's session storage for refreshes. Do not share session links or Authorization headers. Requests carrying an Origin header must match the request's origin. Host headers are unrestricted. ROS mode uses the external `web_video_server` and retains its own authentication policy; use that mode only with a trusted local client and an SSH tunnel.
 
 ## HTTP endpoints
 
 These endpoints apply to the RealSense and V4L2 servers. ROS mode uses the endpoints from `web_video_server`.
+
+Frame and health requests require `Authorization: Bearer <session-token>`. The static page at `/` does not contain camera data or a token. Tokens in query parameters are not accepted. The page's snapshot link downloads the latest displayed frame.
 
 | Path | Response |
 | --- | --- |

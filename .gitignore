@@ -25,6 +25,8 @@ dist/
 recordings/
 captures/
 outputs/
+CAMERA_HARDWARE_TEST*.md
+camera_hardware_test*.md
 
 # Editors and macOS
 .DS_Store

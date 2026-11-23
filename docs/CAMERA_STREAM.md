@@ -2,7 +2,7 @@
 
 The Mac connects to the perception host through SSH. The browser shows the camera stream through this connection. The Mac needs Python 3.8 or later, OpenSSH, and a browser. The camera commands do not send motion commands.
 
-Run these commands from the repository root. The examples use the vendor's default perception host, `ysc@192.168.1.103`. Replace this account and IP address with the values for your robot.
+Run these commands from the repository root. Account names and addresses in examples are placeholders, not a record of any deployed robot. Replace them with the values for your robot.
 
 ## Connect to the robot
 
@@ -11,7 +11,7 @@ Run these commands from the repository root. The examples use the vendor's defau
 3. Check the camera interfaces on the perception host:
 
 ```bash
-python3 src/lite3_camera.py doctor ysc@192.168.1.103
+python3 src/lite3_camera.py doctor user@192.168.1.100
 ```
 
 The `doctor` command reads system details, Python dependencies, ROS environments, camera service status, and video device information. It does not open a camera. To inspect the route and commands, add `--dry-run` to `doctor`, `deploy`, or `view`. This option reads local routes and prints the selected path and commands. It does not log in to or probe the robot.
@@ -21,12 +21,12 @@ The `doctor` command reads system details, Python dependencies, ROS environments
 Use the same commands with robot Wi-Fi alone or with robot Wi-Fi and a phone USB hotspot. The launcher selects the connection path. You do not need to add or remove `--jump` for these two network conditions.
 
 ```bash
-python3 src/lite3_camera.py doctor ysc@192.168.1.103
-python3 src/lite3_camera.py view ysc@192.168.1.103
+python3 src/lite3_camera.py doctor user@192.168.1.100
+python3 src/lite3_camera.py view user@192.168.1.100
 # Deploy only when you need the RealSense or V4L2 server described below.
-python3 src/lite3_camera.py deploy ysc@192.168.1.103
+python3 src/lite3_camera.py deploy user@192.168.1.100
 # Inspect the selected route without a robot connection.
-python3 src/lite3_camera.py view ysc@192.168.1.103 --dry-run
+python3 src/lite3_camera.py view user@192.168.1.100 --dry-run
 ```
 
 The launcher uses macOS `route -n get` to read routes to the perception host and robot gateway. It uses `networksetup -listallhardwareports` to find Wi-Fi hardware interfaces. Selection does not depend on the phone model or USB interface number.
@@ -34,7 +34,7 @@ The launcher uses macOS `route -n get` to read routes to the perception host and
 | Current route | Selected path |
 | --- | --- |
 | The target uses a direct robot Wi-Fi link or the Wi-Fi gateway `192.168.2.1`. | Connect directly to the target through SSH. |
-| The target uses another interface or gateway, and `192.168.2.1` has a direct Wi-Fi link. | Add `-J ysc@192.168.2.1`. Use robot Wi-Fi when the phone and robot subnets overlap. |
+| The target uses another interface or gateway, and `192.168.2.1` has a direct Wi-Fi link. | Add `-J user@192.168.2.1`. Use robot Wi-Fi when the phone and robot subnets overlap. |
 | The target route is missing or cannot be read, but the robot gateway has a confirmed direct Wi-Fi link. | Connect through the confirmed robot gateway. |
 | No direct Wi-Fi link to the robot gateway is confirmed, or interface information is missing. | Use the existing direct SSH command. If the target also lacks a direct link, show the reason and manual options. |
 
@@ -45,8 +45,8 @@ Automatic selection requires macOS and an explicit `192.168.1.*` IPv4 target. Au
 Use a manual option for another network layout, a preferred wired interface, or a different gateway account:
 
 ```bash
-python3 src/lite3_camera.py view ysc@192.168.1.103 --jump otheruser@192.168.2.1
-python3 src/lite3_camera.py view ysc@192.168.1.103 --direct
+python3 src/lite3_camera.py view user@192.168.1.100 --jump otheruser@192.168.2.1
+python3 src/lite3_camera.py view user@192.168.1.100 --direct
 ```
 
 The `--jump` and `--direct` options both bypass automatic selection. You cannot use them together. The `--direct` option adds no automatic jump but still uses proxies from the existing SSH configuration. The `--jump` option accepts one SSH alias, hostname, or `user@IPv4` address. It uses OpenSSH `-J` for SSH and SCP.
@@ -60,7 +60,7 @@ The launcher selects the route each time a command starts. After a USB or Wi-Fi 
 Use an active RGB image topic when one is available. The perception host must run a camera publisher node. Its ROS environment must contain `web_video_server`. The `view` command starts the preview service and forwards its port. The browser page lists the available image topics.
 
 ```bash
-python3 src/lite3_camera.py view ysc@192.168.1.103
+python3 src/lite3_camera.py view user@192.168.1.100
 ```
 
 If the host has multiple ROS environments, use `--ros-setup` to select the camera node's environment. For example, use `--ros-setup /opt/ros/melodic/setup.bash`. You can also select a workspace `setup.bash` that provides the required packages. The launcher uses `ROS_VERSION` to select ROS 1 or ROS 2. After you find the image topic, use `--topic /camera/image_topic` with its actual name.
@@ -82,11 +82,11 @@ Older environments, such as Melodic or Foxy, might have no candidate package. In
 You can read RGB frames directly when the camera is not in use. Python 3 on the perception host must import `pyrealsense2`, `numpy`, and `cv2`. The vendor manual states that the system image includes native librealsense. Use `doctor` to check whether the Python bindings are available.
 
 ```bash
-python3 src/lite3_camera.py deploy ysc@192.168.1.103
-python3 src/lite3_camera.py view ysc@192.168.1.103 --backend realsense
+python3 src/lite3_camera.py deploy user@192.168.1.100
+python3 src/lite3_camera.py view user@192.168.1.100 --backend realsense
 ```
 
-The `deploy` command uploads the server script and viewer page to `~/robo-comp-camera/` on the perception host. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. To change these values, use `--width`, `--height`, `--fps`, and `--quality`. If multiple cameras are connected, use `--serial` to select one.
+The `deploy` command uploads only `src/lite3_camera_server.py` and `src/web/camera.html` to `~/robo-comp-camera/` and its `web/` subdirectory on the perception host. It rejects symlinked source paths and does not copy unrelated files or Git-ignored content. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. To change these values, use `--width`, `--height`, `--fps`, and `--quality`. If multiple cameras are connected, use `--serial` to select one.
 
 To show a depth preview beside RGB, add `--depth`. The preview uses false colors. Do not use these colors as distance measurements.
 
@@ -111,8 +111,8 @@ If the camera already publishes ROS images, use the existing topic. Do not stop 
 From the Mac, run these commands in order:
 
 ```bash
-python3 src/lite3_camera.py deploy ysc@192.168.1.103
-python3 src/lite3_camera.py view ysc@192.168.1.103 --backend v4l2 --device /dev/video4
+python3 src/lite3_camera.py deploy user@192.168.1.100
+python3 src/lite3_camera.py view user@192.168.1.100 --backend v4l2 --device /dev/video4
 ```
 
 The launcher selects the connection path with the rules above. Set `--device` to a confirmed `/dev/videoN` or `/dev/v4l/by-id/name` path. Device numbers can change after a restart or a USB connection change. V4L2 mode provides RGB only. It does not support `--depth` or `--serial`.
@@ -122,6 +122,10 @@ Use `--width`, `--height`, `--fps`, and `--quality` to request settings that the
 ## Stop the preview and find faults
 
 By default, `view` forwards the Mac's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080` through SSH. To open the printed URL manually, add `--no-open`. To stop the preview service and tunnel, press Ctrl+C in the terminal that runs `view`.
+
+RealSense and V4L2 create a new session token on each startup. The launcher reads the session link over SSH and opens it using the forwarded local port. With `--no-open`, copy the full private session link including its `#token=…` fragment. The viewer removes that fragment from the address bar; subsequent requests carry the token in an Authorization header. Refreshes reuse tab session storage. Do not paste the link or header into issues, logs, or chat. After a server restart, use the new session link. If an old deployed server does not provide one, rerun `deploy` before `view`. The launcher stops after 60 seconds without a session link, including time spent at SSH login prompts; finish login promptly or retry.
+
+Opening the bare page works, but it cannot show frames without the session token. `/healthz`, `/snapshot.jpg`, and `/stream.mjpg` reject unauthenticated requests with HTTP 401. The viewer's JPEG snapshot link downloads the displayed frame. ROS mode uses the upstream server's authentication behavior and requires a trusted local client.
 
 The RealSense and V4L2 pages check the incoming video data. If the stream ends, the page hides the last frame and reconnects. The page does the same if no decodable frame arrives for approximately 2.5 seconds. Camera resolution depends on the selected device and options.
 
@@ -134,7 +138,8 @@ The RealSense and V4L2 pages check the incoming video data. If the stream ends, 
 | RealSense Python bindings are missing | Use `doctor` to check the Python version and missing modules. The bindings must match the host architecture, Python version, and vendor SDK. |
 | V4L2 shows no image | Confirm that `--device` is an RGB node and no other program uses it. Check that OpenCV supports V4L2. Select a resolution and frame rate that the device supports. |
 | V4L2 ignores requested settings or stops capture | OpenCV requests settings, but the device can select other values. Check the actual resolution and frame rate. After a capture failure, correct device conflicts or connection faults. Then run `view` again. |
-| The local page returns HTTP 502 | Check whether the browser proxy intercepts `127.0.0.1`. The launcher's readiness check bypasses proxies. Use `curl --noproxy '*' http://127.0.0.1:18080/healthz` to check the server. Alternatively, use `--no-proxy-server` only in a temporary Chrome test session. Keep the system proxy settings unchanged. |
+| The local page returns HTTP 502 | Check whether the browser proxy intercepts `127.0.0.1`. The launcher's readiness check bypasses proxies. Use `curl --noproxy '*' http://127.0.0.1:18080/` to check the static page without sending a token. Alternatively, use `--no-proxy-server` only in a temporary Chrome test session. Keep the system proxy settings unchanged. |
+| The viewer requests a current session link, or an API returns HTTP 401 | Use the full link from the current launcher session. Old tokens stop working after a restart. API clients must supply the session token in the Authorization header. Never put it in the query string or share it in diagnostic output. |
 | Video is delayed or stops briefly | For RealSense or V4L2, try `--quality 55` or a lower supported resolution or frame rate. You can also repeat the test on the vendor's specified wired network. For both backends, `/healthz` shows whether the server received a recent frame. |
 
 Offline tests use simulated camera input to check the browser and video server. Depth preview and video delay require separate hardware tests.

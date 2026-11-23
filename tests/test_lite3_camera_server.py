@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 
 SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "src/lite3_camera_server.py"
@@ -19,6 +19,9 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class CameraServerTests(unittest.TestCase):
+    def setUp(self):
+        self.tokens = {}
+
     def test_removed_source_is_rejected(self):
         from src.lite3_camera_server import parse_args
 
@@ -33,6 +36,7 @@ class CameraServerTests(unittest.TestCase):
         # Loopback HTTP must work when the host's DNS resolver stops responding.
         with patch("socket.getfqdn", side_effect=AssertionError("The server made an unexpected reverse DNS lookup")):
             with CameraHTTPServer(0, frames) as server:
+                self.tokens[server.server_port] = server.session_token
                 self.assertEqual(server.server_address[0], "127.0.0.1")
                 self.assertGreater(server.server_port, 0)
                 worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -161,6 +165,8 @@ class CameraServerTests(unittest.TestCase):
             self.fail(stderr.decode())
         address = urlsplit(url)
         self.assertEqual(address.hostname, "127.0.0.1")
+        self.tokens[address.port] = parse_qs(address.fragment)["token"][0]
+        self.assertRegex(self.tokens[address.port], r"^[a-f0-9]{64}$")
         return process, address.port
 
     def start_camera(self):
@@ -184,11 +190,10 @@ class CameraServerTests(unittest.TestCase):
             process.kill()
             process.communicate(timeout=4)
 
-    @staticmethod
-    def request(port, path):
+    def request(self, port, path):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
         try:
-            conn.request("GET", path)
+            conn.request("GET", path, headers={"Authorization": "Bearer " + self.tokens[port]})
             response = conn.getresponse()
             return response.status, response.headers, response.read()
         finally:
@@ -197,7 +202,7 @@ class CameraServerTests(unittest.TestCase):
     def open_stream(self, port):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=4)
         self.addCleanup(conn.close)
-        conn.request("GET", "/stream.mjpg")
+        conn.request("GET", "/stream.mjpg", headers={"Authorization": "Bearer " + self.tokens[port]})
         response = conn.getresponse()
         self.addCleanup(response.close)
         self.assertEqual(response.status, 200)
@@ -361,12 +366,26 @@ class CameraServerTests(unittest.TestCase):
 
         frames = LatestFrame("realsense", stale_after=stale_after)
         server = CameraHTTPServer(0, frames)
+        self.tokens[server.server_port] = server.session_token
         thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
         thread.start()
         self.addCleanup(thread.join, 4)
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         return frames, server.server_port
+
+    def test_each_server_session_rejects_the_previous_session_token(self):
+        _, first = self.start_camera()
+        _, second = self.start_camera()
+        self.assertNotEqual(self.tokens[first], self.tokens[second])
+        conn = http.client.HTTPConnection("127.0.0.1", second, timeout=4)
+        try:
+            conn.request("GET", "/snapshot.jpg", headers={"Authorization": "Bearer " + self.tokens[first]})
+            response = conn.getresponse()
+            self.assertEqual(response.status, 401)
+            self.assertNotIn((FIXTURES / "camera-frame.jpg").read_bytes(), response.read())
+        finally:
+            conn.close()
 
     def test_snapshot_serves_only_the_most_recent_frame(self):
         frames, port = self.buffered_server()

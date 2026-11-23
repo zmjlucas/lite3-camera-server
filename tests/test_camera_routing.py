@@ -90,7 +90,7 @@ class CameraRoutingTest(unittest.TestCase):
     def run_cli(self, *arguments, platform="darwin"):
         stdout, stderr = io.StringIO(), io.StringIO()
 
-        def remote(command, *args):
+        def remote(command, *args, **kwargs):
             self.remote_commands.append(command)
             return 0
 
@@ -105,7 +105,7 @@ class CameraRoutingTest(unittest.TestCase):
 
     def test_wifi_plus_usb_automatically_uses_robot_jump_for_all_commands(self):
         for command, options, executables in (
-                ("doctor", [], ["ssh"]), ("deploy", [], ["ssh", "scp"]),
+                ("doctor", [], ["ssh"]), ("deploy", [], ["ssh", "scp", "scp"]),
                 ("view", ["--backend", "ros"], ["ssh"]),
                 ("view", ["--backend", "realsense"], ["ssh"]),
                 ("view", ["--backend", "v4l2", "--device", "/dev/video4"], ["ssh"])):

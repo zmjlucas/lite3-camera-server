@@ -28,6 +28,12 @@ class CameraCommandsTest(unittest.TestCase):
                       "import json, os, sys, time\n"
                       "with open(os.environ['CAMERA_TEST_LOG'], 'a') as f:\n"
                       "    f.write(json.dumps([os.path.basename(sys.argv[0])] + sys.argv[1:]) + '\\n')\n"
+                      "if os.path.basename(sys.argv[0]) == 'scp' and os.environ.get('CAMERA_TEST_COPY_LOG'):\n"
+                      "    with open(os.environ['CAMERA_TEST_COPY_LOG'], 'a') as f:\n"
+                      "        f.write(json.dumps(open(sys.argv[-2]).read()) + '\\n')\n"
+                      "if '--source' in sys.argv[-1]:\n"
+                      "    banner = os.environ.get('CAMERA_TEST_BANNER', 'http://127.0.0.1:8080/#token=' + 'a' * 64)\n"
+                      "    if banner: print(banner, flush=True)\n"
                       "if os.environ.get('CAMERA_TEST_PID_FILE'):\n"
                       "    open(os.environ['CAMERA_TEST_PID_FILE'], 'w').write(str(os.getpid()))\n"
                       "    time.sleep(30)\n"
@@ -77,7 +83,7 @@ class CameraCommandsTest(unittest.TestCase):
 
     def test_optional_jump_reaches_all_remote_commands(self):
         cases = (("doctor", [], ["ssh"]),
-                 ("deploy", [], ["ssh", "scp"]),
+                 ("deploy", [], ["ssh", "scp", "scp"]),
                  ("view", ["--backend", "ros", "--no-open"], ["ssh"]),
                  ("view", ["--backend", "realsense", "--no-open"], ["ssh"]),
                  ("view", ["--backend", "v4l2", "--device", "/dev/video4", "--no-open"], ["ssh"]))
@@ -97,7 +103,7 @@ class CameraCommandsTest(unittest.TestCase):
                             self.assertEqual(call.count("-J"), 1)
                             self.assertEqual(call[call.index("-J") + 1], jump)
                             destination = ("ysc@192.168.1.103" if call[0] == "ssh" else
-                                           "ysc@192.168.1.103:robo-comp-camera/")
+                                           call[-1])
                             self.assertLess(call.index("-J"), call.index(destination))
                         self.assertNotIn("StrictHostKeyChecking=no", call)
 
@@ -116,17 +122,141 @@ class CameraCommandsTest(unittest.TestCase):
         result = self.run_cli("deploy", "robot")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertEqual([call[0] for call in calls], ["ssh", "scp"])
+        self.assertEqual([call[0] for call in calls], ["ssh", "scp", "scp"])
         self.assertIn("mkdir -p", calls[0][-1])
-        self.assertIn("-r", calls[1])
-        self.assertEqual(calls[1][calls[1].index("-r") + 1:-1],
-                         [str(ROOT / "src/lite3_camera_server.py"), str(ROOT / "src/web")])
+        for command in calls[1:]:
+            self.assertNotIn("-r", command)
+        self.assertEqual(Path(calls[1][-2]).name, "lite3_camera_server.py")
         self.assertEqual(calls[1][-1], "robot:robo-comp-camera/")
+        self.assertEqual(Path(calls[2][-2]).name, "camera.html")
+        self.assertEqual(calls[2][-1], "robot:robo-comp-camera/web/")
+        self.assertFalse(Path(calls[1][-2]).exists(), "Temporary deployment files must be removed")
+
+    def test_native_session_link_uses_local_port_without_echoing_remote_url(self):
+        result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open", "--local-port", "18081")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("http://127.0.0.1:18081/#token=" + "a" * 64, result.stdout)
+        self.assertNotIn("http://127.0.0.1:8080/#token=", result.stdout)
+
+    def test_native_legacy_server_without_session_link_fails_with_deploy_hint(self):
+        self.env["CAMERA_TEST_BANNER"] = "http://127.0.0.1:8080/"
+        pid_file = self.directory / "legacy.pid"
+        env = dict(self.env, CAMERA_TEST_PID_FILE=str(pid_file))
+        process = subprocess.Popen([sys.executable, str(SCRIPT), "view", "robot", "--backend", "realsense",
+                                    "--no-open", "--local-port", str(self.free_port())],
+                                   env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            _, stderr = process.communicate(timeout=4)
+            self.assertNotEqual(process.returncode, 0)
+            self.assertIn("deploy", stderr)
+            if pid_file.exists():
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(pid_file.read_text()), 0)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.communicate(timeout=7)
 
     def test_deploy_failure_prevents_copy(self):
         result = self.run_cli("deploy", "robot", exit_code=23)
         self.assertEqual(result.returncode, 23)
         self.assertEqual(len(self.calls()), 1)
+
+    def test_deploy_refuses_symlinked_assets_before_remote_commands(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        server = self.directory.resolve() / "server.py"
+        page = self.directory.resolve() / "camera.html"
+        private = self.directory.resolve() / "private.txt"
+        server.write_text("runtime")
+        private.write_text("synthetic-secret")
+        page.symlink_to(private)
+        bundle = ((server, "robo-comp-camera/"), (page, "robo-comp-camera/web/"))
+        with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env), \
+                contextlib.redirect_stderr(io.StringIO()):
+            result = self.cli.main(["deploy", "robot", "--direct"])
+        self.assertNotEqual(result, 0)
+        self.assertEqual(self.calls(), [])
+
+    def test_deploy_uses_captured_files_if_sources_are_replaced_during_ssh_login(self):
+        from unittest.mock import patch
+        root = self.directory.resolve()
+        server, page = root / "server.py", root / "camera.html"
+        private = root / "private.txt"
+        server.write_text("original-server")
+        page.write_text("original-page")
+        private.write_text("synthetic-secret")
+        copies = root / "copied.jsonl"
+        self.env["CAMERA_TEST_COPY_LOG"] = str(copies)
+        bundle = ((server, "robo-comp-camera/"), (page, "robo-comp-camera/web/"))
+        original_call = self.cli.subprocess.call
+
+        def replace_after_prepare(command):
+            code = original_call(command)
+            if command[0] == "ssh":
+                page.unlink()
+                page.symlink_to(private)
+                server.write_text("changed-server")
+            return code
+
+        with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env), \
+                patch.object(self.cli.subprocess, "call", replace_after_prepare):
+            self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 0)
+        self.assertEqual([json.loads(line) for line in copies.read_text().splitlines()],
+                         ["original-server", "original-page"])
+
+    def test_native_startup_deadline_stops_ssh_without_a_session_link(self):
+        self.env["CAMERA_TEST_BANNER"] = ""
+        self.env["CAMERA_TEST_PID_FILE"] = str(self.directory / "missing-token.pid")
+        wrapper = self.directory / "short_deadline.py"
+        wrapper.write_text(
+            "import importlib.util,sys\n"
+            "spec=importlib.util.spec_from_file_location('cli', {!r})\n"
+            "cli=importlib.util.module_from_spec(spec);spec.loader.exec_module(cli)\n"
+            "cli.SESSION_START_TIMEOUT=0.2\n"
+            "sys.exit(cli.main(sys.argv[1:]))\n".format(str(SCRIPT)))
+        process = subprocess.Popen([sys.executable, str(wrapper), "view", "robot", "--backend", "realsense",
+                                    "--no-open", "--local-port", str(self.free_port())],
+                                   env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            _, stderr = process.communicate(timeout=4)
+            self.assertNotEqual(process.returncode, 0)
+            self.assertIn("session", stderr.lower())
+            self.assertIn("deploy", stderr)
+            pid_file = Path(self.env["CAMERA_TEST_PID_FILE"])
+            # The shortened deadline may kill Python before the fixture records its PID.
+            if pid_file.exists():
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(int(pid_file.read_text()), 0)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.communicate(timeout=7)
+
+    def test_malformed_session_link_never_reaches_terminal_output(self):
+        token = "b" * 63
+        self.env["CAMERA_TEST_BANNER"] = "http://127.0.0.1:8080/#token=" + token
+        result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(token, result.stdout + result.stderr)
+
+    def test_deploy_uploads_only_allowlisted_files_beside_ignored_content(self):
+        from unittest.mock import patch
+        root = self.directory.resolve() / "runtime"
+        (root / "web").mkdir(parents=True)
+        server = root / "server.py"
+        page = root / "web/camera.html"
+        server.write_text("runtime")
+        page.write_text("viewer")
+        (root / "web/.env").write_text("synthetic-secret")
+        (root / "web/private.jpg").write_bytes(b"private-photo")
+        bundle = ((server, "robo-comp-camera/"), (page, "robo-comp-camera/web/"))
+        with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env):
+            self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 0)
+        copies = [cmd for cmd in self.calls() if cmd[0] == "scp"]
+        self.assertEqual([Path(cmd[-2]).name for cmd in copies], ["server.py", "camera.html"])
+        self.assertTrue(all("-r" not in cmd for cmd in copies))
 
     def test_doctor_uses_login_environment_without_deploy(self):
         import shlex
@@ -252,10 +382,17 @@ class CameraCommandsTest(unittest.TestCase):
                 self.assertIn("ROS_VERSION=" + str(version), result.stdout)
 
     def test_sigterm_stops_owned_ssh_process(self):
+        self.assert_sigterm_stops_owned_ssh_process("ros")
+
+    def test_sigterm_stops_native_session_and_stdout_reader(self):
+        self.assert_sigterm_stops_owned_ssh_process("realsense")
+
+    def assert_sigterm_stops_owned_ssh_process(self, backend):
         import signal
         pid_file = self.directory / "child.pid"
         env = dict(self.env, CAMERA_TEST_PID_FILE=str(pid_file))
-        process = subprocess.Popen([sys.executable, str(SCRIPT), "view", "robot", "--no-open", "--local-port", str(self.free_port())],
+        process = subprocess.Popen([sys.executable, str(SCRIPT), "view", "robot", "--backend", backend,
+                                    "--no-open", "--local-port", str(self.free_port())],
                                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         child_pid = None
         try:
@@ -334,6 +471,40 @@ class CameraCommandsTest(unittest.TestCase):
         result = self.run_cli("view", "robot", "--topic", "/camera/color/image_raw", "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("topic=/camera/color/image_raw&", result.stdout)
+
+    def test_native_browser_receives_working_session_token_without_terminal_disclosure(self):
+        import contextlib
+        import http.client
+        import io
+        from unittest.mock import patch
+        from urllib.parse import parse_qs, urlsplit
+        port = self.free_port()
+        url = "http://127.0.0.1:{}/".format(port)
+        command = [sys.executable, "-u", str(ROOT / "tests/fixtures/camera_server.py"),
+                   str(ROOT / "src/lite3_camera_server.py"), "--source", "v4l2", "--device", "/dev/video4",
+                   "--port", str(port)]
+        opened = []
+        output = io.StringIO()
+
+        def open_viewer(session_url):
+            opened.append(session_url)
+            address = urlsplit(session_url)
+            token = parse_qs(address.fragment)["token"][0]
+            conn = http.client.HTTPConnection("127.0.0.1", address.port, timeout=2)
+            try:
+                conn.request("GET", "/snapshot.jpg", headers={"Authorization": "Bearer " + token})
+                response = conn.getresponse()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.read(), (ROOT / "tests/fixtures/camera-frame.jpg").read_bytes())
+            finally:
+                conn.close()
+            raise KeyboardInterrupt  # The user closes the foreground session after opening it.
+
+        with patch.object(self.cli.webbrowser, "open", open_viewer), contextlib.redirect_stdout(output):
+            self.assertEqual(self.cli.run_foreground(command, url, True, authenticated=True), 130)
+        self.assertEqual(len(opened), 1)
+        self.assertTrue(opened[0].startswith(url + "#token="))
+        self.assertNotIn("#token=", output.getvalue())
 
 
 if __name__ == "__main__":

@@ -28,15 +28,24 @@
 </figure>
 <footer>
   <p id="status" role="status">Connection pending</p>
-  <a id="snapshot" href="/snapshot.jpg" hidden>JPEG snapshot</a>
+  <a id="snapshot" download="snapshot.jpg" hidden>JPEG snapshot</a>
 </footer>
-<noscript><p>To view video, enable JavaScript. You can also open a <a href="/snapshot.jpg">JPEG snapshot</a>.</p></noscript>
+<noscript><p>To authenticate and view video, enable JavaScript and open the session link from the launcher.</p></noscript>
 </main>
 <script>
 const image = document.getElementById('stream');
 const statusText = document.getElementById('status');
 const placeholder = document.getElementById('placeholder');
 const snapshot = document.getElementById('snapshot');
+let sessionToken = new URLSearchParams(location.hash.slice(1)).get('token') || '';
+// A fragment is not sent to HTTP servers. Remove it before any camera requests.
+if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+try {
+  if (/^[a-f0-9]{64}$/.test(sessionToken)) sessionStorage.setItem('camera-session', sessionToken);
+  else sessionToken = sessionStorage.getItem('camera-session') || '';
+} catch (_) {
+  // Playback still works in this tab when the browser disables storage.
+}
 let currentFrameURL;
 function showNoVideo(message) {
   image.hidden = true;
@@ -45,11 +54,16 @@ function showNoVideo(message) {
   currentFrameURL = null;
   placeholder.hidden = false;
   snapshot.hidden = true;
+  snapshot.removeAttribute('href');
   statusText.textContent = message;
 }
 // Read the response directly. A native <img> MJPEG stream can keep its last frame after EOF.
 // Mark video as live only after a new frame arrives and the decoder reads it.
 async function streamVideo() {
+  if (!/^[a-f0-9]{64}$/.test(sessionToken)) {
+    showNoVideo('Open the current session link from the launcher.');
+    return;
+  }
   const controller = new AbortController();
   let timeout;
   function frameDeadline() {
@@ -58,8 +72,13 @@ async function streamVideo() {
   }
   frameDeadline();
   try {
-    const response = await fetch('/stream.mjpg', {cache: 'no-store', signal: controller.signal});
+    const response = await fetch('/stream.mjpg', {cache: 'no-store', signal: controller.signal,
+      headers: {Authorization: 'Bearer ' + sessionToken}});
     if (!response.ok) {
+      if (response.status === 401) {
+        sessionToken = '';
+        try { sessionStorage.removeItem('camera-session'); } catch (_) {}
+      }
       const health = await response.json();
       throw new Error(health.error || 'No frame received yet');
     }
@@ -105,6 +124,7 @@ async function streamVideo() {
       image.src = nextURL;
       if (currentFrameURL) URL.revokeObjectURL(currentFrameURL);
       currentFrameURL = nextURL;
+      snapshot.href = nextURL;
       image.hidden = false;
       placeholder.hidden = true;
       snapshot.hidden = false;

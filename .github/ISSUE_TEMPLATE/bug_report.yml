@@ -25,4 +25,4 @@ body:
     id: logs
     attributes:
       label: Logs and test conditions
-      description: Include relevant errors or /healthz output. State whether the issue occurred in an offline test or with a real camera.
+      description: Include relevant errors or authenticated /healthz output. Redact session links, Authorization headers, host addresses, usernames, device serial numbers, ROS identifiers, and private paths. Do not attach unredacted camera images or hardware session logs. State whether the issue occurred in an offline test or with a real camera.

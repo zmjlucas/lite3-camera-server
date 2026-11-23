@@ -3,9 +3,11 @@
 
 import argparse
 import contextlib
+import hmac
 import json
 from pathlib import Path
 import re
+import secrets
 import signal
 import socket
 import sys
@@ -98,6 +100,7 @@ class CameraHTTPServer(ThreadingMixIn, HTTPServer):
 
     def __init__(self, port, frames):
         self.frames = frames
+        self.session_token = secrets.token_hex(32)
         super().__init__((LOOPBACK, port), CameraRequestHandler)
 
     def server_bind(self):
@@ -108,6 +111,9 @@ class CameraHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 class CameraRequestHandler(BaseHTTPRequestHandler):
+    def version_string(self):
+        return "Lite3Camera"
+
     def setup(self):
         self.request.settimeout(2)
         super().setup()
@@ -124,15 +130,23 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             pass
 
     def _get(self):
+        origins = self.headers.get_all("Origin", [])
+        if origins and (len(origins) != 1 or origins[0].lower() != "http://" + self.headers.get("Host", "").lower()):
+            self._respond(403, "text/plain; charset=utf-8", b"Same origin required\n")
+            return
         path = self.path.partition("?")[0]
         frames = self.server.frames
         if path == "/":
-            source_label = SOURCE_LABELS[frames.source]
+            source_label = SOURCE_LABELS[frames.source] if self._authenticated() else "Camera"
             page = PAGE.replace("__SOURCE_LABEL__", source_label).encode()
             self._respond(200, "text/html; charset=utf-8", page)
             return
         if path not in ("/healthz", "/snapshot.jpg", "/stream.mjpg"):
             self._respond(404, "text/plain; charset=utf-8", b"Not found\n")
+            return
+
+        if not self._authenticated():
+            self._respond(401, "application/json", b'{"error":"Open the current session link from the launcher."}')
             return
 
         health, frame, sequence = frames.snapshot()
@@ -144,10 +158,18 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         else:
             self._stream(frame, sequence, health["generation"])
 
+    def _authenticated(self):
+        credentials = self.headers.get_all("Authorization", [])
+        expected = "Bearer " + self.server.session_token
+        return len(credentials) == 1 and hmac.compare_digest(credentials[0].encode("utf-8"), expected.encode("ascii"))
+
     def _headers(self, status, content_type):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
 
     def _respond(self, status, content_type, body):
         self._headers(status, content_type)
@@ -323,7 +345,7 @@ def main(argv=None):
     with server:
         producer.start()
         try:
-            print("http://{}:{}/".format(LOOPBACK, server.server_port), flush=True)
+            print("http://{}:{}/#token={}".format(LOOPBACK, server.server_port, server.session_token), flush=True)
             while not stopping:
                 server.handle_request()
         finally:

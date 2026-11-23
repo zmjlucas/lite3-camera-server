@@ -1,6 +1,14 @@
 <script>
-setInterval(() => fetch('/observe', {method: 'POST', body: JSON.stringify({
-  time: performance.now(), hidden: document.getElementById('stream').hidden,
-  width: document.getElementById('stream').naturalWidth,
-  status: document.getElementById('status').textContent})}), 100);
+setInterval(() => {
+  fetch('/observe', {method: 'POST', body: JSON.stringify({
+    time: performance.now(), hidden: document.getElementById('stream').hidden,
+    width: document.getElementById('stream').naturalWidth, hash: location.hash,
+    reloaded: sessionStorage.getItem('test-reloaded') === 'yes',
+    snapshot: document.getElementById('snapshot').href.startsWith('blob:'),
+    status: document.getElementById('status').textContent})});
+  if (performance.now() > 5800 && !sessionStorage.getItem('test-reloaded')) {
+    sessionStorage.setItem('test-reloaded', 'yes');
+    location.reload();
+  }
+}, 100);
 </script>

@@ -8,6 +8,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import queue
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,8 @@ def main():
     args = parser.parse_args()
     observations = queue.Queue()
     requests = []
+    rejected = []
+    token = secrets.token_hex(32)
     frame = (Path(__file__).resolve().parent / "fixtures" / "camera-frame.jpg").read_bytes()
     # Observe the page with its network requests and image decoder unchanged.
     observer = (Path(__file__).resolve().parent / "fixtures" / "browser_observer.html").read_text(encoding="utf-8")
@@ -46,6 +49,10 @@ def main():
 
         def do_GET(self):
             try:
+                if self.path != "/" and self.headers.get("Authorization") != "Bearer " + token:
+                    rejected.append(self.path)
+                    self.send_error(401)
+                    return
                 if self.path == "/":
                     self.reply("text/html", page)
                 elif self.path == "/healthz":
@@ -73,13 +80,14 @@ def main():
         threading.Thread(target=server.serve_forever, daemon=True).start()
         browser = subprocess.Popen([args.browser, "--headless", "--disable-gpu", "--disable-background-networking",
                                     "--disable-extensions", "--no-first-run", "--user-data-dir=" + profile,
-                                    "http://127.0.0.1:{}/".format(server.server_port)],
+                                    "http://127.0.0.1:{}/#token={}".format(server.server_port, token)],
                                    stdout=subprocess.DEVNULL, stderr=None)
         try:
-            while True:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
                 row = observations.get(timeout=10)
                 rows.append(row)
-                if row["time"] > 5500:
+                if row["reloaded"] and row["time"] > 1000 and not row["hidden"]:
                     break
         finally:
             browser.terminate()
@@ -90,6 +98,10 @@ def main():
                 browser.wait()
             server.shutdown()
     assert len(requests) >= 3, "The viewer did not reconnect after stream completion and timeout"
+    assert all(not row["hash"] for row in rows), "The viewer left its session token in the address bar"
+    assert any(row["reloaded"] and row["status"] == "Live" for row in rows), "Authentication did not survive a page refresh"
+    assert any(row["snapshot"] for row in rows), "The viewer did not expose an authenticated snapshot"
+    assert not any(path.startswith('/stream.mjpg') for path in rejected), "The viewer sent an unauthenticated stream request"
     assert any(not row["hidden"] and row["width"] == 160 and row["status"] == "Live" for row in rows), "The browser did not decode and display a JPEG frame"
     assert any(row["hidden"] and "ended" in row["status"] for row in rows), "The viewer kept the last frame after stream completion"
     assert any(row["hidden"] and "timed out" in row["status"] for row in rows), "The viewer kept the last frame after a transfer timeout"
