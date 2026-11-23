@@ -14,7 +14,7 @@ from unittest.mock import Mock, call, patch
 from urllib.parse import parse_qs, urlsplit
 
 
-SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "src/lite3_camera_server.py"
+SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "src/server.py"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
@@ -23,14 +23,14 @@ class CameraServerTests(unittest.TestCase):
         self.tokens = {}
 
     def test_removed_source_is_rejected(self):
-        from src.lite3_camera_server import parse_args
+        from src.server import parse_args
 
         with patch("sys.stderr"), self.assertRaises(SystemExit) as caught:
             parse_args(["--source", "demo"])
         self.assertEqual(caught.exception.code, 2)
 
     def test_loopback_server_starts_without_reverse_dns(self):
-        from src.lite3_camera_server import CameraHTTPServer, LatestFrame
+        from src.server import CameraHTTPServer, LatestFrame
 
         frames = LatestFrame("realsense")
         # Loopback HTTP must work when the host's DNS resolver stops responding.
@@ -69,7 +69,7 @@ class CameraServerTests(unittest.TestCase):
 
     @unittest.skip("The native-depth backend is not implemented. See README.md")
     def test_native_depth_requires_helper_and_rejects_rgb_options(self):
-        from src.lite3_camera_server import parse_args
+        from src.server import parse_args
 
         for arguments in (
             ["--source", "native-depth"],
@@ -303,7 +303,7 @@ class CameraServerTests(unittest.TestCase):
                 self.assertIn(diagnostic, result.stderr.splitlines()[-1])
 
     def test_v4l2_configures_only_selected_device_and_releases_after_read_failure(self):
-        from src.lite3_camera_server import LatestFrame, capture, parse_args
+        from src.server import LatestFrame, capture, parse_args
 
         device = "/dev/v4l/by-id/usb-Intel_RealSense-video-index0"
         options = parse_args([
@@ -340,7 +340,7 @@ class CameraServerTests(unittest.TestCase):
         self.assertIsNone(frame)
 
     def test_v4l2_releases_device_when_open_fails(self):
-        from src.lite3_camera_server import LatestFrame, capture, parse_args
+        from src.server import LatestFrame, capture, parse_args
 
         options = parse_args(["--source", "v4l2", "--device", "/dev/video4"])
         camera = Mock()
@@ -360,7 +360,7 @@ class CameraServerTests(unittest.TestCase):
 
     def buffered_server(self, stale_after=2):
         try:
-            from src.lite3_camera_server import CameraHTTPServer, LatestFrame
+            from src.server import CameraHTTPServer, LatestFrame
         except ModuleNotFoundError as failure:
             self.fail(str(failure))
 

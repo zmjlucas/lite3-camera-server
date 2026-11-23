@@ -3,7 +3,7 @@ import io
 from types import SimpleNamespace
 import unittest
 
-from src.lite3_camera_server import CameraRequestHandler, LatestFrame
+from src.server import CameraRequestHandler, LatestFrame
 
 
 class MemoryConnection:

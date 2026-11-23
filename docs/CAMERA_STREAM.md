@@ -11,7 +11,7 @@ Run these commands from the repository root. Account names and addresses in exam
 3. Check the camera interfaces on the perception host:
 
 ```bash
-python3 src/lite3_camera.py doctor user@192.168.1.100
+python3 src/client.py doctor user@192.168.1.100
 ```
 
 The `doctor` command reads system details, Python dependencies, ROS environments, camera service status, and video device information. It does not open a camera. To inspect the route and commands, add `--dry-run` to `doctor`, `deploy`, or `view`. This option reads local routes and prints the selected path and commands. It does not log in to or probe the robot.
@@ -21,12 +21,12 @@ The `doctor` command reads system details, Python dependencies, ROS environments
 Use the same commands with robot Wi-Fi alone or with robot Wi-Fi and a phone USB hotspot. The launcher selects the connection path. You do not need to add or remove `--jump` for these two network conditions.
 
 ```bash
-python3 src/lite3_camera.py doctor user@192.168.1.100
-python3 src/lite3_camera.py view user@192.168.1.100
+python3 src/client.py doctor user@192.168.1.100
+python3 src/client.py view user@192.168.1.100
 # Deploy only when you need the RealSense or V4L2 server described below.
-python3 src/lite3_camera.py deploy user@192.168.1.100
+python3 src/client.py deploy user@192.168.1.100
 # Inspect the selected route without a robot connection.
-python3 src/lite3_camera.py view user@192.168.1.100 --dry-run
+python3 src/client.py view user@192.168.1.100 --dry-run
 ```
 
 The launcher uses macOS `route -n get` to read routes to the perception host and robot gateway. It uses `networksetup -listallhardwareports` to find Wi-Fi hardware interfaces. Selection does not depend on the phone model or USB interface number.
@@ -45,8 +45,8 @@ Automatic selection requires macOS and an explicit `192.168.1.*` IPv4 target. Au
 Use a manual option for another network layout, a preferred wired interface, or a different gateway account:
 
 ```bash
-python3 src/lite3_camera.py view user@192.168.1.100 --jump otheruser@192.168.2.1
-python3 src/lite3_camera.py view user@192.168.1.100 --direct
+python3 src/client.py view user@192.168.1.100 --jump otheruser@192.168.2.1
+python3 src/client.py view user@192.168.1.100 --direct
 ```
 
 The `--jump` and `--direct` options both bypass automatic selection. You cannot use them together. The `--direct` option adds no automatic jump but still uses proxies from the existing SSH configuration. The `--jump` option accepts one SSH alias, hostname, or `user@IPv4` address. It uses OpenSSH `-J` for SSH and SCP.
@@ -60,7 +60,7 @@ The launcher selects the route each time a command starts. After a USB or Wi-Fi 
 Use an active RGB image topic when one is available. The perception host must run a camera publisher node. Its ROS environment must contain `web_video_server`. The `view` command starts the preview service and forwards its port. The browser page lists the available image topics.
 
 ```bash
-python3 src/lite3_camera.py view user@192.168.1.100
+python3 src/client.py view user@192.168.1.100
 ```
 
 If the host has multiple ROS environments, use `--ros-setup` to select the camera node's environment. For example, use `--ros-setup /opt/ros/melodic/setup.bash`. You can also select a workspace `setup.bash` that provides the required packages. The launcher uses `ROS_VERSION` to select ROS 1 or ROS 2. After you find the image topic, use `--topic /camera/image_topic` with its actual name.
@@ -82,11 +82,11 @@ Older environments, such as Melodic or Foxy, might have no candidate package. In
 You can read RGB frames directly when the camera is not in use. Python 3 on the perception host must import `pyrealsense2`, `numpy`, and `cv2`. The vendor manual states that the system image includes native librealsense. Use `doctor` to check whether the Python bindings are available.
 
 ```bash
-python3 src/lite3_camera.py deploy user@192.168.1.100
-python3 src/lite3_camera.py view user@192.168.1.100 --backend realsense
+python3 src/client.py deploy user@192.168.1.100
+python3 src/client.py view user@192.168.1.100 --backend realsense
 ```
 
-The `deploy` command uploads only `src/lite3_camera_server.py` and `src/web/camera.html` to `~/robo-comp-camera/` and its `web/` subdirectory on the perception host. It rejects symlinked source paths and does not copy unrelated files or Git-ignored content. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. To change these values, use `--width`, `--height`, `--fps`, and `--quality`. If multiple cameras are connected, use `--serial` to select one.
+The `deploy` command uploads only `src/server.py` and `src/web/camera.html` to `~/lite3-camera-server/` and its `web/` subdirectory on the perception host. It rejects symlinked source paths and does not copy unrelated files or Git-ignored content. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. To change these values, use `--width`, `--height`, `--fps`, and `--quality`. If multiple cameras are connected, use `--serial` to select one.
 
 To show a depth preview beside RGB, add `--depth`. The preview uses false colors. Do not use these colors as distance measurements.
 
@@ -111,8 +111,8 @@ If the camera already publishes ROS images, use the existing topic. Do not stop 
 From the Mac, run these commands in order:
 
 ```bash
-python3 src/lite3_camera.py deploy user@192.168.1.100
-python3 src/lite3_camera.py view user@192.168.1.100 --backend v4l2 --device /dev/video4
+python3 src/client.py deploy user@192.168.1.100
+python3 src/client.py view user@192.168.1.100 --backend v4l2 --device /dev/video4
 ```
 
 The launcher selects the connection path with the rules above. Set `--device` to a confirmed `/dev/videoN` or `/dev/v4l/by-id/name` path. Device numbers can change after a restart or a USB connection change. V4L2 mode provides RGB only. It does not support `--depth` or `--serial`.

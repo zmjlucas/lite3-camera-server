@@ -17,7 +17,7 @@ syntax:
 # Python 3.13+ no longer documents support for the Python 3.6 grammar.
 # CI runs this check with Python 3.8.
 syntax-legacy:
-	$(PYTHON) -c 'import ast, sys; from pathlib import Path; sys.version_info < (3, 13) or sys.exit("Use Python 3.8-3.12 to check Python 3.6 syntax"); [ast.parse(path.read_text(), feature_version=(3, 6)) for path in [Path("src/lite3_camera_server.py"), *Path("src/remote").glob("*.py")]]; print("PASS: server and remote helper Python 3.6 syntax. Runtime operation remains unverified.")'
+	$(PYTHON) -c 'import ast, sys; from pathlib import Path; sys.version_info < (3, 13) or sys.exit("Use Python 3.8-3.12 to check Python 3.6 syntax"); [ast.parse(path.read_text(), feature_version=(3, 6)) for path in [Path("src/server.py"), *Path("src/remote").glob("*.py")]]; print("PASS: server and remote helper Python 3.6 syntax. Runtime operation remains unverified.")'
 
 test:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m unittest discover -s tests -v

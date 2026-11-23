@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 
-SCRIPT = Path(__file__).resolve().parents[1] / "src/lite3_camera.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "src/client.py"
 TARGET = "ysc@192.168.1.103"
 GATEWAY = "192.168.2.1"
 

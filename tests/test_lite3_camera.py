@@ -11,7 +11,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "src/lite3_camera.py"
+SCRIPT = ROOT / "src/client.py"
 
 
 class CameraCommandsTest(unittest.TestCase):
@@ -126,10 +126,10 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertIn("mkdir -p", calls[0][-1])
         for command in calls[1:]:
             self.assertNotIn("-r", command)
-        self.assertEqual(Path(calls[1][-2]).name, "lite3_camera_server.py")
-        self.assertEqual(calls[1][-1], "robot:robo-comp-camera/")
+        self.assertEqual(Path(calls[1][-2]).name, "server.py")
+        self.assertEqual(calls[1][-1], "robot:lite3-camera-server/")
         self.assertEqual(Path(calls[2][-2]).name, "camera.html")
-        self.assertEqual(calls[2][-1], "robot:robo-comp-camera/web/")
+        self.assertEqual(calls[2][-1], "robot:lite3-camera-server/web/")
         self.assertFalse(Path(calls[1][-2]).exists(), "Temporary deployment files must be removed")
 
     def test_native_session_link_uses_local_port_without_echoing_remote_url(self):
@@ -172,7 +172,7 @@ class CameraCommandsTest(unittest.TestCase):
         server.write_text("runtime")
         private.write_text("synthetic-secret")
         page.symlink_to(private)
-        bundle = ((server, "robo-comp-camera/"), (page, "robo-comp-camera/web/"))
+        bundle = ((server, "lite3-camera-server/"), (page, "lite3-camera-server/web/"))
         with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env), \
                 contextlib.redirect_stderr(io.StringIO()):
             result = self.cli.main(["deploy", "robot", "--direct"])
@@ -189,7 +189,7 @@ class CameraCommandsTest(unittest.TestCase):
         private.write_text("synthetic-secret")
         copies = root / "copied.jsonl"
         self.env["CAMERA_TEST_COPY_LOG"] = str(copies)
-        bundle = ((server, "robo-comp-camera/"), (page, "robo-comp-camera/web/"))
+        bundle = ((server, "lite3-camera-server/"), (page, "lite3-camera-server/web/"))
         original_call = self.cli.subprocess.call
 
         def replace_after_prepare(command):
@@ -251,7 +251,7 @@ class CameraCommandsTest(unittest.TestCase):
         page.write_text("viewer")
         (root / "web/.env").write_text("synthetic-secret")
         (root / "web/private.jpg").write_bytes(b"private-photo")
-        bundle = ((server, "robo-comp-camera/"), (page, "robo-comp-camera/web/"))
+        bundle = ((server, "lite3-camera-server/"), (page, "lite3-camera-server/web/"))
         with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env):
             self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 0)
         copies = [cmd for cmd in self.calls() if cmd[0] == "scp"]
@@ -481,7 +481,7 @@ class CameraCommandsTest(unittest.TestCase):
         port = self.free_port()
         url = "http://127.0.0.1:{}/".format(port)
         command = [sys.executable, "-u", str(ROOT / "tests/fixtures/camera_server.py"),
-                   str(ROOT / "src/lite3_camera_server.py"), "--source", "v4l2", "--device", "/dev/video4",
+                   str(ROOT / "src/server.py"), "--source", "v4l2", "--device", "/dev/video4",
                    "--port", str(port)]
         opened = []
         output = io.StringIO()

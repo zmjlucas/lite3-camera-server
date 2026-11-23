@@ -20,10 +20,10 @@ from urllib.request import ProxyHandler, build_opener
 import webbrowser
 
 
-SERVER = Path(__file__).resolve().with_name("lite3_camera_server.py")
+SERVER = Path(__file__).resolve().with_name("server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
-SERVER_BUNDLE = ((SERVER, "robo-comp-camera/"),
-                 (SERVER.parent / "web" / "camera.html", "robo-comp-camera/web/"))
+SERVER_BUNDLE = ((SERVER, "lite3-camera-server/"),
+                 (SERVER.parent / "web" / "camera.html", "lite3-camera-server/web/"))
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
 ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")

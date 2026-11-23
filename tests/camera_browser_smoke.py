@@ -16,7 +16,7 @@ import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from src.lite3_camera_server import PAGE
+from src.server import PAGE
 
 
 def main():
