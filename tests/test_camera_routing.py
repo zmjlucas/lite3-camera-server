@@ -255,9 +255,9 @@ class CameraRoutingTest(unittest.TestCase):
                 self.assertEqual(self.route_queries, [])
                 self.assertEqual(self.hardware_queries, [])
 
-    def test_removed_command_is_rejected_before_route_lookup(self):
+    def test_unknown_command_is_rejected_before_route_lookup(self):
         with self.assertRaises(SystemExit) as caught:
-            self.run_cli("demo", "--dry-run")
+            self.run_cli("unknown-command", "--dry-run")
         self.assertEqual(caught.exception.code, 2)
         self.assertEqual(self.route_queries, [])
         self.assertEqual(self.hardware_queries, [])

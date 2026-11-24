@@ -23,11 +23,11 @@ class CameraServerTests(unittest.TestCase):
     def setUp(self):
         self.tokens = {}
 
-    def test_removed_source_is_rejected(self):
+    def test_unknown_source_is_rejected(self):
         from src.server import parse_args
 
         with patch("sys.stderr"), self.assertRaises(SystemExit) as caught:
-            parse_args(["--source", "demo"])
+            parse_args(["--source", "unknown-source"])
         self.assertEqual(caught.exception.code, 2)
 
     def test_loopback_server_starts_without_reverse_dns(self):
