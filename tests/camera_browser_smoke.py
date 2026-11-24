@@ -30,7 +30,9 @@ def main():
     frame = (Path(__file__).resolve().parent / "fixtures" / "camera-frame.jpg").read_bytes()
     # Observe the page with its network requests and image decoder unchanged.
     observer = (Path(__file__).resolve().parent / "fixtures" / "browser_observer.html").read_text(encoding="utf-8")
-    page = (PAGE.replace("__SOURCE_LABEL__", "RealSense") + observer).encode()
+    # A browser navigation cannot send the fragment token as an Authorization header.
+    page = PAGE.replace("__SOURCE_LABEL__", "Camera").replace("<script>", observer + "<script>", 1).encode()
+    sources = {1: None, 2: "unknown-source", 3: "realsense", 4: "v4l2"}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -44,8 +46,13 @@ def main():
             self.wfile.write(body)
 
         def do_POST(self):
-            observations.put(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-            self.reply("text/plain", b"ok")
+            nonlocal token
+            if self.path == "/rotate":
+                token = secrets.token_hex(32)
+                self.reply("application/json", json.dumps({"token": token}).encode())
+            else:
+                observations.put(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                self.reply("text/plain", b"ok")
 
         def do_GET(self):
             try:
@@ -62,13 +69,17 @@ def main():
                     attempt = len(requests)
                     self.send_response(200)
                     self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+                    self.send_header("X-Test-Stream", str(attempt))
+                    source = sources.get(attempt, "realsense")
+                    if source is not None:
+                        self.send_header("X-Camera-Source", source)
                     self.end_headers()
                     part = b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
                     # Split the header across TCP reads to check partial header handling.
                     self.wfile.write(part[:30])
                     time.sleep(0.03)
                     self.wfile.write(part[30:])
-                    time.sleep(0.3 if attempt == 1 else 3.5)
+                    time.sleep(3.5 if attempt == 2 else 0.3)
                     self.wfile.write(b"--frame--\r\n")
                 else:
                     self.send_error(404)
@@ -85,9 +96,12 @@ def main():
         try:
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
-                row = observations.get(timeout=10)
+                try:
+                    row = observations.get(timeout=10)
+                except queue.Empty:
+                    break
                 rows.append(row)
-                if row["reloaded"] and row["time"] > 1000 and not row["hidden"]:
+                if row["rotated"] and row["time"] > 1000 and not row["hidden"] and not row["hash"]:
                     break
         finally:
             browser.terminate()
@@ -101,6 +115,15 @@ def main():
     assert all(not row["hash"] for row in rows), "The viewer left its session token in the address bar"
     assert any(row["reloaded"] and row["status"] == "Live" for row in rows), "Authentication did not survive a page refresh"
     assert any(row["snapshot"] for row in rows), "The viewer did not expose an authenticated snapshot"
+    for attempt, label in ((1, "Camera"), (2, "Camera"), (3, "RealSense"), (4, "V4L2 RGB")):
+        live = [row for row in rows if row["attempt"] == attempt and row["status"] == "Live"]
+        assert live, "The browser did not display stream {}".format(attempt)
+        assert all(row["source"] == label and row["alt"] == label + " video stream" for row in live), \
+            "The viewer did not identify authenticated stream {} as {}".format(attempt, label)
+    assert any(row["reloaded"] and row["status"] == "Live" and row["source"] == "RealSense" for row in rows), \
+        "The viewer did not restore its authenticated source after refresh"
+    assert any(row["rotated"] and row["status"] == "Live" and not row["hash"] for row in rows), \
+        "The viewer did not consume a new session link in the same tab"
     assert not any(path.startswith('/stream.mjpg') for path in rejected), "The viewer sent an unauthenticated stream request"
     assert any(not row["hidden"] and row["width"] == 160 and row["status"] == "Live" for row in rows), "The browser did not decode and display a JPEG frame"
     assert any(row["hidden"] and "ended" in row["status"] for row in rows), "The viewer kept the last frame after stream completion"

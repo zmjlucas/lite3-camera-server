@@ -37,6 +37,8 @@ const image = document.getElementById('stream');
 const statusText = document.getElementById('status');
 const placeholder = document.getElementById('placeholder');
 const snapshot = document.getElementById('snapshot');
+// A fresh session link in this tab is a fragment navigation, not a new document.
+window.addEventListener('hashchange', () => location.reload());
 let sessionToken = new URLSearchParams(location.hash.slice(1)).get('token') || '';
 // A fragment is not sent to HTTP servers. Remove it before any camera requests.
 if (location.hash) history.replaceState(null, '', location.pathname + location.search);
@@ -82,6 +84,11 @@ async function streamVideo() {
       const health = await response.json();
       throw new Error(health.error || 'No frame received yet');
     }
+    // The initial navigation is anonymous; identify the source only after authentication.
+    const source = response.headers.get('X-Camera-Source');
+    const sourceLabel = source === 'realsense' ? 'RealSense' : source === 'v4l2' ? 'V4L2 RGB' : 'Camera';
+    document.querySelector('.source').textContent = sourceLabel;
+    image.alt = sourceLabel + ' video stream';
     const reader = response.body.getReader();
     let buffer = new Uint8Array(0);
     const decoder = new TextDecoder();

@@ -179,6 +179,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
 
     def _stream(self, frame, sequence, generation):
         self._headers(200, "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("X-Camera-Source", self.server.frames.source)
         self.end_headers()
         while frame is not None:
             headers = "Content-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n".format(len(frame))
