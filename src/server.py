@@ -52,6 +52,8 @@ def v4l2_formats(device):
                 raise
             fourcc = struct.unpack_from("=I", description, 44)[0]
             formats.add(struct.pack("<I", fourcc).decode("ascii", errors="replace"))
+        if formats and not os.access(device, os.R_OK | os.W_OK):
+            raise PermissionError(errno.EACCES, "Capture requires read/write access", device)
         return formats
     finally:
         os.close(descriptor)
@@ -82,7 +84,7 @@ def camera_device_owners(proc_root):
                 name = Path(os.readlink(str(process / "exe"))).name
             except OSError:
                 try:
-                    name = (process / "comm").read_text().strip()
+                    name = (process / "comm").read_text(errors="replace").strip()
                 except OSError:
                     name = "another process"
             owners[device] = "{} (PID {})".format(name, process.name)
@@ -631,12 +633,12 @@ class CaptureController:
             entry = next((item for item in detected if item["id"] == source_id), None)
             if entry is None:
                 raise ValueError("That camera is unavailable. Refresh the source list.")
+            if not entry.get("available", True):
+                raise RuntimeError(entry.get("error") or "That camera is unavailable. Refresh the source list.")
             if (source_id == self.frames.snapshot()[0]["source_id"] and self.producer is not None
                     and self.producer.is_alive() and not self._stop.is_set()
                     and self.frames.snapshot()[0]["status"] in ("live", "starting")):
                 return self._catalog(detected)
-            if not entry.get("available", True):
-                raise RuntimeError(entry.get("error") or "That camera is unavailable. Refresh the source list.")
             options = self._source_options(entry)
             self.frames.retire("Camera switching; the previous video has ended")
             self._stop.set()
