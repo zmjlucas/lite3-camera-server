@@ -25,9 +25,11 @@ class CameraSecurityTests(unittest.TestCase):
     token = "a" * 64
     frame = b"synthetic-private-frame"
 
-    def request(self, path="/snapshot.jpg", headers=None):
-        frames = LatestFrame("realsense", stale_after=0.02)
+    def request(self, path="/snapshot.jpg", headers=None, source="realsense"):
+        # Authentication/parser checks must not depend on scheduling delays.
+        frames = LatestFrame(source, stale_after=float("inf"))
         frames.publish(self.frame)
+        frames.wait_for_frame = lambda sequence, generation: (None, sequence)
         if headers is None:
             headers = [("Host", "127.0.0.1:18080"), ("Authorization", "Bearer " + self.token)]
         raw = "GET {} HTTP/1.1\r\n{}\r\nConnection: close\r\n\r\n".format(
@@ -45,8 +47,9 @@ class CameraSecurityTests(unittest.TestCase):
                     headers = [("Host", "127.0.0.1:18080")]
                     if auth is not None:
                         headers.append(("Authorization", auth))
-                    status, _, body = self.request(path, headers)
+                    status, response_headers, body = self.request(path, headers)
                     self.assertEqual(status, 401)
+                    self.assertNotIn(b"X-Camera-Source:", response_headers)
                     self.assertNotIn(self.frame, body)
                     self.assertNotIn(self.token.encode(), body)
 
@@ -55,6 +58,14 @@ class CameraSecurityTests(unittest.TestCase):
                                       [("Host", "127.0.0.1:18080")])
         self.assertEqual(status, 401)
         self.assertNotIn(self.frame, body)
+
+    def test_authenticated_stream_identifies_its_actual_source(self):
+        for source in ("realsense", "v4l2"):
+            with self.subTest(source=source):
+                status, headers, body = self.request("/stream.mjpg", source=source)
+                self.assertEqual(status, 200)
+                self.assertIn(b"X-Camera-Source: " + source.encode(), headers.split(b"\r\n"))
+                self.assertIn(self.frame, body)
 
     def test_host_header_does_not_restrict_authenticated_camera_requests(self):
         for hosts in ([], ["untrusted.example:18080"], ["127.0.0.1.evil.example"],
@@ -100,7 +111,9 @@ class CameraSecurityTests(unittest.TestCase):
         status, headers, body = self.request("/", [("Host", "localhost:18080")])
         self.assertEqual(status, 200)
         self.assertNotIn(self.token.encode(), body)
-        self.assertNotIn(b"RealSense", body)
+        self.assertIn(b'class="source">Camera</span>', body)
+        self.assertIn(b'alt="Camera video stream"', body)
+        self.assertNotIn(b"X-Camera-Source:", headers)
         self.assertIn(b"Referrer-Policy: no-referrer", headers)
         self.assertIn(b"Cache-Control: no-store", headers)
         self.assertNotIn(b"Python/", headers)

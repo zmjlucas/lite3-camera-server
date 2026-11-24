@@ -133,9 +133,10 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertFalse(Path(calls[1][-2]).exists(), "Temporary deployment files must be removed")
 
     def test_native_session_link_uses_local_port_without_echoing_remote_url(self):
-        result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open", "--local-port", "18081")
+        port = self.free_port()
+        result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open", "--local-port", str(port))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("http://127.0.0.1:18081/#token=" + "a" * 64, result.stdout)
+        self.assertIn("http://127.0.0.1:{}/#token=".format(port) + "a" * 64, result.stdout)
         self.assertNotIn("http://127.0.0.1:8080/#token=", result.stdout)
 
     def test_native_legacy_server_without_session_link_fails_with_deploy_hint(self):
