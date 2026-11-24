@@ -248,7 +248,7 @@ class CameraRoutingTest(unittest.TestCase):
     def test_aliases_other_networks_and_platforms_keep_existing_ssh_behavior(self):
         for target, platform in (("robot", "darwin"), ("ysc@robot.local", "darwin"),
                                  ("ysc@10.0.0.2", "darwin"), ("ysc@192.168.2.1", "darwin"),
-                                 ("ysc@192.168.1.999", "darwin"), (TARGET, "linux")):
+                                 ("ysc@192.168.1.999", "darwin"), (TARGET, "linux"), (TARGET, "win32")):
             with self.subTest(target=target, platform=platform):
                 self.run_cli("doctor", target, platform=platform)
                 self.assertNotIn("-J", self.remote_commands[-1])

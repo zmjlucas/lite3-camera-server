@@ -1,6 +1,7 @@
 import http.client
 import json
-import selectors
+import os
+import queue
 import signal
 import subprocess
 import sys
@@ -156,10 +157,14 @@ class CameraServerTests(unittest.TestCase):
             cwd=directory.name,
         )
         self.addCleanup(self.stop_process, process)
-        with selectors.DefaultSelector() as poller:
-            poller.register(process.stdout, selectors.EVENT_READ)
-            self.assertTrue(poller.select(4), "The camera server did not print a URL")
-        url = process.stdout.readline().decode().strip()
+        lines = queue.Queue()
+        reader = threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True)
+        reader.start()
+        try:
+            url = lines.get(timeout=4).decode().strip()
+        except queue.Empty:
+            self.fail("The camera server did not print a URL")
+        reader.join(timeout=1)
         if not url:
             _, stderr = process.communicate(timeout=4)
             self.fail(stderr.decode())
@@ -248,6 +253,7 @@ class CameraServerTests(unittest.TestCase):
         self.assertEqual(headers.get_content_type(), "text/html")
         self.assertIn(b"V4L2 RGB", body)
 
+    @unittest.skipIf(os.name == "nt", "POSIX signals target the Linux robot server")
     def test_signals_shut_down_with_an_active_stream(self):
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             with self.subTest(signum=signum):

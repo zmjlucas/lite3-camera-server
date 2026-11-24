@@ -3,13 +3,15 @@
 [![CI](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml/badge.svg)](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-View the camera on a Lite3 robot in a Mac browser through SSH. Use an existing ROS image topic, RealSense, or V4L2 RGB.
+View the camera on a Lite3 robot in a Windows or macOS browser through SSH. Use an existing ROS image topic, RealSense, or V4L2 RGB.
 
 This tool shows camera images. It does not send motion commands. The client does not need ROS. The client and unit tests use only the Python standard library.
 
 ## Quick start
 
 The launcher requires Python 3.8 or later. A robot connection also requires OpenSSH (`ssh` and `scp`) and network access to the perception host. Use a maintained Python version for development. Python 3.8 support is for older devices.
+
+The client runs natively on Windows 10/11 and macOS. The perception host still runs Linux with Bash and its camera dependencies. Windows does not need WSL, Git Bash, Make, or ROS to run the client.
 
 ```bash
 git clone https://github.com/zmjlucas/lite3-camera-server.git
@@ -18,6 +20,22 @@ python3 src/client.py --help
 ```
 
 Run the Python entry points in `src/` directly. You do not need `pip install`. See the [camera guide](docs/CAMERA_STREAM.md) for all procedures.
+
+On Windows, use PowerShell and replace `python3` in the examples with `py -3` (or `python` if that is your Python 3 command):
+
+```powershell
+git clone https://github.com/zmjlucas/lite3-camera-server.git
+cd lite3-camera-server
+py -3 src/client.py --help
+Get-Command ssh, scp
+py -3 src/client.py doctor user@192.168.1.100
+py -3 src/client.py view user@192.168.1.100
+# For RealSense or V4L2, deploy before starting that backend:
+py -3 src/client.py deploy user@192.168.1.100
+py -3 src/client.py view user@192.168.1.100 --backend realsense
+```
+
+If `ssh` or `scp` is missing, install **OpenSSH Client** through Windows Optional Features, then reopen PowerShell. See [Microsoft's OpenSSH installation guide](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse). The local computer needs only the client component.
 
 ## Connect to a robot
 
@@ -45,6 +63,8 @@ To select a jump host manually, use `--jump user@192.168.2.1`. To use your exist
 
 Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script and viewer page to `~/lite3-camera-server/`.
 
+On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/client.py view user@192.168.1.100 --jump user@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
+
 The HTTP server and SSH tunnel bind to `127.0.0.1`. The default ports are `18080` on the client and `8080` on the perception host. RealSense and V4L2 sessions generate a new access token on every server start. The launcher receives it over SSH and opens the authenticated viewer. With `--no-open`, use the private session link printed by the launcher. Redeploy the server when updating the launcher.
 
 The viewer removes the token from the address bar and retains it in this tab's session storage for refreshes. Do not share session links or Authorization headers. Requests carrying an Origin header must match the request's origin. Host headers are unrestricted. ROS mode uses the external `web_video_server` and retains its own authentication policy; use that mode only with a trusted local client and an SSH tunnel.
@@ -68,19 +88,28 @@ The `frame_age_s` field measures the time since the server captured the latest f
 
 ```bash
 make check                 # Run syntax checks and unit tests.
-make browser-test          # Optional: run the test in local Chrome.
+make browser-test          # Optional: detect local Chrome/Chromium/Edge.
 # For Linux or a different Chromium path:
 make browser-test BROWSER=/usr/bin/google-chrome
 ```
 
-To run the tests without Make:
+To run the checks without Make on macOS/Linux:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
-python3 tests/camera_browser_smoke.py
+python3 -B scripts/check.py --shell
+python3 -B tests/camera_browser_smoke.py
 ```
 
-CI runs the tests with multiple Python versions on Linux and with Python on macOS. A separate CI job runs the Chrome test. CI does not connect to a robot.
+On Windows (PowerShell):
+
+```powershell
+py -3 -B scripts/check.py
+py -3 -B tests/camera_browser_smoke.py
+# Optional explicit browser path:
+py -3 -B tests/camera_browser_smoke.py --browser 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+```
+
+CI is configured to run offline tests on Linux, macOS, and Windows, with browser playback checks on all three. Native Windows tests include deployment file handles and junction refusal. Remote Bash and POSIX signal integration tests run on Linux/macOS and are skipped on Windows; the Windows suite still exercises launcher commands, authentication, interrupt cleanup, and HTTP streaming. CI does not connect to a robot. Configuration of a CI job is not a hardware acceptance result.
 
 ## Test status and limits
 

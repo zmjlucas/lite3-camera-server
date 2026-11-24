@@ -1,12 +1,22 @@
-# View the Lite3 camera in a Mac browser
+# View the Lite3 camera from Windows or macOS
 
-The Mac connects to the perception host through SSH. The browser shows the camera stream through this connection. The Mac needs Python 3.8 or later, OpenSSH, and a browser. The camera commands do not send motion commands.
+The computer connects to the Linux perception host through SSH. The browser shows the camera stream through this connection. The Windows or macOS client needs Python 3.8 or later, OpenSSH (`ssh` and `scp`), and a browser. The camera commands do not send motion commands. Camera drivers, ROS and Bash run on the perception host.
 
 Run these commands from the repository root. Account names and addresses in examples are placeholders, not a record of any deployed robot. Replace them with the values for your robot.
 
+Examples below use `python3` for macOS/Linux. In Windows PowerShell, replace it with `py -3` or your installed `python` command. No local Bash or WSL is required. Confirm `Get-Command ssh, scp` succeeds; otherwise install **OpenSSH Client** in Windows Optional Features and reopen the terminal. See [Microsoft's instructions](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse).
+
+```powershell
+py -3 src/client.py doctor user@192.168.1.100
+py -3 src/client.py deploy user@192.168.1.100
+py -3 src/client.py view user@192.168.1.100 --backend realsense
+```
+
+Deployment refuses symbolic links in source paths and, on Windows, all reparse points including junctions. Use a normal local checkout if a redirected or cloud-managed folder is rejected. Capture files are read before SSH login and only the two runtime assets are uploaded.
+
 ## Connect to the robot
 
-1. Connect the Mac to the robot's Wi-Fi or the specified wired network.
+1. Connect the computer to the robot's Wi-Fi or the specified wired network.
 2. Before the first SSH connection, check the host key.
 3. Check the camera interfaces on the perception host:
 
@@ -16,9 +26,21 @@ python3 src/client.py doctor user@192.168.1.100
 
 The `doctor` command reads system details, Python dependencies, ROS environments, camera service status, and video device information. It does not open a camera. To inspect the route and commands, add `--dry-run` to `doctor`, `deploy`, or `view`. This option reads local routes and prints the selected path and commands. It does not log in to or probe the robot.
 
+Windows dry-run output shows exact command arguments as JSON for inspection; it is not a PowerShell script to paste and execute. Run the launcher without `--dry-run` to let Python pass the arguments directly to OpenSSH, including embedded quotes and newlines.
+
 ### Select routes for robot Wi-Fi and phone USB networks
 
-Use the same commands with robot Wi-Fi alone or with robot Wi-Fi and a phone USB hotspot. The launcher selects the connection path. You do not need to add or remove `--jump` for these two network conditions.
+On macOS, use the same commands with robot Wi-Fi alone or with robot Wi-Fi and a phone USB hotspot. The launcher selects the connection path. You do not need to add or remove `--jump` for these two network conditions.
+
+On Windows, the launcher uses your existing SSH configuration and system routes. With a phone hotspot and robot Wi-Fi connected together, select the robot gateway with `--jump` if the direct target route goes through the phone. Apply this option to all three commands:
+
+```powershell
+py -3 src/client.py doctor user@192.168.1.100 --jump user@192.168.2.1
+py -3 src/client.py deploy user@192.168.1.100 --jump user@192.168.2.1
+py -3 src/client.py view user@192.168.1.100 --backend realsense --jump user@192.168.2.1
+```
+
+The automatic selection details below apply to macOS only.
 
 ```bash
 python3 src/client.py doctor user@192.168.1.100
@@ -108,7 +130,7 @@ Before you deploy the server, confirm these conditions:
 
 If the camera already publishes ROS images, use the existing topic. Do not stop vendor services for a preview.
 
-From the Mac, run these commands in order:
+From the client computer, run these commands in order:
 
 ```bash
 python3 src/client.py deploy user@192.168.1.100
@@ -121,7 +143,7 @@ Use `--width`, `--height`, `--fps`, and `--quality` to request settings that the
 
 ## Stop the preview and find faults
 
-By default, `view` forwards the Mac's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080` through SSH. To open the printed URL manually, add `--no-open`. To stop the preview service and tunnel, press Ctrl+C in the terminal that runs `view`.
+By default, `view` forwards the computer's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080` through SSH. To open the printed URL manually, add `--no-open`. To stop the preview service and tunnel, press Ctrl+C in the terminal that runs `view`. Windows also handles Ctrl+Break. Force-ending the launcher in Task Manager bypasses its cleanup; use the terminal interrupt for normal shutdown.
 
 RealSense and V4L2 create a new session token on each startup. The launcher reads the session link over SSH and opens it using the forwarded local port. With `--no-open`, copy the full private session link including its `#token=…` fragment. The viewer removes that fragment from the address bar; subsequent requests carry the token in an Authorization header. Refreshes reuse tab session storage. Do not paste the link or header into issues, logs, or chat. After a server restart, use the new session link. If an old deployed server does not provide one, rerun `deploy` before `view`. The launcher stops after 60 seconds without a session link, including time spent at SSH login prompts; finish login promptly or retry.
 
@@ -131,7 +153,8 @@ The RealSense and V4L2 pages check the incoming video data. If the stream ends, 
 
 | Symptom | Checks and actions |
 | --- | --- |
-| SSH cannot connect | Check the Mac's network and the perception host's IP address. Check access to the SSH port. |
+| SSH cannot connect | Check the computer's network and the perception host's IP address. Check access to the SSH port. On Windows with two network links, try the explicit `--jump` described above. |
+| Windows cannot find Python, ssh, or scp | Use `py -3` or a Python 3 executable on PATH. Install Windows OpenSSH Client and reopen PowerShell. |
 | A port is in use | For the local port, use `--local-port 18081`. For the perception host's port, use `--remote-port 8081`. |
 | The ROS page has no image or keeps the same frame | Check that `--ros-setup` matches the camera node's environment. In that environment, use `rostopic list` and `rostopic hz`, or `ros2 topic list` and `ros2 topic hz`. Confirm that the image topic receives new frames. |
 | RealSense reports a busy device | Check for a ROS camera node or `realsense-viewer` that uses the camera. If ROS publishes images, use ROS mode. |

@@ -1,4 +1,4 @@
-"""Check Mac commands with local SSH and SCP substitutes. These tests do not connect to a robot."""
+"""Check client commands with portable SSH/SCP substitutes; no robot connections."""
 import json
 import importlib.util
 import os
@@ -8,55 +8,73 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "src/client.py"
+RUNNER = ROOT / "tests/fixtures/client_runner.py"
 
 
 class CameraCommandsTest(unittest.TestCase):
     def setUp(self):
-        self.assertTrue(SCRIPT.is_file(), "The Mac camera launcher script is missing")
+        self.assertTrue(SCRIPT.is_file(), "The camera launcher script is missing")
         spec = importlib.util.spec_from_file_location("camera_cli", SCRIPT)
         self.cli = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.cli)
+        original_popen = subprocess.Popen
+
+        def start(command, *args, **kwargs):
+            if command[0] in ("ssh", "scp"):
+                command = [sys.executable, str(RUNNER), "--ssh-stub"] + list(command)
+            return original_popen(command, *args, **kwargs)
+
+        substitute = patch.object(self.cli.subprocess, "Popen", start)
+        substitute.start()
+        self.addCleanup(substitute.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.log = self.directory / "calls.jsonl"
-        executable = ("#!" + sys.executable + "\n"
-                      "import json, os, sys, time\n"
-                      "with open(os.environ['CAMERA_TEST_LOG'], 'a') as f:\n"
-                      "    f.write(json.dumps([os.path.basename(sys.argv[0])] + sys.argv[1:]) + '\\n')\n"
-                      "if os.path.basename(sys.argv[0]) == 'scp' and os.environ.get('CAMERA_TEST_COPY_LOG'):\n"
-                      "    with open(os.environ['CAMERA_TEST_COPY_LOG'], 'a') as f:\n"
-                      "        f.write(json.dumps(open(sys.argv[-2]).read()) + '\\n')\n"
-                      "if '--source' in sys.argv[-1]:\n"
-                      "    banner = os.environ.get('CAMERA_TEST_BANNER', 'http://127.0.0.1:8080/#token=' + 'a' * 64)\n"
-                      "    if banner: print(banner, flush=True)\n"
-                      "if os.environ.get('CAMERA_TEST_PID_FILE'):\n"
-                      "    open(os.environ['CAMERA_TEST_PID_FILE'], 'w').write(str(os.getpid()))\n"
-                      "    time.sleep(30)\n"
-                      "sys.exit(int(os.environ.get('CAMERA_TEST_EXIT', '0')))\n")
-        for name in ("ssh", "scp"):
-            path = self.directory / name
-            path.write_text(executable)
-            path.chmod(0o755)
-        # The route samples are in test_camera_routing.py.
-        # Keep these subprocess tests independent of the developer's active Wi-Fi and USB routes.
-        route = self.directory / "route"
-        route.write_text("#!" + sys.executable + "\nimport sys\nsys.exit(1)\n")
-        route.chmod(0o755)
-        self.env = dict(os.environ, PATH=str(self.directory) + os.pathsep + os.environ["PATH"],
-                        CAMERA_TEST_LOG=str(self.log), PYTHONDONTWRITEBYTECODE="1")
+        self.env = dict(os.environ, CAMERA_TEST_LOG=str(self.log), PYTHONDONTWRITEBYTECODE="1")
 
     def run_cli(self, *args, exit_code=0):
         args = list(args)
         if args[0] == "view" and "--dry-run" not in args and "--local-port" not in args:
             args.extend(["--local-port", str(self.free_port())])
         env = dict(self.env, CAMERA_TEST_EXIT=str(exit_code))
-        return subprocess.run([sys.executable, str(SCRIPT)] + args, env=env,
+        return subprocess.run([sys.executable, str(RUNNER), str(SCRIPT)] + args, env=env,
                               capture_output=True, text=True, timeout=8)
+
+    def assert_process_stopped(self, pid):
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            if not handle:
+                self.assertEqual(ctypes.get_last_error(), 87)  # Process no longer exists.
+                return
+            try:
+                self.assertEqual(kernel.WaitForSingleObject(handle, 0), 0, "SSH child still running")
+            finally:
+                kernel.CloseHandle(handle)
+        else:
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+
+    def symlink(self, path, target):
+        try:
+            path.symlink_to(target)
+        except OSError as error:
+            if os.name == "nt" and error.winerror == 1314:
+                self.skipTest("Windows account lacks symlink privilege; junction tests run separately")
+            raise
 
     @staticmethod
     def free_port():
@@ -143,7 +161,7 @@ class CameraCommandsTest(unittest.TestCase):
         self.env["CAMERA_TEST_BANNER"] = "http://127.0.0.1:8080/"
         pid_file = self.directory / "legacy.pid"
         env = dict(self.env, CAMERA_TEST_PID_FILE=str(pid_file))
-        process = subprocess.Popen([sys.executable, str(SCRIPT), "view", "robot", "--backend", "realsense",
+        process = subprocess.Popen([sys.executable, str(RUNNER), str(SCRIPT), "view", "robot", "--backend", "realsense",
                                     "--no-open", "--local-port", str(self.free_port())],
                                    env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
@@ -151,8 +169,7 @@ class CameraCommandsTest(unittest.TestCase):
             self.assertNotEqual(process.returncode, 0)
             self.assertIn("deploy", stderr)
             if pid_file.exists():
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(int(pid_file.read_text()), 0)
+                self.assert_process_stopped(int(pid_file.read_text()))
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -163,6 +180,14 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 23)
         self.assertEqual(len(self.calls()), 1)
 
+    def test_deploy_disambiguates_single_letter_ssh_alias_from_windows_drive(self):
+        result = self.run_cli("deploy", "r", "--direct")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertEqual(calls[0][-2], "r")
+        self.assertEqual([command[-1] for command in calls[1:]],
+                         ["[r]:lite3-camera-server/", "[r]:lite3-camera-server/web/"])
+
     def test_deploy_refuses_symlinked_assets_before_remote_commands(self):
         import contextlib
         import io
@@ -172,7 +197,7 @@ class CameraCommandsTest(unittest.TestCase):
         private = self.directory.resolve() / "private.txt"
         server.write_text("runtime")
         private.write_text("synthetic-secret")
-        page.symlink_to(private)
+        self.symlink(page, private)
         bundle = ((server, "lite3-camera-server/"), (page, "lite3-camera-server/web/"))
         with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env), \
                 contextlib.redirect_stderr(io.StringIO()):
@@ -197,7 +222,7 @@ class CameraCommandsTest(unittest.TestCase):
             code = original_call(command)
             if command[0] == "ssh":
                 page.unlink()
-                page.symlink_to(private)
+                self.symlink(page, private)
                 server.write_text("changed-server")
             return code
 
@@ -210,14 +235,8 @@ class CameraCommandsTest(unittest.TestCase):
     def test_native_startup_deadline_stops_ssh_without_a_session_link(self):
         self.env["CAMERA_TEST_BANNER"] = ""
         self.env["CAMERA_TEST_PID_FILE"] = str(self.directory / "missing-token.pid")
-        wrapper = self.directory / "short_deadline.py"
-        wrapper.write_text(
-            "import importlib.util,sys\n"
-            "spec=importlib.util.spec_from_file_location('cli', {!r})\n"
-            "cli=importlib.util.module_from_spec(spec);spec.loader.exec_module(cli)\n"
-            "cli.SESSION_START_TIMEOUT=0.2\n"
-            "sys.exit(cli.main(sys.argv[1:]))\n".format(str(SCRIPT)))
-        process = subprocess.Popen([sys.executable, str(wrapper), "view", "robot", "--backend", "realsense",
+        self.env["CAMERA_TEST_START_TIMEOUT"] = "0.5"
+        process = subprocess.Popen([sys.executable, str(RUNNER), str(SCRIPT), "view", "robot", "--backend", "realsense",
                                     "--no-open", "--local-port", str(self.free_port())],
                                    env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
@@ -228,8 +247,7 @@ class CameraCommandsTest(unittest.TestCase):
             pid_file = Path(self.env["CAMERA_TEST_PID_FILE"])
             # The shortened deadline may kill Python before the fixture records its PID.
             if pid_file.exists():
-                with self.assertRaises(ProcessLookupError):
-                    os.kill(int(pid_file.read_text()), 0)
+                self.assert_process_stopped(int(pid_file.read_text()))
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -268,11 +286,12 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(shlex.split(command[-1])[:2], ["bash", "-lc"])
 
     def test_view_uses_loopback_pty_and_preserves_ssh_verification(self):
-        result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open", "--local-port", "18081", "--remote-port", "8081", "--serial", "abc; id")
+        port = self.free_port()
+        result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open", "--local-port", str(port), "--remote-port", "8081", "--serial", "abc; id")
         self.assertEqual(result.returncode, 0, result.stderr)
         call, = self.calls()
         self.assertIn("-tt", call)
-        self.assertIn("127.0.0.1:18081:127.0.0.1:8081", call)
+        self.assertIn("127.0.0.1:{}:127.0.0.1:8081".format(port), call)
         self.assertIn("ExitOnForwardFailure=yes", call)
         self.assertNotIn("StrictHostKeyChecking=no", call)
         # Parse both levels of shell quotes. The serial number must remain one argument.
@@ -341,6 +360,7 @@ class CameraCommandsTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(), [])
 
+    @unittest.skipIf(os.name == "nt", "Remote Linux Bash integration runs on POSIX CI")
     def test_ros_remote_shell_executes_matching_binary_with_loopback_args(self):
         import socket
         with socket.socket() as sock:
@@ -350,7 +370,11 @@ class CameraCommandsTest(unittest.TestCase):
                                           (2, "ros2", ["run", "web_video_server", "web_video_server", "--ros-args", "-p", "address:=127.0.0.1", "-p", "port:=" + str(port), "-p", "default_qos_profile:=sensor_data"])):
             for name in ("rospack", "rosrun", "ros2"):
                 path = self.directory / name
-                path.write_text((self.directory / "ssh").read_text())
+                path.write_text(
+                    "#!" + sys.executable + "\nimport json, os, sys\n"
+                    "with open(os.environ['CAMERA_TEST_LOG'], 'a', encoding='utf-8') as log:\n"
+                    "    log.write(json.dumps([os.path.basename(sys.argv[0])] + sys.argv[1:]) + '\\n')\n",
+                    encoding="utf-8")
                 path.chmod(0o755)
             setup = self.directory / "setup with spaces.bash"
             import shlex
@@ -368,6 +392,7 @@ class CameraCommandsTest(unittest.TestCase):
                 actual = actual[:-1]
             self.assertEqual(actual, [binary] + expected)
 
+    @unittest.skipIf(os.name == "nt", "Remote Linux Bash integration runs on POSIX CI")
     def test_ros_diagnostics_source_setup_without_passing_launcher_arguments(self):
         import shlex
         setup = self.directory / "setup with spaces.bash"
@@ -382,9 +407,11 @@ class CameraCommandsTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("ROS_VERSION=" + str(version), result.stdout)
 
+    @unittest.skipIf(os.name == "nt", "Windows terminate() force-kills; portable interrupt cleanup is tested separately")
     def test_sigterm_stops_owned_ssh_process(self):
         self.assert_sigterm_stops_owned_ssh_process("ros")
 
+    @unittest.skipIf(os.name == "nt", "Windows terminate() force-kills; portable interrupt cleanup is tested separately")
     def test_sigterm_stops_native_session_and_stdout_reader(self):
         self.assert_sigterm_stops_owned_ssh_process("realsense")
 
@@ -392,7 +419,7 @@ class CameraCommandsTest(unittest.TestCase):
         import signal
         pid_file = self.directory / "child.pid"
         env = dict(self.env, CAMERA_TEST_PID_FILE=str(pid_file))
-        process = subprocess.Popen([sys.executable, str(SCRIPT), "view", "robot", "--backend", backend,
+        process = subprocess.Popen([sys.executable, str(RUNNER), str(SCRIPT), "view", "robot", "--backend", backend,
                                     "--no-open", "--local-port", str(self.free_port())],
                                    env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         child_pid = None

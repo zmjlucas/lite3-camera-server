@@ -333,8 +333,10 @@ def main(argv=None):
         nonlocal stopping
         stopping = True
 
-    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(signum, request_stop)
+    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
+        signum = getattr(signal, name, None)
+        if signum is not None:
+            signal.signal(signum, request_stop)
 
     try:
         server = CameraHTTPServer(options.port, frames)
