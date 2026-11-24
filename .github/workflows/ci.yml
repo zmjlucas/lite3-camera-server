@@ -67,3 +67,5 @@ jobs:
           python-version: '3.13'
       - name: Check playback and reconnection
         run: python -B tests/camera_browser_smoke.py
+      - name: Check camera source selection
+        run: python -B tests/camera_sources_browser_smoke.py

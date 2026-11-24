@@ -12,6 +12,13 @@
   h1 { margin: 0; font-size: 1.75rem; }
   .source { color: #a8e9c5; background: #1b342f; padding: .35rem .65rem;
             border-radius: .35rem; }
+  .camera-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+  select, button { color: inherit; background: #192633; border: 1px solid #60758a;
+                   border-radius: .35rem; padding: .5rem; font: inherit; }
+  select { min-width: 0; max-width: 100%; flex: 1; }
+  button { cursor: pointer; }
+  select:disabled, button:disabled { opacity: .65; cursor: default; }
+  #source-status { color: #a6b8c7; font-size: .9rem; min-height: 1.3em; }
   figure { margin: 0; display: grid; place-items: center; min-height: 15rem;
            background: #192633; border: 1px solid #364759; border-radius: .6rem;
            overflow: hidden; }
@@ -22,6 +29,13 @@
 </style>
 <main>
 <header><h1>Lite3 camera</h1><span class="source">__SOURCE_LABEL__</span></header>
+<div class="camera-controls">
+  <label for="camera-source">Source</label>
+  <select id="camera-source" disabled aria-describedby="source-status"><option>Loading cameras…</option></select>
+  <button id="refresh-sources" type="button">Refresh</button>
+  <button id="retry-camera" type="button" hidden>Retry camera</button>
+</div>
+<p id="source-status" role="status">Loading cameras…</p>
 <figure>
   <img id="stream" alt="__SOURCE_LABEL__ video stream" hidden>
   <p id="placeholder">No video yet</p>
@@ -37,6 +51,10 @@ const image = document.getElementById('stream');
 const statusText = document.getElementById('status');
 const placeholder = document.getElementById('placeholder');
 const snapshot = document.getElementById('snapshot');
+const sourceSelect = document.getElementById('camera-source');
+const sourceStatus = document.getElementById('source-status');
+const refreshSourcesButton = document.getElementById('refresh-sources');
+const retryCameraButton = document.getElementById('retry-camera');
 // A fresh session link in this tab is a fragment navigation, not a new document.
 window.addEventListener('hashchange', () => location.reload());
 let sessionToken = new URLSearchParams(location.hash.slice(1)).get('token') || '';
@@ -49,6 +67,22 @@ try {
   // Playback still works in this tab when the browser disables storage.
 }
 let currentFrameURL;
+let activeStream;
+let streamGeneration = 0;
+let reconnectTimer;
+let sourceRequest;
+let sourceGeneration = 0;
+let switchingSource = false;
+let knownSources = [];
+let selectedSource = null;
+let streamFailed = false;
+function authenticated() {
+  return /^[a-f0-9]{64}$/.test(sessionToken);
+}
+function forgetSession() {
+  sessionToken = '';
+  try { sessionStorage.removeItem('camera-session'); } catch (_) {}
+}
 function showNoVideo(message) {
   image.hidden = true;
   image.removeAttribute('src');
@@ -59,14 +93,139 @@ function showNoVideo(message) {
   snapshot.removeAttribute('href');
   statusText.textContent = message;
 }
+function stopVideo(message) {
+  streamGeneration++;
+  clearTimeout(reconnectTimer);
+  if (activeStream) activeStream.abort();
+  activeStream = null;
+  streamFailed = false;
+  updateRetryButton();
+  showNoVideo(message);
+}
+function updateRetryButton() {
+  retryCameraButton.hidden = !streamFailed || !selectedSource || !authenticated();
+  retryCameraButton.disabled = switchingSource;
+}
+function renderSources() {
+  sourceSelect.replaceChildren();
+  if (!selectedSource) sourceSelect.add(new Option(knownSources.length ? 'Select a camera' : 'No cameras available', ''));
+  for (const source of knownSources) sourceSelect.add(new Option(source.label, source.id));
+  sourceSelect.value = selectedSource ? selectedSource.id : '';
+  sourceSelect.disabled = switchingSource || !knownSources.length || !authenticated();
+  refreshSourcesButton.disabled = switchingSource || !authenticated();
+  updateRetryButton();
+}
+async function readCatalog(response) {
+  if (response.status === 401) forgetSession();
+  let data;
+  try { data = await response.json(); } catch (_) {}
+  if (!response.ok) throw new Error(data?.error || 'Camera discovery unavailable (' + response.status + ')');
+  if (!data || !Array.isArray(data.sources) || !data.sources.every(source => source &&
+      typeof source.id === 'string' && source.id && typeof source.label === 'string' &&
+      typeof source.backend === 'string')) throw new Error('Invalid camera catalog');
+  return data;
+}
+function applyCatalog(data) {
+  knownSources = data.sources;
+  selectedSource = knownSources.find(source => source.id === data.selected) || null;
+  renderSources();
+}
+async function fetchCatalog(signal) {
+  return readCatalog(await fetch('/sources', {cache: 'no-store', signal,
+    headers: {Authorization: 'Bearer ' + sessionToken}}));
+}
+async function refreshSources() {
+  if (switchingSource || !authenticated()) {
+    if (!authenticated()) {
+      sourceStatus.textContent = 'Open the current session link to list cameras.';
+      renderSources();
+    }
+    return;
+  }
+  const generation = ++sourceGeneration;
+  if (sourceRequest) sourceRequest.abort();
+  const controller = sourceRequest = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  refreshSourcesButton.disabled = true;
+  sourceStatus.textContent = 'Loading cameras…';
+  try {
+    const catalog = await fetchCatalog(controller.signal);
+    if (generation !== sourceGeneration) return;
+    const previous = selectedSource?.id;
+    applyCatalog(catalog);
+    sourceStatus.textContent = knownSources.length ? '' : 'No supported cameras detected. Refresh to try again.';
+    // A refreshed selection can describe a different capture; discard the old image first.
+    if (previous !== selectedSource?.id) {
+      stopVideo('Connecting to camera…');
+      streamVideo();
+    }
+  } catch (error) {
+    if (generation !== sourceGeneration) return;
+    sourceStatus.textContent = error.name === 'AbortError' ? 'Camera discovery timed out. Refresh to try again.' : error.message;
+  } finally {
+    clearTimeout(timeout);
+    if (generation === sourceGeneration) {
+      sourceRequest = null;
+      renderSources();
+    }
+  }
+}
+async function selectSource(retryCurrent = false) {
+  const id = sourceSelect.value;
+  if (switchingSource || !authenticated() || !knownSources.some(source => source.id === id) ||
+      (id === selectedSource?.id && !retryCurrent)) return;
+  switchingSource = true;
+  const generation = ++sourceGeneration;
+  if (sourceRequest) sourceRequest.abort();
+  const controller = sourceRequest = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  stopVideo('Switching camera…');
+  sourceSelect.disabled = true;
+  refreshSourcesButton.disabled = true;
+  sourceStatus.textContent = 'Switching camera…';
+  try {
+    const response = await fetch('/source', {method: 'POST', cache: 'no-store', signal: controller.signal,
+      headers: {Authorization: 'Bearer ' + sessionToken, 'Content-Type': 'application/json'},
+      body: JSON.stringify({id})});
+    const catalog = await readCatalog(response);
+    if (generation !== sourceGeneration) return;
+    applyCatalog(catalog);
+    sourceStatus.textContent = '';
+  } catch (error) {
+    if (generation !== sourceGeneration) return;
+    const message = error.name === 'AbortError' ? 'Camera switch timed out.' : error.message;
+    // A failed start may have changed the server selection. Reconcile before labeling video.
+    selectedSource = null;
+    if (authenticated() && !controller.signal.aborted) {
+      try { applyCatalog(await fetchCatalog(controller.signal)); } catch (_) {}
+    }
+    sourceStatus.textContent = message;
+  } finally {
+    clearTimeout(timeout);
+    if (generation === sourceGeneration) {
+      sourceRequest = null;
+      switchingSource = false;
+      renderSources();
+      streamVideo();
+    }
+  }
+}
+sourceSelect.addEventListener('change', () => selectSource());
+refreshSourcesButton.addEventListener('click', refreshSources);
+retryCameraButton.addEventListener('click', () => {
+  if (streamFailed && selectedSource) selectSource(true);
+});
 // Read the response directly. A native <img> MJPEG stream can keep its last frame after EOF.
 // Mark video as live only after a new frame arrives and the decoder reads it.
 async function streamVideo() {
-  if (!/^[a-f0-9]{64}$/.test(sessionToken)) {
+  if (switchingSource) return;
+  if (!authenticated()) {
     showNoVideo('Open the current session link from the launcher.');
     return;
   }
-  const controller = new AbortController();
+  const generation = ++streamGeneration;
+  const controller = activeStream = new AbortController();
+  const current = () => generation === streamGeneration && !switchingSource;
   let timeout;
   function frameDeadline() {
     clearTimeout(timeout);
@@ -76,17 +235,20 @@ async function streamVideo() {
   try {
     const response = await fetch('/stream.mjpg', {cache: 'no-store', signal: controller.signal,
       headers: {Authorization: 'Bearer ' + sessionToken}});
+    if (!current()) return;
     if (!response.ok) {
-      if (response.status === 401) {
-        sessionToken = '';
-        try { sessionStorage.removeItem('camera-session'); } catch (_) {}
-      }
+      if (response.status === 401) forgetSession();
       const health = await response.json();
       throw new Error(health.error || 'No frame received yet');
     }
     // The initial navigation is anonymous; identify the source only after authentication.
     const source = response.headers.get('X-Camera-Source');
-    const sourceLabel = source === 'realsense' ? 'RealSense' : source === 'v4l2' ? 'V4L2 RGB' : 'Camera';
+    const sourceId = response.headers.get('X-Camera-Source-Id');
+    // This header belongs to this capture, unlike a catalog cached before another tab switched.
+    selectedSource = knownSources.find(item => item.id === sourceId && item.backend === source) || null;
+    renderSources();
+    const sourceLabel = selectedSource ? selectedSource.label :
+      source === 'realsense' ? 'RealSense' : source === 'v4l2' ? 'V4L2 RGB' : 'Camera';
     document.querySelector('.source').textContent = sourceLabel;
     image.alt = sourceLabel + ' video stream';
     const reader = response.body.getReader();
@@ -94,6 +256,7 @@ async function streamVideo() {
     const decoder = new TextDecoder();
     while (true) {
       const {value, done} = await reader.read();
+      if (!current()) return;
       if (done) throw new Error('Video ended. The viewer will reconnect.');
       const combined = new Uint8Array(buffer.length + value.length);
       combined.set(buffer);
@@ -123,7 +286,7 @@ async function streamVideo() {
       decoded.src = nextURL;
       try {
         await decoded.decode();
-        if (controller.signal.aborted) throw new Error('Video timed out. The viewer will reconnect.');
+        if (controller.signal.aborted || !current()) throw new Error('Video timed out. The viewer will reconnect.');
       } catch (error) {
         URL.revokeObjectURL(nextURL);
         throw error;
@@ -136,16 +299,28 @@ async function streamVideo() {
       placeholder.hidden = true;
       snapshot.hidden = false;
       statusText.textContent = 'Live';
+      if (streamFailed) {
+        streamFailed = false;
+        updateRetryButton();
+      }
       frameDeadline();
     }
   } catch (error) {
-    showNoVideo(error.name === 'AbortError' ? 'Video timed out. The viewer will reconnect.' : error.message);
+    if (current()) {
+      streamFailed = true;
+      showNoVideo(error.name === 'AbortError' ? 'Video timed out. The viewer will reconnect.' : error.message);
+    }
   } finally {
     clearTimeout(timeout);
     controller.abort();
-    setTimeout(streamVideo, 800);
+    if (current()) {
+      activeStream = null;
+      renderSources();
+      reconnectTimer = setTimeout(streamVideo, 800);
+    }
   }
 }
 streamVideo();
+refreshSources();
 </script>
 </html>

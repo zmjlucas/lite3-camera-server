@@ -141,13 +141,25 @@ The launcher selects the connection path with the rules above. Set `--device` to
 
 Use `--width`, `--height`, `--fps`, and `--quality` to request settings that the device supports. Check the actual image resolution and frame rate after the stream starts.
 
+### Switch between the D435i and arm camera
+
+After deploying the current version, start the RealSense or V4L2 viewer with either command above. Use the **Source** dropdown to select a detected camera. Entries show the current device node and camera name, such as `/dev/video4 — D435i RGB` or `/dev/video6 — Arm camera (SXW USB Camera)`. These numbers are examples; the server detects the current numbering. Use **Refresh** to scan again after connecting a camera.
+
+Only supported D435i RGB and SXW USB Camera capture nodes are offered. Auxiliary metadata, depth, infrared and unrelated camera nodes are excluded. Discovery queries device capabilities without starting video capture. It does not stop other camera applications; a listed camera may still be busy.
+
+One camera streams at a time. Selecting another source clears the old image and snapshot, stops the previous capture, and starts the selected camera. The HTTP session and SSH tunnel stay open, so the session link remains valid. Selection affects every viewer connected to this server. If a driver blocks during capture shutdown, the server refuses to open a second camera; stop and relaunch the preview after resolving the device problem.
+
+The SXW arm camera uses V4L2 with MJPG input. A V4L2 session uses YUYV for D435i RGB. A session launched with `--backend realsense` uses the RealSense SDK for D435i and restores its original `--depth` setting when switching back from the arm camera. Depth preview is not available on SXW. The dropdown applies to this server's RealSense/V4L2 viewer; ROS mode continues to use the external topic viewer.
+
+If a selection fails, read the source error and check the connection, permissions, camera usage, and requested resolution/frame rate. Use **Retry camera** to restart the selected camera after a capture failure, or refresh the list and select another camera. Explicit `--device` paths remain supported for starting V4L2; the web selection API accepts only IDs from the detected catalog, not arbitrary device paths.
+
 ## Stop the preview and find faults
 
 By default, `view` forwards the computer's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080` through SSH. To open the printed URL manually, add `--no-open`. To stop the preview service and tunnel, press Ctrl+C in the terminal that runs `view`. Windows also handles Ctrl+Break. Force-ending the launcher in Task Manager bypasses its cleanup; use the terminal interrupt for normal shutdown.
 
 RealSense and V4L2 create a new session token on each startup. The launcher reads the session link over SSH and opens it using the forwarded local port. With `--no-open`, copy the full private session link including its `#token=…` fragment. The viewer removes that fragment from the address bar; subsequent requests carry the token in an Authorization header. Refreshes reuse tab session storage. Do not paste the link or header into issues, logs, or chat. After a server restart, use the new session link. If an old deployed server does not provide one, rerun `deploy` before `view`. The launcher stops after 60 seconds without a session link, including time spent at SSH login prompts; finish login promptly or retry.
 
-Opening the bare page works, but it cannot show frames without the session token. `/healthz`, `/snapshot.jpg`, and `/stream.mjpg` reject unauthenticated requests with HTTP 401. The viewer's JPEG snapshot link downloads the displayed frame. ROS mode uses the upstream server's authentication behavior and requires a trusted local client.
+Opening the bare page works, but it cannot show frames or camera inventory without the session token. `/healthz`, `/snapshot.jpg`, `/stream.mjpg`, `/sources`, and `/source` reject unauthenticated requests with HTTP 401. Source selection uses POST with a JSON body and the same bearer token. Requests with an Origin header must match the current origin. The viewer's JPEG snapshot link downloads the displayed frame. ROS mode uses the upstream server's authentication behavior and requires a trusted local client.
 
 The RealSense and V4L2 pages check the incoming video data. If the stream ends, the page hides the last frame and reconnects. The page does the same if no decodable frame arrives for approximately 2.5 seconds. Camera resolution depends on the selected device and options.
 
@@ -165,4 +177,4 @@ The RealSense and V4L2 pages check the incoming video data. If the stream ends, 
 | The viewer requests a current session link, or an API returns HTTP 401 | Use the full link from the current launcher session. Old tokens stop working after a restart. API clients must supply the session token in the Authorization header. Never put it in the query string or share it in diagnostic output. |
 | Video is delayed or stops briefly | For RealSense or V4L2, try `--quality 55` or a lower supported resolution or frame rate. You can also repeat the test on the vendor's specified wired network. For both backends, `/healthz` shows whether the server received a recent frame. |
 
-Offline tests use simulated camera input to check the browser and video server. Depth preview and video delay require separate hardware tests.
+Offline tests use simulated camera input to check the browser and video server. Hardware checks covered D435i/SXW source switching and restoration of the false-color depth preview. Distance calibration, USB unplug recovery, long-duration operation and video delay require separate tests.

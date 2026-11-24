@@ -7,6 +7,8 @@ View the camera on a Lite3 robot in a Windows or macOS browser through SSH. Use 
 
 This tool shows camera images. It does not send motion commands. The client does not need ROS. The client and unit tests use only the Python standard library.
 
+The RealSense/V4L2 viewer has a **Source** dropdown for the Lite3's D435i RGB camera and arm-mounted **SXW USB Camera**. It discovers their usable `/dev/videoN` capture nodes and labels each camera. Switching stops the previous capture and briefly interrupts video; all viewers of that server share the selected source. See [camera selection](docs/CAMERA_STREAM.md#switch-between-the-d435i-and-arm-camera).
+
 ## Quick start
 
 The launcher requires Python 3.8 or later. A robot connection also requires OpenSSH (`ssh` and `scp`) and network access to the perception host. Use a maintained Python version for development. Python 3.8 support is for older devices.
@@ -81,6 +83,8 @@ Frame and health requests require `Authorization: Bearer <session-token>`. The s
 | `/stream.mjpg` | MJPEG stream |
 | `/snapshot.jpg` | The latest valid JPEG frame |
 | `/healthz` | JSON status and frame age at the server. Returns HTTP 503 when no valid frame is available. |
+| `/sources` | Authenticated JSON catalog of supported detected cameras and the selected source ID. |
+| `/source` | Authenticated POST with JSON `{"id": "<catalog source ID>"}` to switch capture. Returns the updated catalog. |
 
 The `frame_age_s` field measures the time since the server captured the latest frame. It does not measure video delay from the camera to the browser.
 
@@ -98,6 +102,7 @@ To run the checks without Make on macOS/Linux:
 ```bash
 python3 -B scripts/check.py --shell
 python3 -B tests/camera_browser_smoke.py
+python3 -B tests/camera_sources_browser_smoke.py
 ```
 
 On Windows (PowerShell):
@@ -105,6 +110,7 @@ On Windows (PowerShell):
 ```powershell
 py -3 -B scripts/check.py
 py -3 -B tests/camera_browser_smoke.py
+py -3 -B tests/camera_sources_browser_smoke.py
 # Optional explicit browser path:
 py -3 -B tests/camera_browser_smoke.py --browser 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 ```
@@ -113,7 +119,7 @@ CI is configured to run offline tests on Linux, macOS, and Windows, with browser
 
 ## Test status and limits
 
-- RealSense `--depth` shows a depth preview with false colors. It does not give distance measurements. Depth preview, recovery after USB disconnection, extended Wi-Fi operation, and video delay still require hardware tests.
+- Source switching was tested on connected Lite3 hardware with V4L2 and RealSense SDK capture, including restoration of the D435i false-color depth preview after switching back from SXW. RealSense `--depth` does not give calibrated distance measurements. Recovery after USB disconnection, extended Wi-Fi operation, and video delay still require hardware tests.
 - The separate `native-depth` helper backend is not implemented. Its four tests remain skipped. Skipped tests do not count as passed checks. After you implement this backend, remove the skip markers. All tests must pass.
 - The ROS page can keep the last frame after the publisher stops. Check the ROS topic frequency to confirm that new frames arrive.
 
