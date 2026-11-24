@@ -30,6 +30,10 @@ jobs:
             python: '3.14'
           - os: macos-15
             python: '3.13'
+          - os: windows-2022
+            python: '3.8'
+          - os: windows-2022
+            python: '3.13'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -38,15 +42,22 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Run syntax checks and offline tests
-        run: make check PYTHON=python
+        run: python -B scripts/check.py
+      - name: Check remote Bash syntax
+        if: runner.os != 'Windows'
+        run: python -B scripts/check.py --syntax-only --shell
       - name: Check server syntax for Python 3.6
         if: matrix.python == '3.8'
-        run: make syntax-legacy PYTHON=python
+        run: python -B scripts/check.py --legacy
 
   browser:
-    name: Chrome smoke test
-    runs-on: ubuntu-24.04
+    name: Browser smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -54,7 +65,5 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
-      - name: Check the Chrome version
-        run: google-chrome --version
       - name: Check playback and reconnection
-        run: make browser-test PYTHON=python BROWSER="$(command -v google-chrome)"
+        run: python -B tests/camera_browser_smoke.py

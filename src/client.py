@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""View the Lite3 camera in a Mac browser through SSH. The Mac does not need ROS."""
+"""View the Lite3 camera from Windows or macOS through SSH. The client does not need ROS."""
 import argparse
 import ipaddress
+import json
 import os
 from pathlib import Path
 import queue
@@ -166,7 +167,11 @@ def ssh_command(host, command, jump=None):
 
 
 def show_command(command):
-    print(" ".join(shlex.quote(arg) for arg in command), flush=True)
+    if sys.platform == "win32":
+        # PowerShell 5.1 and 7 differ in native quoting. Show exact argv without promising replay.
+        print("Command argv (JSON, inspection only): " + json.dumps(command), flush=True)
+    else:
+        print(" ".join(shlex.quote(arg) for arg in command), flush=True)
 
 
 def ros_script(args):
@@ -195,6 +200,8 @@ def real_script(args):
 def read_deploy_source(path):
     """Capture a regular asset without following symlinks in any path component."""
     path = path.absolute()
+    if os.name == "nt":
+        return read_windows_deploy_source(path)
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     directory = os.open(path.anchor, directory_flags)
     try:
@@ -214,6 +221,65 @@ def read_deploy_source(path):
         os.close(directory)
 
 
+def read_windows_deploy_source(path):
+    """Pin each ancestor against replacement and refuse Windows reparse points."""
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    class FileInfo(ctypes.Structure):
+        _fields_ = [("attributes", wintypes.DWORD), ("creation", wintypes.FILETIME),
+                    ("access", wintypes.FILETIME), ("write", wintypes.FILETIME),
+                    ("volume", wintypes.DWORD), ("size_high", wintypes.DWORD),
+                    ("size_low", wintypes.DWORD), ("links", wintypes.DWORD),
+                    ("index_high", wintypes.DWORD), ("index_low", wintypes.DWORD)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                      wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    # The basic handle information works on FAT as well as NTFS.
+    info = kernel.GetFileInformationByHandle
+    info.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileInfo)]
+    info.restype = wintypes.BOOL
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    file_type = kernel.GetFileType
+    file_type.argtypes = [wintypes.HANDLE]
+    file_type.restype = wintypes.DWORD
+    handles = []
+    try:
+        for component in [*reversed(path.parents), path]:
+            is_file = component == path
+            # OPEN_EXISTING, OPEN_REPARSE_POINT | BACKUP_SEMANTICS.
+            # Sharing only READ denies concurrent writes/deletion/renames while pinned.
+            # Directory FILE_TRAVERSE | FILE_READ_ATTRIBUTES participates in sharing checks;
+            # a metadata-only (zero-access) handle does not pin the path against replacement.
+            handle = create(str(component), 0x80000000 if is_file else 0x20 | 0x80, 1,
+                            None, 3, 0x00200000 | 0x02000000, None)
+            if handle == ctypes.c_void_p(-1).value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            handles.append(handle)
+            attributes = FileInfo()
+            if not info(handle, ctypes.byref(attributes)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if attributes.attributes & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
+                raise OSError("Deployment source contains a reparse point: " + str(component))
+            is_directory = bool(attributes.attributes & 0x10)
+            if is_directory == is_file or file_type(handle) != 1:  # FILE_TYPE_DISK
+                raise OSError("Deployment source is not a regular file path: " + str(component))
+        # Transfer ownership of the file handle to the Python stream.
+        descriptor = msvcrt.open_osfhandle(handles[-1], os.O_RDONLY | os.O_BINARY)
+        handles.pop()
+        with os.fdopen(descriptor, "rb") as stream:
+            return stream.read()
+    finally:
+        for handle in reversed(handles):
+            close(handle)
+
+
 def deploy(args, jump):
     # Capture both files before SSH can wait for login or another process can change the checkout.
     with tempfile.TemporaryDirectory(prefix="lite3-camera-deploy-") as directory:
@@ -222,10 +288,13 @@ def deploy(args, jump):
             content = read_deploy_source(path)
             staged = Path(directory) / path.name
             staged.write_bytes(content)
-            staged.chmod(0o600)
+            if os.name != "nt":
+                staged.chmod(0o600)
             sources.append((path if args.dry_run else staged, destination))
         commands = [ssh_command(args.target, remote_shell("prepare_deploy.sh"), jump)]
-        commands.extend(["scp"] + ssh_options(jump) + [str(path), args.target + ":" + destination]
+        # Win32 scp interprets a bare single-letter alias plus ':' as a drive letter.
+        scp_target = "[{}]".format(args.target) if len(args.target) == 1 else args.target
+        commands.extend(["scp"] + ssh_options(jump) + [str(path), scp_target + ":" + destination]
                         for path, destination in sources)
         for command in commands:
             if args.dry_run:
@@ -239,16 +308,15 @@ def deploy(args, jump):
 
 def run_foreground(command, url, open_browser, authenticated=False):
     with socket.socket() as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Windows SO_REUSEADDR permits stealing an occupied listener's address.
+        listener.setsockopt(socket.SOL_SOCKET,
+                            socket.SO_EXCLUSIVEADDRUSE if os.name == "nt" else socket.SO_REUSEADDR, 1)
         try:
             listener.bind(("127.0.0.1", urlsplit(url).port))
             listener.listen(1)
         except OSError as exc:
             raise OSError("Cannot use the local camera port. Select another port with --local-port: " + str(exc)) from exc
     print("Viewer: " + url + "\nKeep this terminal open. To stop this session, press Ctrl+C.", flush=True)
-    process = subprocess.Popen(command, stdout=subprocess.PIPE if authenticated else None,
-                               text=authenticated, encoding="utf-8" if authenticated else None,
-                               errors="replace" if authenticated else None)
     output = queue.Queue()
     viewer_url = None if authenticated else url
     reader = None
@@ -276,19 +344,24 @@ def run_foreground(command, url, open_browser, authenticated=False):
             else:
                 print(line, end="", flush=True)
 
-    if authenticated:
-        reader = threading.Thread(target=read_output, daemon=True)
-        reader.start()
-    # Readiness checks use the loopback tunnel and bypass HTTP proxies.
-    opener = build_opener(ProxyHandler({}))
-    opened = not open_browser
-    start = time.monotonic()
     previous_handlers = {}
     def stop_session(signum, frame):
         raise KeyboardInterrupt
-    for signum in (signal.SIGTERM, signal.SIGHUP):
-        previous_handlers[signum] = signal.signal(signum, stop_session)
+    process = subprocess.Popen(command, stdout=subprocess.PIPE if authenticated else None,
+                               text=authenticated, encoding="utf-8" if authenticated else None,
+                               errors="replace" if authenticated else None)
     try:
+        for name in ("SIGTERM", "SIGHUP", "SIGBREAK"):
+            signum = getattr(signal, name, None)
+            if signum is not None:
+                previous_handlers[signum] = signal.signal(signum, stop_session)
+        if authenticated:
+            reader = threading.Thread(target=read_output, daemon=True)
+            reader.start()
+        # Readiness checks use the loopback tunnel and bypass HTTP proxies.
+        opener = build_opener(ProxyHandler({}))
+        opened = not open_browser
+        start = time.monotonic()
         while process.poll() is None:
             consume_output()
             if authenticated and viewer_url is None and time.monotonic() - start >= SESSION_START_TIMEOUT:
@@ -317,19 +390,21 @@ def run_foreground(command, url, open_browser, authenticated=False):
     except KeyboardInterrupt:
         return 130
     finally:
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-        if reader:
-            reader.join(timeout=1)
-            if not reader.is_alive():
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            if reader and reader.ident is not None:
+                reader.join(timeout=1)
+            if process.stdout and (reader is None or not reader.is_alive()):
                 process.stdout.close()
+        finally:
+            for signum, handler in previous_handlers.items():
+                signal.signal(signum, handler)
 
 
 def parser():

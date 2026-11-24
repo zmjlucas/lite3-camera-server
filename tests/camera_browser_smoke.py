@@ -5,10 +5,12 @@ The test uses a temporary Chrome profile and loopback addresses. It needs no rob
 """
 import argparse
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import queue
 import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,10 +21,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.server import PAGE
 
 
+def find_browser():
+    candidates = []
+    if sys.platform == "win32":
+        for browser in ("Google/Chrome/Application/chrome.exe", "Microsoft/Edge/Application/msedge.exe"):
+            for variable in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+                if os.environ.get(variable):
+                    candidates.append(Path(os.environ[variable]) / browser)
+    elif sys.platform == "darwin":
+        candidates = [Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+                      Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                      Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    for name in ("google-chrome", "chromium", "chromium-browser", "chrome", "msedge"):
+        candidate = shutil.which(name)
+        if candidate:
+            return candidate
+    raise FileNotFoundError("Chrome/Chromium/Edge was not found. Pass --browser with its executable path.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--browser", default="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+    parser.add_argument("--browser", help="Chrome, Chromium or Edge executable (default: detect installed browser)")
     args = parser.parse_args()
+    try:
+        browser_path = args.browser or find_browser()
+    except FileNotFoundError as error:
+        parser.error(str(error))
     observations = queue.Queue()
     requests = []
     rejected = []
@@ -89,7 +116,7 @@ def main():
     rows = []
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server, tempfile.TemporaryDirectory(prefix="lite3-camera-chrome-") as profile:
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        browser = subprocess.Popen([args.browser, "--headless", "--disable-gpu", "--disable-background-networking",
+        browser = subprocess.Popen([browser_path, "--headless", "--disable-gpu", "--disable-background-networking",
                                     "--disable-extensions", "--no-first-run", "--user-data-dir=" + profile,
                                     "http://127.0.0.1:{}/#token={}".format(server.server_port, token)],
                                    stdout=subprocess.DEVNULL, stderr=None)
@@ -104,7 +131,12 @@ def main():
                 if row["rotated"] and row["time"] > 1000 and not row["hidden"] and not row["hash"]:
                     break
         finally:
-            browser.terminate()
+            if os.name == "nt" and browser.poll() is None:
+                # Chrome's renderer children otherwise retain locks on the temporary profile.
+                subprocess.run(["taskkill", "/PID", str(browser.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            elif browser.poll() is None:
+                browser.terminate()
             try:
                 browser.wait(timeout=5)
             except subprocess.TimeoutExpired:
