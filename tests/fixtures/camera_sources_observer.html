@@ -1,0 +1,90 @@
+<script>
+// Drive the real page, HTTP requests and JPEG decoder; only observe fetch cancellation.
+const testOriginalFetch = window.fetch.bind(window);
+let testAbortedStreams = 0;
+let testAbortedCatalogs = 0;
+let testStreamSource = null;
+window.fetch = async (...args) => {
+  if (args[0] === '/stream.mjpg' && args[1].signal) {
+    args[1].signal.addEventListener('abort', () => testAbortedStreams++);
+  }
+  if (args[0] === '/sources' && args[1].signal) {
+    args[1].signal.addEventListener('abort', () => testAbortedCatalogs++);
+  }
+  const response = await testOriginalFetch(...args);
+  if (args[0] === '/stream.mjpg') testStreamSource = response.headers.get('X-Camera-Source-Id');
+  return response;
+};
+let testPhase = sessionStorage.getItem('test-sources-reloaded') ? 'reloaded' : 'discovery-error';
+let testBusy = false;
+function testView() {
+  const select = document.getElementById('camera-source');
+  const stream = document.getElementById('stream');
+  const snapshot = document.getElementById('snapshot');
+  const retry = document.getElementById('retry-camera');
+  return {phase: testPhase, hasSelector: !!select, selected: select?.value,
+    options: select ? Array.from(select.options, item => ({id: item.value, label: item.textContent})) : [],
+    disabled: select?.disabled, hidden: stream.hidden, src: stream.getAttribute('src'),
+    width: stream.naturalWidth, snapshotHidden: snapshot.hidden,
+    snapshot: snapshot.getAttribute('href'), source: document.querySelector('.source').textContent,
+    alt: stream.alt, status: document.getElementById('status').textContent,
+    sourceStatus: document.getElementById('source-status')?.textContent || '',
+    hash: location.hash, aborted: testAbortedStreams, abortedCatalogs: testAbortedCatalogs,
+    streamSource: testStreamSource, retryVisible: !!retry && !retry.hidden,
+    retryDisabled: retry?.disabled};
+}
+async function testReport(row) {
+  await testOriginalFetch('/observe', {method: 'POST', body: JSON.stringify(row)});
+}
+async function testSelect(id, phase) {
+  const select = document.getElementById('camera-source');
+  testPhase = phase;
+  select.value = id;
+  select.dispatchEvent(new Event('change', {bubbles: true}));
+  // This synchronous observation catches stale-frame exposure during a switch.
+  await testReport({...testView(), immediate: true});
+}
+setInterval(async () => {
+  if (testBusy) return;
+  testBusy = true;
+  try {
+    const row = testView();
+    await testReport(row);
+    const live = row.status === 'Live' && !row.hidden && row.width === 160;
+    if (testPhase === 'discovery-error' && live && row.hasSelector && row.sourceStatus) {
+      testPhase = 'catalog';
+      document.getElementById('refresh-sources').click();
+    } else if (testPhase === 'catalog' && live && row.options.length === 2 && !row.disabled) {
+      testPhase = 'refresh-race';
+      document.getElementById('refresh-sources').click();
+    } else if (testPhase === 'refresh-race' && live && !row.disabled) {
+      await testSelect('arm', 'switch-arm');
+    } else if (testPhase === 'switch-arm' && live && row.selected === 'arm' && !row.disabled) {
+      await testSelect('rgb', 'failed-switch');
+    } else if (testPhase === 'failed-switch' && live && !row.disabled && row.sourceStatus.includes('busy')) {
+      await testSelect('rgb', 'switch-rgb');
+    } else if (testPhase === 'switch-rgb' && live && row.selected === 'rgb' && !row.disabled) {
+      sessionStorage.setItem('test-sources-reloaded', 'yes');
+      testPhase = 'navigating';
+      location.reload();
+    } else if (testPhase === 'reloaded' && live && row.selected === 'rgb' && !row.disabled) {
+      testPhase = 'remote-switch';
+      await testOriginalFetch('/remote-switch', {method: 'POST', body: '{}'});
+    } else if (testPhase === 'remote-switch' && live && row.selected === 'arm' && !row.disabled) {
+      testPhase = 'retry-ready';
+      await testOriginalFetch('/fail-current', {method: 'POST', body: '{}'});
+      document.getElementById('refresh-sources').click();
+    } else if (testPhase === 'retry-ready' && row.hidden && row.options.length === 1 &&
+               row.status.includes('disconnected') && row.retryVisible && !row.retryDisabled) {
+      testPhase = 'retry-current';
+      document.getElementById('retry-camera').click();
+      await testReport({...testView(), immediate: true});
+    } else if (testPhase === 'retry-current' && live && row.selected === 'arm' && !row.disabled) {
+      testPhase = 'complete';
+      await testReport({...testView(), complete: true});
+    }
+  } finally {
+    testBusy = false;
+  }
+}, 100);
+</script>
