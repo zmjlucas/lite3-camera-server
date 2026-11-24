@@ -71,6 +71,16 @@ setInterval(async () => {
       testPhase = 'remote-switch';
       await testOriginalFetch('/remote-switch', {method: 'POST', body: '{}'});
     } else if (testPhase === 'remote-switch' && live && row.selected === 'arm' && !row.disabled) {
+      testPhase = 'failed-remote-switch';
+      await testOriginalFetch('/remote-fail', {method: 'POST', body: '{}'});
+    } else if (testPhase === 'failed-remote-switch' && row.hidden && row.selected === 'rgb' &&
+               row.status.includes('disconnected') && row.retryVisible && !row.retryDisabled) {
+      testPhase = 'retry-remote';
+      document.getElementById('retry-camera').click();
+      await testReport({...testView(), immediate: true});
+    } else if (testPhase === 'retry-remote' && live && row.selected === 'rgb' && !row.disabled) {
+      await testSelect('arm', 'return-arm');
+    } else if (testPhase === 'return-arm' && live && row.selected === 'arm' && !row.disabled) {
       testPhase = 'retry-ready';
       await testOriginalFetch('/fail-current', {method: 'POST', body: '{}'});
       document.getElementById('refresh-sources').click();

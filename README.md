@@ -67,15 +67,17 @@ Automatic selection applies only on macOS when the target is an explicit IPv4 ad
 
 On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/client.py view user@192.168.1.100 --jump user@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
 
-The HTTP server and SSH tunnel bind to `127.0.0.1`. The default ports are `18080` on the client and `8080` on the perception host. RealSense and V4L2 sessions generate a new access token on every server start. The launcher receives it over SSH and opens the authenticated viewer. With `--no-open`, use the private session link printed by the launcher. Redeploy the server when updating the launcher.
+The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://PERCEPTION_HOST:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. No session token or private link is needed. The local tunnel still binds to `127.0.0.1`.
 
-The viewer removes the token from the address bar and retains it in this tab's session storage for refreshes. Do not share session links or Authorization headers. Requests carrying an Origin header must match the request's origin. Host headers are unrestricted. ROS mode uses the external `web_video_server` and retains its own authentication policy; use that mode only with a trusted local client and an SSH tunnel.
+Multiple clients can run `view` against the same native server and remote port. The first starts a shared server; later clients reuse it without opening the camera again. Each client can disconnect independently. **Ctrl+C closes that client's tunnel; the native server keeps running**, even after all clients disconnect. All viewers share the selected camera and capture settings. Options such as `--depth`, `--device`, and resolution only apply when starting a new server. On one computer, use different `--local-port` values for separate launcher processes, or open multiple tabs on one tunnel.
+
+See [shared server lifecycle](docs/CAMERA_STREAM.md#shared-server-lifecycle) for stopping, restarting and updating the server. A manual foreground server can use `--bind 127.0.0.1` to listen only on loopback. Requests carrying an Origin header must still match the request's origin. ROS mode continues to use the upstream `web_video_server`, its authentication policy, and its foreground SSH lifecycle.
 
 ## HTTP endpoints
 
 These endpoints apply to the RealSense and V4L2 servers. ROS mode uses the endpoints from `web_video_server`.
 
-Frame and health requests require `Authorization: Bearer <session-token>`. The static page at `/` does not contain camera data or a token. Tokens in query parameters are not accepted. The page's snapshot link downloads the latest displayed frame.
+All native endpoints are available without credentials to clients that can reach the server. The page's snapshot link downloads the latest displayed frame.
 
 | Path | Response |
 | --- | --- |
@@ -83,8 +85,8 @@ Frame and health requests require `Authorization: Bearer <session-token>`. The s
 | `/stream.mjpg` | MJPEG stream |
 | `/snapshot.jpg` | The latest valid JPEG frame |
 | `/healthz` | JSON status and frame age at the server. Returns HTTP 503 when no valid frame is available. |
-| `/sources` | Authenticated JSON catalog of supported detected cameras and the selected source ID. |
-| `/source` | Authenticated POST with JSON `{"id": "<catalog source ID>"}` to switch capture. Returns the updated catalog. |
+| `/sources` | JSON catalog of supported detected cameras and the selected source ID. |
+| `/source` | POST with JSON `{"id": "<catalog source ID>"}` to switch capture. Returns the updated catalog. |
 
 The `frame_age_s` field measures the time since the server captured the latest frame. It does not measure video delay from the camera to the browser.
 
@@ -115,7 +117,7 @@ py -3 -B tests/camera_sources_browser_smoke.py
 py -3 -B tests/camera_browser_smoke.py --browser 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 ```
 
-CI is configured to run offline tests on Linux, macOS, and Windows, with browser playback checks on all three. Native Windows tests include deployment file handles and junction refusal. Remote Bash and POSIX signal integration tests run on Linux/macOS and are skipped on Windows; the Windows suite still exercises launcher commands, authentication, interrupt cleanup, and HTTP streaming. CI does not connect to a robot. Configuration of a CI job is not a hardware acceptance result.
+CI is configured to run offline tests on Linux, macOS, and Windows, with browser playback checks on all three. Native Windows tests include deployment file handles and junction refusal. Remote Bash and POSIX signal integration tests run on Linux/macOS and are skipped on Windows; the Windows suite still exercises launcher commands, anonymous HTTP access, interrupt cleanup, and HTTP streaming. CI does not connect to a robot. Configuration of a CI job is not a hardware acceptance result.
 
 ## Test status and limits
 

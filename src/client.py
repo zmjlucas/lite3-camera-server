@@ -5,7 +5,6 @@ import ipaddress
 import json
 import os
 from pathlib import Path
-import queue
 import re
 import shlex
 import signal
@@ -14,7 +13,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from urllib.parse import urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
@@ -29,7 +27,6 @@ SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
 ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")
 ROBOT_GATEWAY = "192.168.2.1"
-SESSION_START_TIMEOUT = 60
 
 
 def target(value):
@@ -193,7 +190,7 @@ def camera_options(args):
 
 def real_script(args):
     options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args)
-    return remote_shell("view_camera.sh", remote_source("check_camera_port.py"),
+    return remote_shell("view_camera.sh", remote_source("ensure_camera.py"),
                         args.remote_port, *options)
 
 
@@ -306,7 +303,7 @@ def deploy(args, jump):
     return 0
 
 
-def run_foreground(command, url, open_browser, authenticated=False):
+def run_foreground(command, url, open_browser, native=False):
     with socket.socket() as listener:
         # Windows SO_REUSEADDR permits stealing an occupied listener's address.
         listener.setsockopt(socket.SOL_SOCKET,
@@ -316,76 +313,40 @@ def run_foreground(command, url, open_browser, authenticated=False):
             listener.listen(1)
         except OSError as exc:
             raise OSError("Cannot use the local camera port. Select another port with --local-port: " + str(exc)) from exc
-    print("Viewer: " + url + "\nKeep this terminal open. To stop this session, press Ctrl+C.", flush=True)
-    output = queue.Queue()
-    viewer_url = None if authenticated else url
-    reader = None
-
-    def read_output():
-        for line in process.stdout:
-            output.put(line)
-
-    def consume_output():
-        nonlocal viewer_url
-        while True:
-            try:
-                line = output.get_nowait()
-            except queue.Empty:
-                break
-            match = re.fullmatch(r"http://127\.0\.0\.1:[0-9]+/#token=([a-f0-9]{64})", line.strip())
-            if match:
-                viewer_url = url + "#token=" + match.group(1)
-                if not open_browser:
-                    print("Session link (keep private): " + viewer_url, flush=True)
-            elif re.search(r"[?#]token=", line, re.IGNORECASE):
-                raise OSError("The server returned a malformed session link. Run deploy to update it, then retry.")
-            elif re.fullmatch(r"http://127\.0\.0\.1:[0-9]+/", line.strip()):
-                raise OSError("The server has no session authentication. Run deploy to update it, then start view again.")
-            else:
-                print(line, end="", flush=True)
-
+    print("Viewer: " + url + "\nKeep this terminal open. To disconnect, press Ctrl+C.", flush=True)
     previous_handlers = {}
+
     def stop_session(signum, frame):
         raise KeyboardInterrupt
-    process = subprocess.Popen(command, stdout=subprocess.PIPE if authenticated else None,
-                               text=authenticated, encoding="utf-8" if authenticated else None,
-                               errors="replace" if authenticated else None)
+
+    process = subprocess.Popen(command)
     try:
         for name in ("SIGTERM", "SIGHUP", "SIGBREAK"):
             signum = getattr(signal, name, None)
             if signum is not None:
                 previous_handlers[signum] = signal.signal(signum, stop_session)
-        if authenticated:
-            reader = threading.Thread(target=read_output, daemon=True)
-            reader.start()
         # Readiness checks use the loopback tunnel and bypass HTTP proxies.
         opener = build_opener(ProxyHandler({}))
         opened = not open_browser
         start = time.monotonic()
         while process.poll() is None:
-            consume_output()
-            if authenticated and viewer_url is None and time.monotonic() - start >= SESSION_START_TIMEOUT:
-                raise OSError("Timed out waiting for a camera session link. Complete SSH login and run deploy to update the server, then retry.")
-            if not opened and viewer_url:
+            if not opened:
                 try:
                     with opener.open(url, timeout=0.4) as response:
                         ready = response.status == 200
+                        if native:
+                            ready = (ready and response.geturl() == url and
+                                     response.headers.get("X-Lite3-Camera-Protocol") == "1")
                     if ready and process.poll() is None:
-                        if not webbrowser.open(viewer_url):
-                            print("Session link (keep private): " + viewer_url, flush=True)
+                        if not webbrowser.open(url):
+                            print("Open the viewer: " + url, flush=True)
                         opened = True
                 except OSError:
                     pass
                 if not opened and time.monotonic() - start > 60:
-                    print("The launcher did not open the browser. Session link (keep private): " + viewer_url, flush=True)
+                    print("The launcher did not open the browser. Viewer: " + url, flush=True)
                     opened = True
             time.sleep(0.15)
-        if reader:
-            reader.join(timeout=1)
-            consume_output()
-        if authenticated and not viewer_url and process.returncode == 0:
-            print("The server did not provide a session link. Run deploy to update it, then start view again.", file=sys.stderr)
-            return 1
         return process.returncode if process.returncode >= 0 else 128 - process.returncode
     except KeyboardInterrupt:
         return 130
@@ -398,10 +359,6 @@ def run_foreground(command, url, open_browser, authenticated=False):
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait()
-            if reader and reader.ident is not None:
-                reader.join(timeout=1)
-            if process.stdout and (reader is None or not reader.is_alive()):
-                process.stdout.close()
         finally:
             for signum, handler in previous_handlers.items():
                 signal.signal(signum, handler)
@@ -412,7 +369,7 @@ def parser():
     commands = result.add_subparsers(dest="command", required=True)
     for name, help_text in (("doctor", "check the host environment through SSH without changes"),
                             ("deploy", "copy the camera server to the perception host"),
-                            ("view", "start the remote camera server and SSH tunnel")):
+                            ("view", "start or reuse the remote camera server and open an SSH tunnel")):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("target", type=target, help="SSH alias or user@perception-host")
         routing = command.add_mutually_exclusive_group()
@@ -478,7 +435,7 @@ def main(argv=None):
             show_command(command)
             print("Viewer: " + url)
             return 0
-        return run_foreground(command, url, not args.no_open, authenticated=args.backend != "ros")
+        return run_foreground(command, url, not args.no_open, native=args.backend != "ros")
     except KeyboardInterrupt:
         return 130
     except OSError as exc:

@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Serve Lite3 camera frames on the loopback address. Use an SSH tunnel for remote access."""
+"""Share Lite3 camera frames with clients on a trusted local network."""
 
 import argparse
 import contextlib
 import errno
 import hashlib
-import hmac
 import json
 import os
 from pathlib import Path
 import re
-import secrets
 import signal
 import socket
 import struct
@@ -21,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import TCPServer, ThreadingMixIn
 
 
-LOOPBACK = "127.0.0.1"
+DEFAULT_BIND = "0.0.0.0"
 BOUNDARY = b"--frame\r\n"
 SOURCE_LABELS = {"realsense": "RealSense", "v4l2": "V4L2 RGB"}
 
@@ -195,11 +193,10 @@ class CameraHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     timeout = 0.2
 
-    def __init__(self, port, frames, controller=None):
+    def __init__(self, port, frames, controller=None, bind=DEFAULT_BIND):
         self._frames = frames
         self.controller = controller
-        self.session_token = secrets.token_hex(32)
-        super().__init__((LOOPBACK, port), CameraRequestHandler)
+        super().__init__((bind, port), CameraRequestHandler)
 
     @property
     def frames(self):
@@ -237,7 +234,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         path = self.path.partition("?")[0]
         frames = self.server.frames
         if path == "/":
-            source_label = SOURCE_LABELS[frames.source] if self._authenticated() else "Camera"
+            source_label = SOURCE_LABELS[frames.source]
             page = PAGE.replace("__SOURCE_LABEL__", source_label).encode()
             self._respond(200, "text/html; charset=utf-8", page)
             return
@@ -245,8 +242,6 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             self._respond(404, "text/plain; charset=utf-8", b"Not found\n")
             return
 
-        if not self._require_authentication():
-            return
         if path == "/sources":
             try:
                 controller = getattr(self.server, "controller", None)
@@ -272,12 +267,6 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _require_authentication(self):
-        if not self._authenticated():
-            self._respond(401, "application/json", b'{"error":"Open the current session link from the launcher."}')
-            return False
-        return True
-
     def do_POST(self):
         try:
             self._post()
@@ -285,7 +274,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             pass
 
     def _post(self):
-        if not self._same_origin() or not self._require_authentication():
+        if not self._same_origin():
             return
         if self.path.partition("?")[0] != "/source":
             self._json(404, {"error": "Not found"})
@@ -323,14 +312,10 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
     def _json(self, status, value):
         self._respond(status, "application/json", json.dumps(value).encode())
 
-    def _authenticated(self):
-        credentials = self.headers.get_all("Authorization", [])
-        expected = "Bearer " + self.server.session_token
-        return len(credentials) == 1 and hmac.compare_digest(credentials[0].encode("utf-8"), expected.encode("ascii"))
-
     def _headers(self, status, content_type):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        self.send_header("X-Lite3-Camera-Protocol", "1")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -502,7 +487,7 @@ def capture(options, frames, stop):
 
 
 class CaptureController:
-    """Own one capture at a time while preserving the HTTP server and its session."""
+    """Own one capture at a time while preserving the shared HTTP server."""
 
     def __init__(self, options, discover=None, capture_fn=None, stop_timeout=3.0):
         self.options = options
@@ -590,7 +575,7 @@ class CaptureController:
             if self.producer is not None:
                 self.producer.join(self.stop_timeout)
                 if self.producer.is_alive():
-                    message = "The previous camera did not stop. No new camera was opened; relaunch the viewer if it remains blocked."
+                    message = "The previous camera did not stop. No new camera was opened; restart the shared server if it remains blocked."
                     self.frames.retire(message)
                     raise RuntimeError(message)
             self._launch(options, entry["id"], detected)
@@ -610,7 +595,8 @@ class CaptureController:
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=SOURCE_LABELS, default="realsense")
-    parser.add_argument("--port", type=int, default=8080, help="loopback port (use 0 for a free port)")
+    parser.add_argument("--port", type=int, default=8080, help="HTTP port (use 0 for a free port)")
+    parser.add_argument("--bind", default=DEFAULT_BIND, help="listen address (default: all IPv4 interfaces)")
     parser.add_argument("--width", type=int, default=640, help="frame width in pixels for each stream")
     parser.add_argument("--height", type=int, default=480, help="frame height in pixels for each stream")
     parser.add_argument("--fps", type=int, default=15)
@@ -650,16 +636,16 @@ def main(argv=None):
             signal.signal(signum, request_stop)
 
     try:
-        server = CameraHTTPServer(options.port, controller.frames, controller)
+        server = CameraHTTPServer(options.port, controller.frames, controller, bind=options.bind)
     except OSError as error:
-        print("Cannot listen on {}:{}: {}".format(LOOPBACK, options.port, error), file=sys.stderr)
+        print("Cannot listen on {}:{}: {}".format(options.bind, options.port, error), file=sys.stderr)
         return 1
 
     stopped = True
     with server:
         controller.start()
         try:
-            print("http://{}:{}/#token={}".format(LOOPBACK, server.server_port, server.session_token), flush=True)
+            print("http://{}:{}/".format(options.bind, server.server_port), flush=True)
             while not stopping:
                 server.handle_request()
         finally:

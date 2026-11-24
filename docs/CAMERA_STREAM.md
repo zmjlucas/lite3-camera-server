@@ -147,19 +147,34 @@ After deploying the current version, start the RealSense or V4L2 viewer with eit
 
 Only supported D435i RGB and SXW USB Camera capture nodes are offered. Auxiliary metadata, depth, infrared and unrelated camera nodes are excluded. Discovery queries device capabilities without starting video capture. It does not stop other camera applications; a listed camera may still be busy.
 
-One camera streams at a time. Selecting another source clears the old image and snapshot, stops the previous capture, and starts the selected camera. The HTTP session and SSH tunnel stay open, so the session link remains valid. Selection affects every viewer connected to this server. If a driver blocks during capture shutdown, the server refuses to open a second camera; stop and relaunch the preview after resolving the device problem.
+One camera streams at a time. Selecting another source clears the old image and snapshot, stops the previous capture, and starts the selected camera. The HTTP server and SSH tunnels stay open, so viewer URLs remain valid. Selection affects every viewer connected to this server. If a driver blocks during capture shutdown, the server refuses to open a second camera; stop and restart the shared server after resolving the device problem.
 
 The SXW arm camera uses V4L2 with MJPG input. A V4L2 session uses YUYV for D435i RGB. A session launched with `--backend realsense` uses the RealSense SDK for D435i and restores its original `--depth` setting when switching back from the arm camera. Depth preview is not available on SXW. The dropdown applies to this server's RealSense/V4L2 viewer; ROS mode continues to use the external topic viewer.
 
 If a selection fails, read the source error and check the connection, permissions, camera usage, and requested resolution/frame rate. Use **Retry camera** to restart the selected camera after a capture failure, or refresh the list and select another camera. Explicit `--device` paths remain supported for starting V4L2; the web selection API accepts only IDs from the detected catalog, not arbitrary device paths.
 
-## Stop the preview and find faults
+## Shared server lifecycle
 
-By default, `view` forwards the computer's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080` through SSH. To open the printed URL manually, add `--no-open`. To stop the preview service and tunnel, press Ctrl+C in the terminal that runs `view`. Windows also handles Ctrl+Break. Force-ending the launcher in Task Manager bypasses its cleanup; use the terminal interrupt for normal shutdown.
+The RealSense/V4L2 server trusts the LAN and listens on all IPv4 interfaces (`0.0.0.0`) by default. Once it is running, any device that can reach the perception host can open `http://PERCEPTION_HOST:8080/`. All native endpoints work without a token, URL fragment, browser session storage or Authorization header. Source selection uses POST with a JSON body; requests with an Origin header must match the current origin.
 
-RealSense and V4L2 create a new session token on each startup. The launcher reads the session link over SSH and opens it using the forwarded local port. With `--no-open`, copy the full private session link including its `#token=…` fragment. The viewer removes that fragment from the address bar; subsequent requests carry the token in an Authorization header. Refreshes reuse tab session storage. Do not paste the link or header into issues, logs, or chat. After a server restart, use the new session link. If an old deployed server does not provide one, rerun `deploy` before `view`. The launcher stops after 60 seconds without a session link, including time spent at SSH login prompts; finish login promptly or retry.
+Alternatively, run `view` on each client. It forwards that computer's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080`. With `--no-open`, open the printed URL manually. The first native client starts a detached server; concurrent and later clients reuse it. Camera selection and capture settings are shared. New `view` arguments do not reconfigure an existing server. Use different `--local-port` values for multiple launcher processes on one computer; clients on separate computers can all use the default local port.
 
-Opening the bare page works, but it cannot show frames or camera inventory without the session token. `/healthz`, `/snapshot.jpg`, `/stream.mjpg`, `/sources`, and `/source` reject unauthenticated requests with HTTP 401. Source selection uses POST with a JSON body and the same bearer token. Requests with an Origin header must match the current origin. The viewer's JPEG snapshot link downloads the displayed frame. ROS mode uses the upstream server's authentication behavior and requires a trusted local client.
+Press Ctrl+C (or Ctrl+Break on Windows) to close just that client's tunnel. Other clients keep watching, and the native server remains running even with no viewers. Force-ending the launcher in Task Manager bypasses tunnel cleanup. ROS mode retains its upstream authentication and foreground lifecycle: Ctrl+C also stops the ROS preview process it launched.
+
+Native background logs and PID files are under `~/lite3-camera-server/.runtime/` on the perception host. To release the camera, change startup options, or load deployed code updates, explicitly stop the shared server. This interrupts all its viewers. For the default port, run on the perception host:
+
+```bash
+cat ~/lite3-camera-server/.runtime/8080.pid
+# Inspect that PID and confirm it is this camera server before sending SIGTERM:
+ps -p <PID> -o pid,args
+kill -TERM <PID>
+```
+
+Use the PID and log filenames matching `--remote-port`. A manually launched server has no launcher PID file; stop it in its own terminal. After the old process exits, run `deploy` if updating code, then `view` again with the desired options. Existing pages reconnect at the same URL. If upgrading from a version that requires session tokens, stop the old foreground server before deploying and starting the new one. An incompatible listener is never silently replaced.
+
+For a foreground server, run `python3 ~/lite3-camera-server/server.py --source realsense` on the host. Add `--bind 127.0.0.1` to restrict it to SSH tunnel access, or bind to a particular LAN address. Its terminal owns the server lifetime; stopping it disconnects all viewers.
+
+## Find faults
 
 The RealSense and V4L2 pages check the incoming video data. If the stream ends, the page hides the last frame and reconnects. The page does the same if no decodable frame arrives for approximately 2.5 seconds. Camera resolution depends on the selected device and options.
 
@@ -172,9 +187,9 @@ The RealSense and V4L2 pages check the incoming video data. If the stream ends, 
 | RealSense reports a busy device | Check for a ROS camera node or `realsense-viewer` that uses the camera. If ROS publishes images, use ROS mode. |
 | RealSense Python bindings are missing | Use `doctor` to check the Python version and missing modules. The bindings must match the host architecture, Python version, and vendor SDK. |
 | V4L2 shows no image | Confirm that `--device` is an RGB node and no other program uses it. Check that OpenCV supports V4L2. Select a resolution and frame rate that the device supports. |
-| V4L2 ignores requested settings or stops capture | OpenCV requests settings, but the device can select other values. Check the actual resolution and frame rate. After a capture failure, correct device conflicts or connection faults. Then run `view` again. |
-| The local page returns HTTP 502 | Check whether the browser proxy intercepts `127.0.0.1`. The launcher's readiness check bypasses proxies. Use `curl --noproxy '*' http://127.0.0.1:18080/` to check the static page without sending a token. Alternatively, use `--no-proxy-server` only in a temporary Chrome test session. Keep the system proxy settings unchanged. |
-| The viewer requests a current session link, or an API returns HTTP 401 | Use the full link from the current launcher session. Old tokens stop working after a restart. API clients must supply the session token in the Authorization header. Never put it in the query string or share it in diagnostic output. |
-| Video is delayed or stops briefly | For RealSense or V4L2, try `--quality 55` or a lower supported resolution or frame rate. You can also repeat the test on the vendor's specified wired network. For both backends, `/healthz` shows whether the server received a recent frame. |
+| V4L2 ignores requested settings or stops capture | OpenCV requests settings, but the device can select other values. Check the actual resolution and frame rate. After a capture failure, correct device conflicts or connection faults. Then use **Retry camera**, or stop the shared server and run `view` again. |
+| The local page returns HTTP 502 | Check whether the browser proxy intercepts `127.0.0.1`. The launcher's readiness check bypasses proxies. Use `curl --noproxy '*' http://127.0.0.1:18080/` to check the page. Alternatively, use `--no-proxy-server` only in a temporary Chrome test session. Keep the system proxy settings unchanged. |
+| An API returns HTTP 401 or the launcher reports an incompatible server | Stop the old server, deploy the current version, then run `view` again. Check that the port belongs to this camera service. |
+| Video is delayed or stops briefly | For RealSense or V4L2, restart the shared server with `--quality 55` or a lower supported resolution or frame rate. You can also repeat the test on the vendor's specified wired network. For both backends, `/healthz` shows whether the server received a recent frame. |
 
 Offline tests use simulated camera input to check the browser and video server. Hardware checks covered D435i/SXW source switching and restoration of the false-color depth preview. Distance calibration, USB unplug recovery, long-duration operation and video delay require separate tests.

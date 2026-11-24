@@ -47,10 +47,7 @@ class ClientPlatformTests(unittest.TestCase):
     def test_readiness_initialization_failure_reaps_owned_process(self):
         self.check_initialization_failure(client, "build_opener", OSError("initialization failed"))
 
-    def test_reader_start_failure_reaps_owned_process(self):
-        self.check_initialization_failure(client.threading.Thread, "start", RuntimeError("thread unavailable"), True)
-
-    def check_initialization_failure(self, owner, attribute, error, authenticated=False):
+    def check_initialization_failure(self, owner, attribute, error):
         children = []
         original_popen = subprocess.Popen
 
@@ -64,7 +61,7 @@ class ClientPlatformTests(unittest.TestCase):
                     patch.object(owner, attribute, side_effect=error), \
                     contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(type(error), str(error)):
                 client.run_foreground([sys.executable, "-c", "import time; time.sleep(30)"],
-                                      self.viewer_url(), False, authenticated=authenticated)
+                                      self.viewer_url(), False)
             self.assertIsNotNone(children[0].poll(), "Signal setup failure leaked the SSH child")
         finally:
             for child in children:

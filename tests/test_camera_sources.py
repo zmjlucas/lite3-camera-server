@@ -1,4 +1,4 @@
-"""Offline source discovery, serialized capture switching, and HTTP authorization."""
+"""Offline source discovery, serialized capture switching, and trusted HTTP access."""
 import errno
 import io
 import json
@@ -345,7 +345,6 @@ class MemoryConnection:
 
 
 class SourceHTTPTests(unittest.TestCase):
-    token = "a" * 64
 
     def setUp(self):
         self.assertTrue(hasattr(server, "CaptureController"), "Capture switching is missing")
@@ -357,20 +356,19 @@ class SourceHTTPTests(unittest.TestCase):
 
     def request(self, method="GET", path="/sources", body=b"", headers=None):
         if headers is None:
-            headers = [("Host", "localhost:18080"), ("Authorization", "Bearer " + self.token),
+            headers = [("Host", "localhost:18080"),
                        ("Origin", "http://localhost:18080")]
         if method == "POST" and not any(key.lower() == "content-length" for key, _ in headers):
             headers += [("Content-Length", str(len(body))), ("Content-Type", "application/json")]
         raw = "{} {} HTTP/1.1\r\n{}\r\nConnection: close\r\n\r\n".format(
             method, path, "\r\n".join("{}: {}".format(*header) for header in headers))
         connection = MemoryConnection(raw.encode() + body)
-        http_server = SimpleNamespace(frames=self.controller.frames, controller=self.controller,
-                                      session_token=self.token)
+        http_server = SimpleNamespace(frames=self.controller.frames, controller=self.controller)
         server.CameraRequestHandler(connection, ("127.0.0.1", 12345), http_server)
         head, payload = bytes(connection.output).split(b"\r\n\r\n", 1)
         return int(head.split()[1]), payload
 
-    def test_catalog_and_selection_share_current_session(self):
+    def test_catalog_and_selection_work_without_credentials(self):
         status, body = self.request()
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["selected"], "front")
@@ -385,12 +383,12 @@ class SourceHTTPTests(unittest.TestCase):
         old.publish(b"old-camera-jpeg")
         old.wait_for_frame = lambda sequence, generation: (None, sequence)
         connection = MemoryConnection(("GET /stream.mjpg HTTP/1.1\r\nHost: localhost\r\n"
-                                       "Authorization: Bearer " + self.token + "\r\n\r\n").encode())
+                                       "\r\n").encode())
         replacement = server.LatestFrame("v4l2")
         replacement.publish(b"different-camera-jpeg")
         replacements = iter([(b"different-camera-jpeg", 2), (None, 2)])
         replacement.wait_for_frame = lambda sequence, generation: next(replacements, (None, sequence))
-        http_server = SimpleNamespace(frames=old, controller=self.controller, session_token=self.token)
+        http_server = SimpleNamespace(frames=old, controller=self.controller)
         original_send = connection.sendall
         def send(data):
             original_send(data)
@@ -403,19 +401,12 @@ class SourceHTTPTests(unittest.TestCase):
         self.assertNotIn(b"different-camera-jpeg", response)
         self.assertIn(b"old-camera-jpeg", response)
 
-    def test_new_endpoints_require_authentication_and_same_origin(self):
+    def test_source_endpoints_still_require_same_origin(self):
         for method, path, body in (("GET", "/sources", b""), ("POST", "/source", b'{"id":"arm"}')):
-            for headers, expected in (
-                    ([("Host", "localhost:18080")], 401),
-                    ([("Host", "localhost:18080"), ("Authorization", "Bearer " + self.token),
-                      ("Origin", "http://foreign.example")], 403),
-                    ([("Host", "localhost:18080"), ("Authorization", "Bearer " + self.token),
-                      ("Authorization", "Bearer " + self.token)], 401)):
-                with self.subTest(method=method, headers=headers):
-                    status, payload = self.request(method, path, body, headers)
-                    self.assertEqual(status, expected)
-                    self.assertNotIn(b"/dev/video", payload)
-            self.assertEqual(self.controller.catalog()["selected"], "front")
+            status, _ = self.request(method, path, body,
+                                     [("Host", "localhost:18080"), ("Origin", "http://foreign.example")])
+            self.assertEqual(status, 403)
+        self.assertEqual(self.controller.catalog()["selected"], "front")
 
     def test_invalid_or_oversized_selection_bodies_do_not_stop_capture(self):
         old = self.controller.frames
@@ -426,7 +417,7 @@ class SourceHTTPTests(unittest.TestCase):
                 status, _ = self.request("POST", "/source", body)
                 self.assertIn(status, (400, 413))
                 self.assertIs(self.controller.frames, old)
-        headers = [("Host", "localhost:18080"), ("Authorization", "Bearer " + self.token),
+        headers = [("Host", "localhost:18080"),
                    ("Content-Length", "14"), ("Content-Length", "14")]
         self.assertEqual(self.request("POST", "/source", b'{"id":"arm"}', headers)[0], 400)
 

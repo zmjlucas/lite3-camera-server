@@ -9,7 +9,6 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import queue
-import secrets
 import shutil
 import subprocess
 import sys
@@ -52,16 +51,13 @@ def main():
         parser.error(str(error))
     observations = queue.Queue()
     requests = []
-    rejected = []
     live_observations = {}
     stopped_observations = {1: threading.Event(), 2: threading.Event()}
     stream_lock = threading.Lock()
     fixture_errors = []
-    token = secrets.token_hex(32)
     frame = (Path(__file__).resolve().parent / "fixtures" / "camera-frame.jpg").read_bytes()
     # Observe the page with its network requests and image decoder unchanged.
     observer = (Path(__file__).resolve().parent / "fixtures" / "browser_observer.html").read_text(encoding="utf-8")
-    # A browser navigation cannot send the fragment token as an Authorization header.
     page = PAGE.replace("__SOURCE_LABEL__", "Camera").replace("<script>", observer + "<script>", 1).encode()
     sources = {1: None, 2: "unknown-source", 3: "realsense", 4: "v4l2"}
 
@@ -77,29 +73,20 @@ def main():
             self.wfile.write(body)
 
         def do_POST(self):
-            nonlocal token
-            if self.path == "/rotate":
-                token = secrets.token_hex(32)
-                self.reply("application/json", json.dumps({"token": token}).encode())
-            else:
-                row = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                observations.put(row)
-                if row["status"] == "Live" and not row["hidden"] and row["width"] == 160:
-                    observed = live_observations.get(row["attempt"])
-                    if observed:
-                        observed.set()
-                if row["hidden"] and row["attempt"] in stopped_observations:
-                    reason = "ended" if row["attempt"] == 1 else "timed out"
-                    if reason in row["status"]:
-                        stopped_observations[row["attempt"]].set()
-                self.reply("text/plain", b"ok")
+            row = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            observations.put(row)
+            if row["status"] == "Live" and not row["hidden"] and row["width"] == 160:
+                observed = live_observations.get(row["attempt"])
+                if observed:
+                    observed.set()
+            if row["hidden"] and row["attempt"] in stopped_observations:
+                reason = "ended" if row["attempt"] == 1 else "timed out"
+                if reason in row["status"]:
+                    stopped_observations[row["attempt"]].set()
+            self.reply("text/plain", b"ok")
 
         def do_GET(self):
             try:
-                if self.path != "/" and self.headers.get("Authorization") != "Bearer " + token:
-                    rejected.append(self.path)
-                    self.send_error(401)
-                    return
                 if self.path == "/":
                     self.reply("text/html", page)
                 elif self.path == "/healthz":
@@ -146,7 +133,7 @@ def main():
         threading.Thread(target=server.serve_forever, daemon=True).start()
         browser = subprocess.Popen([browser_path, "--headless", "--disable-gpu", "--disable-background-networking",
                                     "--disable-extensions", "--no-first-run", "--user-data-dir=" + profile,
-                                    "http://127.0.0.1:{}/#token={}".format(server.server_port, token)],
+                                    "http://127.0.0.1:{}/".format(server.server_port)],
                                    stdout=subprocess.DEVNULL, stderr=None)
         try:
             # Browser cold startup is separate from the playback/recovery deadline.
@@ -161,7 +148,7 @@ def main():
                 if not rows:
                     deadline = time.monotonic() + 45
                 rows.append(row)
-                if row["rotated"] and row["time"] > 1000 and not row["hidden"] and not row["hash"]:
+                if row["reloaded"] and row["time"] > 1000 and not row["hidden"] and not row["hash"]:
                     break
         finally:
             if os.name == "nt" and browser.poll() is None:
@@ -179,19 +166,16 @@ def main():
     assert rows, "The browser did not report observations before the startup deadline"
     assert not fixture_errors, "; ".join(fixture_errors)
     assert len(requests) >= 3, "The viewer did not reconnect after stream completion and timeout"
-    assert all(not row["hash"] for row in rows), "The viewer left its session token in the address bar"
-    assert any(row["reloaded"] and row["status"] == "Live" for row in rows), "Authentication did not survive a page refresh"
-    assert any(row["snapshot"] for row in rows), "The viewer did not expose an authenticated snapshot"
+    assert all(not row["hash"] for row in rows), "The viewer changed the bare URL"
+    assert any(row["reloaded"] and row["status"] == "Live" for row in rows), "Playback did not survive a page refresh"
+    assert any(row["snapshot"] for row in rows), "The viewer did not expose a snapshot"
     for attempt, label in ((1, "Camera"), (2, "Camera"), (3, "RealSense"), (4, "V4L2 RGB")):
         live = [row for row in rows if row["attempt"] == attempt and row["status"] == "Live"]
         assert live, "The browser did not display stream {}".format(attempt)
         assert all(row["source"] == label and row["alt"] == label + " video stream" for row in live), \
-            "The viewer did not identify authenticated stream {} as {}".format(attempt, label)
+            "The viewer did not identify stream {} as {}".format(attempt, label)
     assert any(row["reloaded"] and row["status"] == "Live" and row["source"] == "RealSense" for row in rows), \
-        "The viewer did not restore its authenticated source after refresh"
-    assert any(row["rotated"] and row["status"] == "Live" and not row["hash"] for row in rows), \
-        "The viewer did not consume a new session link in the same tab"
-    assert not any(path.startswith('/stream.mjpg') for path in rejected), "The viewer sent an unauthenticated stream request"
+        "The viewer did not restore its source after refresh"
     assert any(not row["hidden"] and row["width"] == 160 and row["status"] == "Live" for row in rows), "The browser did not decode and display a JPEG frame"
     assert any(row["hidden"] and "ended" in row["status"] for row in rows), "The viewer kept the last frame after stream completion"
     assert any(row["hidden"] and "timed out" in row["status"] for row in rows), "The viewer kept the last frame after a transfer timeout"

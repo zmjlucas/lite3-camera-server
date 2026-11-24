@@ -44,7 +44,7 @@
   <p id="status" role="status">Connection pending</p>
   <a id="snapshot" download="snapshot.jpg" hidden>JPEG snapshot</a>
 </footer>
-<noscript><p>To authenticate and view video, enable JavaScript and open the session link from the launcher.</p></noscript>
+<noscript><p>Enable JavaScript to view video and select a camera.</p></noscript>
 </main>
 <script>
 const image = document.getElementById('stream');
@@ -55,17 +55,6 @@ const sourceSelect = document.getElementById('camera-source');
 const sourceStatus = document.getElementById('source-status');
 const refreshSourcesButton = document.getElementById('refresh-sources');
 const retryCameraButton = document.getElementById('retry-camera');
-// A fresh session link in this tab is a fragment navigation, not a new document.
-window.addEventListener('hashchange', () => location.reload());
-let sessionToken = new URLSearchParams(location.hash.slice(1)).get('token') || '';
-// A fragment is not sent to HTTP servers. Remove it before any camera requests.
-if (location.hash) history.replaceState(null, '', location.pathname + location.search);
-try {
-  if (/^[a-f0-9]{64}$/.test(sessionToken)) sessionStorage.setItem('camera-session', sessionToken);
-  else sessionToken = sessionStorage.getItem('camera-session') || '';
-} catch (_) {
-  // Playback still works in this tab when the browser disables storage.
-}
 let currentFrameURL;
 let activeStream;
 let streamGeneration = 0;
@@ -76,13 +65,6 @@ let switchingSource = false;
 let knownSources = [];
 let selectedSource = null;
 let streamFailed = false;
-function authenticated() {
-  return /^[a-f0-9]{64}$/.test(sessionToken);
-}
-function forgetSession() {
-  sessionToken = '';
-  try { sessionStorage.removeItem('camera-session'); } catch (_) {}
-}
 function showNoVideo(message) {
   image.hidden = true;
   image.removeAttribute('src');
@@ -103,7 +85,7 @@ function stopVideo(message) {
   showNoVideo(message);
 }
 function updateRetryButton() {
-  retryCameraButton.hidden = !streamFailed || !selectedSource || !authenticated();
+  retryCameraButton.hidden = !streamFailed || !selectedSource;
   retryCameraButton.disabled = switchingSource;
 }
 function renderSources() {
@@ -111,12 +93,19 @@ function renderSources() {
   if (!selectedSource) sourceSelect.add(new Option(knownSources.length ? 'Select a camera' : 'No cameras available', ''));
   for (const source of knownSources) sourceSelect.add(new Option(source.label, source.id));
   sourceSelect.value = selectedSource ? selectedSource.id : '';
-  sourceSelect.disabled = switchingSource || !knownSources.length || !authenticated();
-  refreshSourcesButton.disabled = switchingSource || !authenticated();
+  sourceSelect.disabled = switchingSource || !knownSources.length;
+  refreshSourcesButton.disabled = switchingSource;
   updateRetryButton();
 }
+function identifySource(source, sourceId) {
+  selectedSource = knownSources.find(item => item.id === sourceId && item.backend === source) || null;
+  renderSources();
+  const sourceLabel = selectedSource ? selectedSource.label :
+    source === 'realsense' ? 'RealSense' : source === 'v4l2' ? 'V4L2 RGB' : 'Camera';
+  document.querySelector('.source').textContent = sourceLabel;
+  image.alt = sourceLabel + ' video stream';
+}
 async function readCatalog(response) {
-  if (response.status === 401) forgetSession();
   let data;
   try { data = await response.json(); } catch (_) {}
   if (!response.ok) throw new Error(data?.error || 'Camera discovery unavailable (' + response.status + ')');
@@ -131,17 +120,10 @@ function applyCatalog(data) {
   renderSources();
 }
 async function fetchCatalog(signal) {
-  return readCatalog(await fetch('/sources', {cache: 'no-store', signal,
-    headers: {Authorization: 'Bearer ' + sessionToken}}));
+  return readCatalog(await fetch('/sources', {cache: 'no-store', signal}));
 }
 async function refreshSources() {
-  if (switchingSource || !authenticated()) {
-    if (!authenticated()) {
-      sourceStatus.textContent = 'Open the current session link to list cameras.';
-      renderSources();
-    }
-    return;
-  }
+  if (switchingSource) return;
   const generation = ++sourceGeneration;
   if (sourceRequest) sourceRequest.abort();
   const controller = sourceRequest = new AbortController();
@@ -172,7 +154,7 @@ async function refreshSources() {
 }
 async function selectSource(retryCurrent = false) {
   const id = sourceSelect.value;
-  if (switchingSource || !authenticated() || !knownSources.some(source => source.id === id) ||
+  if (switchingSource || !knownSources.some(source => source.id === id) ||
       (id === selectedSource?.id && !retryCurrent)) return;
   switchingSource = true;
   const generation = ++sourceGeneration;
@@ -185,7 +167,7 @@ async function selectSource(retryCurrent = false) {
   sourceStatus.textContent = 'Switching camera…';
   try {
     const response = await fetch('/source', {method: 'POST', cache: 'no-store', signal: controller.signal,
-      headers: {Authorization: 'Bearer ' + sessionToken, 'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({id})});
     const catalog = await readCatalog(response);
     if (generation !== sourceGeneration) return;
@@ -196,7 +178,7 @@ async function selectSource(retryCurrent = false) {
     const message = error.name === 'AbortError' ? 'Camera switch timed out.' : error.message;
     // A failed start may have changed the server selection. Reconcile before labeling video.
     selectedSource = null;
-    if (authenticated() && !controller.signal.aborted) {
+    if (!controller.signal.aborted) {
       try { applyCatalog(await fetchCatalog(controller.signal)); } catch (_) {}
     }
     sourceStatus.textContent = message;
@@ -219,10 +201,6 @@ retryCameraButton.addEventListener('click', () => {
 // Mark video as live only after a new frame arrives and the decoder reads it.
 async function streamVideo() {
   if (switchingSource) return;
-  if (!authenticated()) {
-    showNoVideo('Open the current session link from the launcher.');
-    return;
-  }
   const generation = ++streamGeneration;
   const controller = activeStream = new AbortController();
   const current = () => generation === streamGeneration && !switchingSource;
@@ -233,24 +211,21 @@ async function streamVideo() {
   }
   frameDeadline();
   try {
-    const response = await fetch('/stream.mjpg', {cache: 'no-store', signal: controller.signal,
-      headers: {Authorization: 'Bearer ' + sessionToken}});
+    const response = await fetch('/stream.mjpg', {cache: 'no-store', signal: controller.signal});
     if (!current()) return;
     if (!response.ok) {
-      if (response.status === 401) forgetSession();
       const health = await response.json();
+      if (!current()) return;
+      if (Object.prototype.hasOwnProperty.call(health, 'source_id')) {
+        identifySource(health.source, health.source_id);
+      }
       throw new Error(health.error || 'No frame received yet');
     }
-    // The initial navigation is anonymous; identify the source only after authentication.
+    // Identify the source for this stream, including changes made by another viewer.
     const source = response.headers.get('X-Camera-Source');
     const sourceId = response.headers.get('X-Camera-Source-Id');
     // This header belongs to this capture, unlike a catalog cached before another tab switched.
-    selectedSource = knownSources.find(item => item.id === sourceId && item.backend === source) || null;
-    renderSources();
-    const sourceLabel = selectedSource ? selectedSource.label :
-      source === 'realsense' ? 'RealSense' : source === 'v4l2' ? 'V4L2 RGB' : 'Camera';
-    document.querySelector('.source').textContent = sourceLabel;
-    image.alt = sourceLabel + ' video stream';
+    identifySource(source, sourceId);
     const reader = response.body.getReader();
     let buffer = new Uint8Array(0);
     const decoder = new TextDecoder();

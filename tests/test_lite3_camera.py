@@ -150,30 +150,17 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(calls[2][-1], "robot:lite3-camera-server/web/")
         self.assertFalse(Path(calls[1][-2]).exists(), "Temporary deployment files must be removed")
 
-    def test_native_session_link_uses_local_port_without_echoing_remote_url(self):
+    def test_native_view_prints_plain_local_url(self):
         port = self.free_port()
         result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open", "--local-port", str(port))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("http://127.0.0.1:{}/#token=".format(port) + "a" * 64, result.stdout)
-        self.assertNotIn("http://127.0.0.1:8080/#token=", result.stdout)
+        self.assertIn("Viewer: http://127.0.0.1:{}/".format(port), result.stdout)
+        self.assertNotIn("#token=", result.stdout)
 
-    def test_native_legacy_server_without_session_link_fails_with_deploy_hint(self):
+    def test_native_view_does_not_require_a_session_handshake(self):
         self.env["CAMERA_TEST_BANNER"] = "http://127.0.0.1:8080/"
-        pid_file = self.directory / "legacy.pid"
-        env = dict(self.env, CAMERA_TEST_PID_FILE=str(pid_file))
-        process = subprocess.Popen([sys.executable, str(RUNNER), str(SCRIPT), "view", "robot", "--backend", "realsense",
-                                    "--no-open", "--local-port", str(self.free_port())],
-                                   env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
-            _, stderr = process.communicate(timeout=4)
-            self.assertNotEqual(process.returncode, 0)
-            self.assertIn("deploy", stderr)
-            if pid_file.exists():
-                self.assert_process_stopped(int(pid_file.read_text()))
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                process.communicate(timeout=7)
+        result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open")
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_deploy_failure_prevents_copy(self):
         result = self.run_cli("deploy", "robot", exit_code=23)
@@ -231,34 +218,6 @@ class CameraCommandsTest(unittest.TestCase):
             self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 0)
         self.assertEqual([json.loads(line) for line in copies.read_text().splitlines()],
                          ["original-server", "original-page"])
-
-    def test_native_startup_deadline_stops_ssh_without_a_session_link(self):
-        self.env["CAMERA_TEST_BANNER"] = ""
-        self.env["CAMERA_TEST_PID_FILE"] = str(self.directory / "missing-token.pid")
-        self.env["CAMERA_TEST_START_TIMEOUT"] = "0.5"
-        process = subprocess.Popen([sys.executable, str(RUNNER), str(SCRIPT), "view", "robot", "--backend", "realsense",
-                                    "--no-open", "--local-port", str(self.free_port())],
-                                   env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
-            _, stderr = process.communicate(timeout=4)
-            self.assertNotEqual(process.returncode, 0)
-            self.assertIn("session", stderr.lower())
-            self.assertIn("deploy", stderr)
-            pid_file = Path(self.env["CAMERA_TEST_PID_FILE"])
-            # The shortened deadline may kill Python before the fixture records its PID.
-            if pid_file.exists():
-                self.assert_process_stopped(int(pid_file.read_text()))
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                process.communicate(timeout=7)
-
-    def test_malformed_session_link_never_reaches_terminal_output(self):
-        token = "b" * 63
-        self.env["CAMERA_TEST_BANNER"] = "http://127.0.0.1:8080/#token=" + token
-        result = self.run_cli("view", "robot", "--backend", "realsense", "--no-open")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn(token, result.stdout + result.stderr)
 
     def test_deploy_uploads_only_allowlisted_files_beside_ignored_content(self):
         from unittest.mock import patch
@@ -412,7 +371,7 @@ class CameraCommandsTest(unittest.TestCase):
         self.assert_sigterm_stops_owned_ssh_process("ros")
 
     @unittest.skipIf(os.name == "nt", "Windows terminate() force-kills; portable interrupt cleanup is tested separately")
-    def test_sigterm_stops_native_session_and_stdout_reader(self):
+    def test_sigterm_stops_native_client_ssh_process(self):
         self.assert_sigterm_stops_owned_ssh_process("realsense")
 
     def assert_sigterm_stops_owned_ssh_process(self, backend):
@@ -495,17 +454,53 @@ class CameraCommandsTest(unittest.TestCase):
                 proxy.shutdown()
                 worker.join(timeout=2)
 
+    def test_native_browser_waits_for_camera_protocol(self):
+        import contextlib
+        import http.client
+        import io
+        port = self.free_port()
+        url = "http://127.0.0.1:{}/".format(port)
+        # The tunnel is initially an unrelated HTTP 200 listener, then the native camera.
+        code = ("import time\nfrom http.server import BaseHTTPRequestHandler, HTTPServer\n"
+                "ready = time.monotonic() + 0.7\n"
+                "class Handler(BaseHTTPRequestHandler):\n"
+                "    def do_GET(self):\n"
+                "        self.send_response(200)\n"
+                "        if time.monotonic() >= ready: self.send_header('X-Lite3-Camera-Protocol', '1')\n"
+                "        self.end_headers()\n"
+                "    def log_message(self, *args): pass\n"
+                "HTTPServer(('127.0.0.1', " + str(port) + "), Handler).serve_forever()\n")
+        original = subprocess.Popen
+        def spawn(command, *args, **kwargs):
+            return original([sys.executable, "-c", code], *args, **kwargs)
+        opened = []
+        def open_viewer(viewer_url):
+            opened.append(viewer_url)
+            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+            try:
+                connection.request("GET", "/")
+                self.assertEqual(connection.getresponse().getheader("X-Lite3-Camera-Protocol"), "1",
+                                 "The browser opened an unrelated HTTP service")
+            finally:
+                connection.close()
+            raise KeyboardInterrupt
+        with patch.object(self.cli.subprocess, "Popen", spawn), \
+                patch.object(self.cli.webbrowser, "open", open_viewer), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.cli.main(["view", "robot", "--backend", "realsense", "--direct",
+                                           "--local-port", str(port)]), 130)
+        self.assertEqual(opened, [url])
+
     def test_ros_topic_url_preserves_slashes_for_legacy_http_parser(self):
         result = self.run_cli("view", "robot", "--topic", "/camera/color/image_raw", "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("topic=/camera/color/image_raw&", result.stdout)
 
-    def test_native_browser_receives_working_session_token_without_terminal_disclosure(self):
+    def test_native_browser_opens_bare_url_and_reads_frames(self):
         import contextlib
         import http.client
         import io
         from unittest.mock import patch
-        from urllib.parse import parse_qs, urlsplit
+        from urllib.parse import urlsplit
         port = self.free_port()
         url = "http://127.0.0.1:{}/".format(port)
         command = [sys.executable, "-u", str(ROOT / "tests/fixtures/camera_server.py"),
@@ -517,10 +512,10 @@ class CameraCommandsTest(unittest.TestCase):
         def open_viewer(session_url):
             opened.append(session_url)
             address = urlsplit(session_url)
-            token = parse_qs(address.fragment)["token"][0]
+            self.assertEqual(address.fragment, "")
             conn = http.client.HTTPConnection("127.0.0.1", address.port, timeout=2)
             try:
-                conn.request("GET", "/snapshot.jpg", headers={"Authorization": "Bearer " + token})
+                conn.request("GET", "/snapshot.jpg")
                 response = conn.getresponse()
                 self.assertEqual(response.status, 200)
                 self.assertEqual(response.read(), (ROOT / "tests/fixtures/camera-frame.jpg").read_bytes())
@@ -529,9 +524,9 @@ class CameraCommandsTest(unittest.TestCase):
             raise KeyboardInterrupt  # The user closes the foreground session after opening it.
 
         with patch.object(self.cli.webbrowser, "open", open_viewer), contextlib.redirect_stdout(output):
-            self.assertEqual(self.cli.run_foreground(command, url, True, authenticated=True), 130)
+            self.assertEqual(self.cli.run_foreground(command, url, True, native=True), 130)
         self.assertEqual(len(opened), 1)
-        self.assertTrue(opened[0].startswith(url + "#token="))
+        self.assertEqual(opened[0], url)
         self.assertNotIn("#token=", output.getvalue())
 
 

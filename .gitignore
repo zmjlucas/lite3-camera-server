@@ -25,6 +25,7 @@ dist/
 recordings/
 captures/
 outputs/
+.runtime/
 CAMERA_HARDWARE_TEST*.md
 camera_hardware_test*.md
 

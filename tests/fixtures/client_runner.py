@@ -17,7 +17,7 @@ def stub_command():
         with open(os.environ["CAMERA_TEST_COPY_LOG"], "a", encoding="utf-8") as log:
             log.write(json.dumps(Path(arguments[-2]).read_text(encoding="utf-8")) + "\n")
     if "--source" in arguments[-1]:
-        banner = os.environ.get("CAMERA_TEST_BANNER", "http://127.0.0.1:8080/#token=" + "a" * 64)
+        banner = os.environ.get("CAMERA_TEST_BANNER", "Shared camera server on port 8080")
         if banner:
             print(banner, flush=True)
     if os.environ.get("CAMERA_TEST_PID_FILE"):
@@ -33,8 +33,6 @@ def main():
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
     cli.macos_route = lambda address: None
-    if "CAMERA_TEST_START_TIMEOUT" in os.environ:
-        cli.SESSION_START_TIMEOUT = float(os.environ["CAMERA_TEST_START_TIMEOUT"])
     original_popen = subprocess.Popen
 
     def start(command, *args, **kwargs):

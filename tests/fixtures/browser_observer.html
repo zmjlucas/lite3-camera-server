@@ -1,7 +1,6 @@
 <script>
 // Observe response identity without changing requests, response bodies or decoding.
 let testStreamAttempt = 0;
-const testRotatedOnLoad = sessionStorage.getItem('test-rotated') === 'yes';
 let navigating = false;
 const originalFetch = window.fetch.bind(window);
 window.fetch = async (...args) => {
@@ -15,7 +14,6 @@ setInterval(async () => {
     time: performance.now(), hidden: document.getElementById('stream').hidden,
     width: document.getElementById('stream').naturalWidth, hash: location.hash,
     reloaded: sessionStorage.getItem('test-reloaded') === 'yes',
-    rotated: testRotatedOnLoad,
     attempt: testStreamAttempt,
     snapshot: document.getElementById('snapshot').href.startsWith('blob:'),
     source: document.querySelector('.source').textContent,
@@ -26,12 +24,7 @@ setInterval(async () => {
     navigating = true;
     sessionStorage.setItem('test-reloaded', 'yes');
     location.reload();
-  } else if (row.reloaded && row.time > 1000 && row.status === 'Live' && !sessionStorage.getItem('test-rotated')) {
-    navigating = true;
-    sessionStorage.setItem('test-rotated', 'yes');
-    const response = await fetch('/rotate', {method: 'POST'});
-    const current = await response.json();
-    location.hash = 'token=' + current.token;
+
   }
 }, 100);
 </script>

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Arguments: Python port-check source, port, camera server options.
+# Arguments: Python shared-start source, port, camera server options.
 set -e
-python3 -c "$1" "$2"
+helper=$1
+port=$2
 shift 2
 server="$HOME/lite3-camera-server/server.py"
-if [ ! -f "$server" ]; then
-  printf '%s\n' 'The camera server script is missing. Run the deploy command first.' >&2
-  exit 2
-fi
-exec python3 -u "$server" "$@"
+python3 -c "$helper" "$server" "$port" "$@"
+# Only this idle SSH command belongs to the client. The shared server is detached.
+exec sleep infinity

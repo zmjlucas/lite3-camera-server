@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import queue
-import secrets
 import subprocess
 import tempfile
 import threading
@@ -24,9 +23,7 @@ def main():
     parser.add_argument("--browser", help="Chrome, Chromium or Edge executable")
     args = parser.parse_args()
     browser_path = args.browser or find_browser()
-    token = secrets.token_hex(32)
     observations = queue.Queue()
-    rejected = []
     fixture_errors = []
     switches = []
     state = {"selected": "rgb", "catalog_calls": 0, "rgb_failed": False, "only_arm": False, "capture_failed": False}
@@ -58,18 +55,16 @@ def main():
             available = sources[1:] if state["only_arm"] else sources
             self.reply(200, json.dumps({"sources": available, "selected": state["selected"]}).encode())
 
-        def authorized(self):
-            if self.headers.get("Authorization") == "Bearer " + token:
-                return True
-            rejected.append(self.path)
-            self.reply(401, b'{"error":"Unauthorized"}')
-            return False
-
         def do_POST(self):
             try:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if self.path == "/remote-switch":
                     state["selected"] = "arm"
+                    self.reply(200, b"{}")
+                    return
+                if self.path == "/remote-fail":
+                    state["selected"] = "rgb"
+                    state["capture_failed"] = True
                     self.reply(200, b"{}")
                     return
                 if self.path == "/fail-current":
@@ -85,8 +80,6 @@ def main():
                     return
                 if self.path != "/source":
                     self.send_error(404)
-                    return
-                if not self.authorized():
                     return
                 if self.headers.get("Origin") != "http://127.0.0.1:{}".format(self.server.server_port):
                     fixture_errors.append("Selection was not same-origin")
@@ -116,8 +109,6 @@ def main():
                 if self.path == "/favicon.ico":
                     self.reply(204, b"")
                     return
-                if not self.authorized():
-                    return
                 if self.path == "/sources":
                     with lock:
                         state["catalog_calls"] += 1
@@ -133,7 +124,8 @@ def main():
                         self.catalog()
                 elif self.path == "/stream.mjpg":
                     if state["capture_failed"]:
-                        self.reply(503, b'{"error":"Camera disconnected"}')
+                        self.reply(503, json.dumps({"error": "Camera disconnected", "source": "v4l2",
+                                                    "source_id": state["selected"]}).encode())
                         return
                     source = state["selected"]
                     self.send_response(200)
@@ -156,7 +148,7 @@ def main():
         threading.Thread(target=server.serve_forever, daemon=True).start()
         browser = subprocess.Popen([browser_path, "--headless", "--disable-gpu", "--disable-background-networking",
                                     "--disable-extensions", "--no-first-run", "--user-data-dir=" + profile,
-                                    "http://127.0.0.1:{}/#token={}".format(server.server_port, token)],
+                                    "http://127.0.0.1:{}/".format(server.server_port)],
                                    stdout=subprocess.DEVNULL, stderr=None)
         try:
             deadline = time.monotonic() + 60
@@ -169,6 +161,9 @@ def main():
                     continue
                 rows.append(row)
                 assert row["hasSelector"], "The viewer has no camera source dropdown"
+                if row["phase"] == "failed-remote-switch" and "disconnected" in row["status"]:
+                    assert row["selected"] == "rgb", "Failed external switch kept the old camera selected"
+                    assert row["source"] == sources[0]["label"], "Failed external switch kept the old camera label"
                 if row["phase"] == "retry-ready" and row["hidden"] and len(row["options"]) == 1 and "disconnected" in row["status"]:
                     assert row["retryVisible"] and not row["retryDisabled"], "No way to retry the only selected camera after capture failure"
                 if len(rows) == 1:
@@ -190,12 +185,11 @@ def main():
             server.shutdown()
     assert rows and rows[-1].get("complete"), "Browser did not finish camera selection: {}".format(rows[-1:] or "no observations")
     assert not fixture_errors, "; ".join(fixture_errors)
-    assert not rejected, "Viewer sent unauthenticated requests: {}".format(rejected)
-    assert switches == ["arm", "rgb", "rgb", "arm"], switches
-    assert all(not row["hash"] for row in rows), "Viewer exposed the session fragment"
+    assert switches == ["arm", "rgb", "rgb", "rgb", "arm", "arm"], switches
+    assert all(not row["hash"] for row in rows), "Viewer changed the bare URL"
     assert any(row["phase"] == "discovery-error" and row["status"] == "Live" and row["source"] == "V4L2 RGB"
                and row["disabled"] and row["sourceStatus"] for row in rows), "Discovery failure prevented playback"
-    for phase in ("switch-arm", "failed-switch", "switch-rgb", "retry-current"):
+    for phase in ("switch-arm", "failed-switch", "switch-rgb", "retry-remote", "return-arm", "retry-current"):
         immediate = next(row for row in rows if row["phase"] == phase and row.get("immediate"))
         assert immediate["disabled"] and immediate["hidden"] and immediate["src"] is None, immediate
         assert immediate["snapshotHidden"] and immediate["snapshot"] is None, immediate
@@ -219,7 +213,7 @@ def main():
         "Other-tab selection mislabeled two streams with the same backend"
     assert all(not row["retryVisible"] for row in rows if row["status"] == "Live"), "Retry remained visible during healthy playback"
     assert rows[-1]["options"] == [{"id": "arm", "label": sources[1]["label"]}], "Recovery did not exercise a single-source catalog"
-    print("PASS: Chrome recovered discovery, cancelled stale refresh/video, switched cameras, recovered selection failure, preserved authentication, followed another tab's selection, and retried the only camera after failure.")
+    print("PASS: Chrome recovered discovery, cancelled stale refresh/video, switched cameras, recovered selection failure, survived a bare-page reload, followed successful and failed selections from another client, and retried the only camera after failure.")
 
 
 if __name__ == "__main__":
