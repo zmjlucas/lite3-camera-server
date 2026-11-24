@@ -57,7 +57,54 @@ def v4l2_formats(device):
         os.close(descriptor)
 
 
-def discover_sources(sysfs_root=Path("/sys/class/video4linux"), probe=None):
+def camera_device_owners(proc_root):
+    """Best-effort read-only scan; never treat our shared capture as a conflict."""
+    owners = {}
+    try:
+        processes = list(Path(proc_root).iterdir())
+    except OSError:
+        return owners
+    for process in processes:
+        if not process.name.isdigit() or int(process.name) == os.getpid():
+            continue
+        try:
+            descriptors = list((process / "fd").iterdir())
+        except OSError:
+            continue  # Process exited or procfs denies access to its descriptors.
+        for descriptor in descriptors:
+            try:
+                device = os.readlink(str(descriptor))
+            except OSError:
+                continue
+            if not re.fullmatch(r"/dev/(video[0-9]+|bus/usb/[0-9]+/[0-9]+)", device):
+                continue
+            try:
+                name = Path(os.readlink(str(process / "exe"))).name
+            except OSError:
+                try:
+                    name = (process / "comm").read_text().strip()
+                except OSError:
+                    name = "another process"
+            owners[device] = "{} (PID {})".format(name, process.name)
+    return owners
+
+
+def sysfs_rgb_node(node, usb, kind):
+    """Identify an inaccessible RGB node without guessing its /dev/video number."""
+    if (node / "index").read_text().strip() != "0":
+        return False  # UVC metadata has a separate index on the same interface.
+    if kind == "sxw":
+        return True
+    names = [(node / "name").read_text()]
+    for parent in node.resolve().parents:
+        if parent == usb:
+            break
+        if (parent / "interface").is_file():
+            names.append((parent / "interface").read_text())
+    return any(re.search(r"\brgb\b", name, re.I) for name in names)
+
+
+def discover_sources(sysfs_root=Path("/sys/class/video4linux"), probe=None, proc_root=Path("/proc")):
     """Identify supported RGB nodes through their USB parent and capture formats."""
     probe = probe or v4l2_formats
     root = Path(sysfs_root)
@@ -65,6 +112,7 @@ def discover_sources(sysfs_root=Path("/sys/class/video4linux"), probe=None):
         nodes = [node for node in root.iterdir() if re.fullmatch(r"video[0-9]+", node.name)]
     except FileNotFoundError:
         return []
+    owners = camera_device_owners(proc_root)
     found = []
     for node in sorted(nodes, key=lambda item: int(item.name[5:])):
         try:
@@ -84,13 +132,30 @@ def discover_sources(sysfs_root=Path("/sys/class/video4linux"), probe=None):
             else:
                 continue
             device = "/dev/" + node.name
-            if pixel_format not in probe(device):
-                continue
+            error = None
+            try:
+                if pixel_format not in probe(device):
+                    continue
+            except (OSError, ImportError) as failure:
+                if not sysfs_rgb_node(node, usb, kind):
+                    continue
+                error = "Cannot inspect {}: {}. Check camera usage, connection and permissions; then Refresh.".format(device, failure)
+            # SDK capture can own a sibling depth interface or the USB device itself.
+            related = ["/dev/" + sibling.name for sibling in nodes if usb in sibling.resolve().parents]
+            try:
+                related.append("/dev/bus/usb/{:03d}/{:03d}".format(
+                    int((usb / "busnum").read_text()), int((usb / "devnum").read_text())))
+            except (OSError, ValueError):
+                pass
+            busy = next((path for path in related if path in owners), None)
+            if busy:
+                error = "Camera is in use by {} ({}). Release it in that application, then Refresh.".format(owners[busy], busy)
             identity = "\0".join((str(resolved), vendor, product_id, serial))
             source_id = "camera-" + hashlib.sha256(identity.encode()).hexdigest()[:24]
             found.append({"id": source_id, "label": device + " — " + label, "device": device,
                           "backend": "v4l2", "kind": kind, "serial": serial,
-                          "usb_path": str(usb), "pixel_format": pixel_format})
+                          "usb_path": str(usb), "pixel_format": pixel_format,
+                          "available": error is None, "error": error})
         except (OSError, ImportError):
             # An inaccessible/disconnected node must not hide other supported cameras.
             continue
@@ -504,7 +569,8 @@ class CaptureController:
         public = []
         for entry in detected:
             public.append({"id": entry["id"], "label": entry["label"], "device": entry["device"],
-                           "backend": self._backend(entry)})
+                           "backend": self._backend(entry), "available": entry.get("available", True),
+                           "error": entry.get("error")})
         source_id = self.frames.snapshot()[0]["source_id"]
         selected = source_id if any(entry["id"] == source_id for entry in detected) else None
         return {"sources": public, "selected": selected}
@@ -569,6 +635,8 @@ class CaptureController:
                     and self.producer.is_alive() and not self._stop.is_set()
                     and self.frames.snapshot()[0]["status"] in ("live", "starting")):
                 return self._catalog(detected)
+            if not entry.get("available", True):
+                raise RuntimeError(entry.get("error") or "That camera is unavailable. Refresh the source list.")
             options = self._source_options(entry)
             self.frames.retire("Camera switching; the previous video has ended")
             self._stop.set()

@@ -26,7 +26,8 @@ def main():
     observations = queue.Queue()
     fixture_errors = []
     switches = []
-    state = {"selected": "rgb", "catalog_calls": 0, "rgb_failed": False, "only_arm": False, "capture_failed": False}
+    state = {"selected": "rgb", "catalog_calls": 0, "rgb_failed": False, "only_arm": False,
+             "capture_failed": False, "blocked": True, "all_unavailable": False}
     switch_observed = threading.Event()
     arm_selected = threading.Event()
     stopped = threading.Event()
@@ -38,6 +39,7 @@ def main():
     sources = [
         {"id": "rgb", "label": "/dev/video4 — D435i RGB", "device": "/dev/video4", "backend": "v4l2"},
         {"id": "arm", "label": "/dev/video6 — Arm camera (SXW USB Camera)", "device": "/dev/video6", "backend": "v4l2"},
+        {"id": "blocked", "label": "/dev/video10 — D435i RGB", "device": "/dev/video10", "backend": "v4l2"},
     ]
 
     class Handler(BaseHTTPRequestHandler):
@@ -52,12 +54,27 @@ def main():
             self.wfile.write(body)
 
         def catalog(self):
-            available = sources[1:] if state["only_arm"] else sources
+            available = [dict(source) for source in ([sources[1]] if state["only_arm"] else sources)]
+            for source in available:
+                if state["all_unavailable"] or (source["id"] == "blocked" and state["blocked"]):
+                    source.update(available=False, error="Camera is in use by realsense-viewer. Release it, then Refresh.")
             self.reply(200, json.dumps({"sources": available, "selected": state["selected"]}).encode())
 
         def do_POST(self):
             try:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/release-blocked":
+                    state["blocked"] = False
+                    self.reply(200, b"{}")
+                    return
+                if self.path == "/all-unavailable":
+                    state.update(all_unavailable=True, capture_failed=True, selected=None)
+                    self.reply(200, b"{}")
+                    return
+                if self.path == "/recover-available":
+                    state.update(all_unavailable=False, capture_failed=False, selected="arm")
+                    self.reply(200, b"{}")
+                    return
                 if self.path == "/remote-switch":
                     state["selected"] = "arm"
                     self.reply(200, b"{}")
@@ -115,7 +132,7 @@ def main():
                         call = state["catalog_calls"]
                     if call == 1:
                         self.reply(503, b'{"error":"Discovery unavailable"}')
-                    elif call == 3:
+                    elif call == 4:
                         stale = json.dumps({"sources": sources, "selected": state["selected"]}).encode()
                         if not arm_selected.wait(5):
                             fixture_errors.append("No selection during delayed catalog refresh")
@@ -186,6 +203,16 @@ def main():
     assert rows and rows[-1].get("complete"), "Browser did not finish camera selection: {}".format(rows[-1:] or "no observations")
     assert not fixture_errors, "; ".join(fixture_errors)
     assert switches == ["arm", "rgb", "rgb", "rgb", "arm", "arm"], switches
+    blocked = [row for row in rows if row["phase"] == "blocked-option"]
+    assert blocked and all(row["selected"] == "rgb" and row["status"] == "Live" and not row["hidden"]
+                           and "realsense-viewer" in row["sourceErrors"] for row in blocked), blocked
+    assert any(row["unavailableOptions"] == ["blocked"] and "realsense-viewer" in row["sourceErrors"]
+               for row in rows), "Unavailable camera was not disabled and explained"
+    assert any(row["phase"] == "released-option" and not row["unavailableOptions"] for row in rows), \
+        "Refresh did not re-enable the released camera"
+    assert any(row["phase"] == "all-unavailable" and row["unavailableOptions"] == ["arm"]
+               and not row["refreshDisabled"] and "realsense-viewer" in row["sourceErrors"] for row in rows), \
+        "All-unavailable catalog did not retain a disabled camera with an error and refresh"
     assert all(not row["hash"] for row in rows), "Viewer changed the bare URL"
     assert any(row["phase"] == "discovery-error" and row["status"] == "Live" and row["source"] == "V4L2 RGB"
                and row["disabled"] and row["sourceStatus"] for row in rows), "Discovery failure prevented playback"
@@ -213,7 +240,7 @@ def main():
         "Other-tab selection mislabeled two streams with the same backend"
     assert all(not row["retryVisible"] for row in rows if row["status"] == "Live"), "Retry remained visible during healthy playback"
     assert rows[-1]["options"] == [{"id": "arm", "label": sources[1]["label"]}], "Recovery did not exercise a single-source catalog"
-    print("PASS: Chrome recovered discovery, cancelled stale refresh/video, switched cameras, recovered selection failure, survived a bare-page reload, followed successful and failed selections from another client, and retried the only camera after failure.")
+    print("PASS: Chrome retained disabled cameras with errors, rejected unavailable selection without stopping video, recovered availability on refresh, handled all cameras unavailable, and passed discovery/switch/retry/reload regressions.")
 
 
 if __name__ == "__main__":

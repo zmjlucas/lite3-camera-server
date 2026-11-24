@@ -42,6 +42,9 @@ class DiscoveryTests(unittest.TestCase):
             (usb / key).write_text(value)
         node = usb / "interface" / "video4linux" / ("video" + str(number))
         node.mkdir(parents=True)
+        (node / "index").write_text("0")
+        (node / "name").write_text(name)
+        (usb / "interface" / "interface").write_text(name + " RGB")
         try:
             (self.sysfs / node.name).symlink_to(node, target_is_directory=True)
         except OSError as error:
@@ -73,7 +76,7 @@ class DiscoveryTests(unittest.TestCase):
         found = server.discover_sources(self.sysfs, probe=lambda device: {"YUYV"})
         self.assertEqual([entry["device"] for entry in found], ["/dev/video22"])
 
-    def test_unreadable_node_does_not_hide_other_cameras(self):
+    def test_unreadable_rgb_node_remains_visible_with_error_and_recovers(self):
         self.assertTrue(hasattr(server, "discover_sources"), "Camera discovery is missing")
         self.node(4)
         self.node(8, "0bda", "525a", "SXW USB Camera")
@@ -82,7 +85,72 @@ class DiscoveryTests(unittest.TestCase):
                 raise PermissionError("not readable")
             return {"MJPG"}
         found = server.discover_sources(self.sysfs, probe=probe)
-        self.assertEqual([entry["device"] for entry in found], ["/dev/video8"])
+        self.assertEqual([entry["device"] for entry in found], ["/dev/video4", "/dev/video8"])
+        self.assertFalse(found[0]["available"])
+        self.assertIn("not readable", found[0]["error"])
+        self.assertTrue(found[1]["available"])
+        recovered = server.discover_sources(self.sysfs, probe=lambda device: {"YUYV", "MJPG"})
+        self.assertEqual(recovered[0]["id"], found[0]["id"])
+        self.assertTrue(recovered[0]["available"])
+        self.assertIsNone(recovered[0]["error"])
+
+    def test_failed_probe_does_not_offer_metadata_or_depth_nodes(self):
+        for number in (4, 5, 6, 8, 9):
+            self.node(number, *(('0bda', '525a', 'SXW USB Camera') if number >= 8 else ()))
+        for number in (5, 9):
+            (self.sysfs / ("video" + str(number)) / "index").write_text("1")
+        (self.root / "usb-6" / "interface" / "interface").write_text("RealSense Depth")
+        def probe(device):
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        found = server.discover_sources(self.sysfs, probe=probe)
+        self.assertEqual([entry["device"] for entry in found], ["/dev/video4", "/dev/video8"])
+        self.assertTrue(all(not entry["available"] and "busy" in entry["error"] for entry in found))
+
+    def test_external_owner_disables_camera_even_when_formats_succeed(self):
+        self.node(4)
+        self.node(8, "0bda", "525a", "SXW USB Camera")
+        proc = self.root / "proc"
+        proc.mkdir()
+        own = proc / str(os.getpid()) / "fd"
+        own.mkdir(parents=True)
+        (own / "1").symlink_to("/dev/video8")
+        external = proc / str(os.getpid() + 1000)
+        (external / "fd").mkdir(parents=True)
+        (external / "comm").write_text("realsense-viewer\n")
+        (external / "fd" / "3").symlink_to("/dev/video4")
+        # A process which vanished during enumeration must not hide cameras.
+        (proc / "999999").mkdir()
+        found = server.discover_sources(self.sysfs, probe=lambda device: {"YUYV", "MJPG"}, proc_root=proc)
+        self.assertFalse(found[0]["available"])
+        self.assertIn("realsense-viewer", found[0]["error"])
+        self.assertTrue(found[1]["available"], "The server's own capture was treated as busy")
+        (external / "fd" / "3").unlink()
+        recovered = server.discover_sources(self.sysfs, probe=lambda device: {"YUYV", "MJPG"}, proc_root=proc)
+        self.assertTrue(all(entry["available"] for entry in recovered))
+
+    def test_usb_and_sibling_handles_are_matched_to_the_same_camera(self):
+        self.node(4)
+        usb = self.root / "usb-4"
+        (usb / "busnum").write_text("2")
+        (usb / "devnum").write_text("7")
+        sibling = usb / "depth" / "video4linux" / "video0"
+        sibling.mkdir(parents=True)
+        (self.sysfs / "video0").symlink_to(sibling, target_is_directory=True)
+        proc = self.root / "proc"
+        external = proc / str(os.getpid() + 1000)
+        (external / "fd").mkdir(parents=True)
+        for target in ("/dev/video0", "/dev/bus/usb/002/007"):
+            with self.subTest(target=target):
+                handle = external / "fd" / "3"
+                if handle.is_symlink():
+                    handle.unlink()
+                handle.symlink_to(target)
+                found = server.discover_sources(self.sysfs,
+                    probe=lambda device: {"YUYV"} if device == "/dev/video4" else {"Z16 "}, proc_root=proc)
+                self.assertEqual(len(found), 1)
+                self.assertFalse(found[0]["available"])
+                self.assertIn(target, found[0]["error"])
+                handle.unlink()
 
     @unittest.skipIf(os.name == "nt", "fcntl is available on Unix")
     def test_query_uses_node_capabilities_and_enumerates_formats_without_starting_capture(self):
@@ -150,7 +218,7 @@ class CaptureControllerTests(unittest.TestCase):
         self.assertIsNone(old.snapshot()[1])
         self.assertEqual(controller.frames.snapshot()[1], b"/dev/video8")
         self.assertEqual(self.events[-1][2:], ("v4l2", False, None, "MJPG"))
-        self.assertEqual(set(result["sources"][0]), {"id", "label", "device", "backend"})
+        self.assertEqual(set(result["sources"][0]), {"id", "label", "device", "backend", "available", "error"})
 
     def test_invalid_fresh_selection_leaves_current_capture_running(self):
         controller = self.controller()
@@ -163,6 +231,23 @@ class CaptureControllerTests(unittest.TestCase):
         self.assertIs(controller.frames, old)
         self.assertEqual(len(self.events), 1)
         self.assertEqual(old.snapshot()[0]["status"], "live")
+
+    def test_unavailable_selection_keeps_current_capture_and_refresh_can_recover(self):
+        controller = self.controller()
+        old = controller.frames
+        detected = sources()
+        detected[1].update(available=False, error="Camera is busy: realsense-viewer")
+        controller.discover = lambda: detected
+        catalog = controller.catalog()
+        self.assertFalse(catalog["sources"][1]["available"])
+        self.assertIn("realsense-viewer", catalog["sources"][1]["error"])
+        with self.assertRaisesRegex(RuntimeError, "realsense-viewer"):
+            controller.select("arm")
+        self.assertIs(controller.frames, old)
+        self.assertEqual(old.snapshot()[0]["status"], "live")
+        self.assertEqual(len(self.events), 1)
+        detected[1].update(available=True, error=None)
+        self.assertEqual(controller.select("arm")["selected"], "arm")
 
     def test_selecting_active_camera_is_a_noop(self):
         controller = self.controller()
@@ -407,6 +492,16 @@ class SourceHTTPTests(unittest.TestCase):
                                      [("Host", "localhost:18080"), ("Origin", "http://foreign.example")])
             self.assertEqual(status, 403)
         self.assertEqual(self.controller.catalog()["selected"], "front")
+
+    def test_busy_selection_returns_conflict_with_reason_without_stopping_capture(self):
+        old = self.controller.frames
+        detected = sources()
+        detected[1].update(available=False, error="Permission denied: /dev/video8")
+        self.controller.discover = lambda: detected
+        status, body = self.request("POST", "/source", b'{"id":"arm"}')
+        self.assertEqual(status, 409)
+        self.assertIn("Permission denied", json.loads(body)["error"])
+        self.assertIs(self.controller.frames, old)
 
     def test_invalid_or_oversized_selection_bodies_do_not_stop_capture(self):
         old = self.controller.frames
