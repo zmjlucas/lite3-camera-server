@@ -19,6 +19,7 @@
   button { cursor: pointer; }
   select:disabled, button:disabled { opacity: .65; cursor: default; }
   #source-status { color: #a6b8c7; font-size: .9rem; min-height: 1.3em; }
+  #source-errors { color: #f5c18c; font-size: .9rem; white-space: pre-line; overflow-wrap: anywhere; }
   figure { margin: 0; display: grid; place-items: center; min-height: 15rem;
            background: #192633; border: 1px solid #364759; border-radius: .6rem;
            overflow: hidden; }
@@ -31,11 +32,12 @@
 <header><h1>Lite3 camera</h1><span class="source">__SOURCE_LABEL__</span></header>
 <div class="camera-controls">
   <label for="camera-source">Source</label>
-  <select id="camera-source" disabled aria-describedby="source-status"><option>Loading cameras…</option></select>
+  <select id="camera-source" disabled aria-describedby="source-status source-errors"><option>Loading cameras…</option></select>
   <button id="refresh-sources" type="button">Refresh</button>
   <button id="retry-camera" type="button" hidden>Retry camera</button>
 </div>
 <p id="source-status" role="status">Loading cameras…</p>
+<p id="source-errors" role="status" hidden></p>
 <figure>
   <img id="stream" alt="__SOURCE_LABEL__ video stream" hidden>
   <p id="placeholder">No video yet</p>
@@ -53,6 +55,7 @@ const placeholder = document.getElementById('placeholder');
 const snapshot = document.getElementById('snapshot');
 const sourceSelect = document.getElementById('camera-source');
 const sourceStatus = document.getElementById('source-status');
+const sourceErrors = document.getElementById('source-errors');
 const refreshSourcesButton = document.getElementById('refresh-sources');
 const retryCameraButton = document.getElementById('retry-camera');
 let currentFrameURL;
@@ -86,12 +89,26 @@ function stopVideo(message) {
 }
 function updateRetryButton() {
   retryCameraButton.hidden = !streamFailed || !selectedSource;
-  retryCameraButton.disabled = switchingSource;
+  retryCameraButton.disabled = switchingSource || selectedSource?.available === false;
 }
 function renderSources() {
   sourceSelect.replaceChildren();
   if (!selectedSource) sourceSelect.add(new Option(knownSources.length ? 'Select a camera' : 'No cameras available', ''));
-  for (const source of knownSources) sourceSelect.add(new Option(source.label, source.id));
+  const errors = [];
+  for (const source of knownSources) {
+    const unavailable = source.available === false;
+    const reason = source.error || 'Camera unavailable. Check the device and Refresh.';
+    const option = new Option(source.label + (unavailable ? ' — Unavailable: ' + reason : ''), source.id);
+    option.disabled = unavailable;
+    if (unavailable) {
+      option.title = reason;
+      errors.push(source.label + ': ' + reason);
+    }
+    sourceSelect.add(option);
+  }
+  // Disabled native options do not reliably expose hover/click events. Keep reasons visible.
+  sourceErrors.textContent = errors.join('\n');
+  sourceErrors.hidden = !errors.length;
   sourceSelect.value = selectedSource ? selectedSource.id : '';
   sourceSelect.disabled = switchingSource || !knownSources.length;
   refreshSourcesButton.disabled = switchingSource;
@@ -111,7 +128,9 @@ async function readCatalog(response) {
   if (!response.ok) throw new Error(data?.error || 'Camera discovery unavailable (' + response.status + ')');
   if (!data || !Array.isArray(data.sources) || !data.sources.every(source => source &&
       typeof source.id === 'string' && source.id && typeof source.label === 'string' &&
-      typeof source.backend === 'string')) throw new Error('Invalid camera catalog');
+      typeof source.backend === 'string' &&
+      (source.available === undefined || typeof source.available === 'boolean') &&
+      (source.error == null || typeof source.error === 'string'))) throw new Error('Invalid camera catalog');
   return data;
 }
 function applyCatalog(data) {
@@ -154,8 +173,14 @@ async function refreshSources() {
 }
 async function selectSource(retryCurrent = false) {
   const id = sourceSelect.value;
-  if (switchingSource || !knownSources.some(source => source.id === id) ||
-      (id === selectedSource?.id && !retryCurrent)) return;
+  const source = knownSources.find(source => source.id === id);
+  if (switchingSource || !source) return;
+  if (source.available === false) {
+    sourceStatus.textContent = source.error || 'Camera unavailable. Check the device and Refresh.';
+    renderSources();
+    return;
+  }
+  if (id === selectedSource?.id && !retryCurrent) return;
   switchingSource = true;
   const generation = ++sourceGeneration;
   if (sourceRequest) sourceRequest.abort();

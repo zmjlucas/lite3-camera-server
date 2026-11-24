@@ -29,6 +29,9 @@ function testView() {
     snapshot: snapshot.getAttribute('href'), source: document.querySelector('.source').textContent,
     alt: stream.alt, status: document.getElementById('status').textContent,
     sourceStatus: document.getElementById('source-status')?.textContent || '',
+    sourceErrors: document.getElementById('source-errors')?.textContent || '',
+    unavailableOptions: select ? Array.from(select.options).filter(item => item.disabled && item.value).map(item => item.value) : [],
+    refreshDisabled: document.getElementById('refresh-sources').disabled,
     hash: location.hash, aborted: testAbortedStreams, abortedCatalogs: testAbortedCatalogs,
     streamSource: testStreamSource, retryVisible: !!retry && !retry.hidden,
     retryDisabled: retry?.disabled};
@@ -54,7 +57,17 @@ setInterval(async () => {
     if (testPhase === 'discovery-error' && live && row.hasSelector && row.sourceStatus) {
       testPhase = 'catalog';
       document.getElementById('refresh-sources').click();
-    } else if (testPhase === 'catalog' && live && row.options.length === 2 && !row.disabled) {
+    } else if (testPhase === 'catalog' && live && row.options.length === 3 && !row.disabled) {
+      testPhase = 'blocked-option';
+      const select = document.getElementById('camera-source');
+      select.value = 'blocked';
+      select.dispatchEvent(new Event('change', {bubbles: true}));
+      await testReport(testView());
+    } else if (testPhase === 'blocked-option' && live && row.selected === 'rgb' && !row.disabled) {
+      testPhase = 'released-option';
+      await testOriginalFetch('/release-blocked', {method: 'POST', body: '{}'});
+      document.getElementById('refresh-sources').click();
+    } else if (testPhase === 'released-option' && live && !row.unavailableOptions.length && !row.refreshDisabled) {
       testPhase = 'refresh-race';
       document.getElementById('refresh-sources').click();
     } else if (testPhase === 'refresh-race' && live && !row.disabled) {
@@ -90,6 +103,16 @@ setInterval(async () => {
       document.getElementById('retry-camera').click();
       await testReport({...testView(), immediate: true});
     } else if (testPhase === 'retry-current' && live && row.selected === 'arm' && !row.disabled) {
+      testPhase = 'all-unavailable';
+      await testOriginalFetch('/all-unavailable', {method: 'POST', body: '{}'});
+      document.getElementById('refresh-sources').click();
+    } else if (testPhase === 'all-unavailable' && row.unavailableOptions.includes('arm') &&
+               row.sourceErrors.includes('realsense-viewer') && !row.refreshDisabled) {
+      testPhase = 'availability-recovered';
+      await testOriginalFetch('/recover-available', {method: 'POST', body: '{}'});
+      document.getElementById('refresh-sources').click();
+    } else if (testPhase === 'availability-recovered' && live && row.selected === 'arm' &&
+               !row.unavailableOptions.length && !row.refreshDisabled) {
       testPhase = 'complete';
       await testReport({...testView(), complete: true});
     }
