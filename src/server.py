@@ -541,16 +541,32 @@ def v4l2_frames(options, stop):
 
 
 def capture(options, frames, stop):
-    if options.source == "v4l2":
-        source = v4l2_frames(options, stop)
-    else:
-        source = realsense_frames(options, frames, stop)
-    try:
-        with contextlib.closing(source):
-            for jpeg in source:
-                frames.publish(jpeg)
-    except Exception as error:
-        _report_capture_error(frames, str(error) or type(error).__name__)
+    while not stop.is_set():
+        try:
+            if options.retry_camera and options.source == "v4l2":
+                # A supported USB camera may appear after the initial boot-time scan.
+                # Refresh its format and identity, but continue opening the configured
+                # by-id path so device renumbering cannot redirect capture to another node.
+                try:
+                    detected = discover_sources()
+                except (OSError, RuntimeError):
+                    detected = []
+                matching = [entry for entry in detected
+                            if os.path.realpath(entry["device"]) == os.path.realpath(options.device)]
+                if len(matching) == 1:
+                    options.pixel_format = matching[0]["pixel_format"]
+                    frames.identify(matching[0]["id"])
+            source = (v4l2_frames(options, stop) if options.source == "v4l2"
+                      else realsense_frames(options, frames, stop))
+            with contextlib.closing(source):
+                for jpeg in source:
+                    frames.publish(jpeg)
+        except Exception as error:
+            _report_capture_error(frames, str(error) or type(error).__name__)
+        # A boot service can start before USB enumeration finishes. Keep HTTP available
+        # and retry capture; Event.wait also lets source changes and shutdown stop promptly.
+        if not options.retry_camera or stop.wait(5):
+            return
 
 
 class CaptureController:
@@ -617,7 +633,10 @@ class CaptureController:
                 matching = [entry for entry in detected if entry["kind"] == "d435i"
                             and not self.options.serial]
             if len(matching) == 1:
-                self._launch(self._source_options(matching[0]), matching[0]["id"], detected)
+                initial = self._source_options(matching[0])
+                if self.options.source == "v4l2":
+                    initial.device = self.options.device
+                self._launch(initial, matching[0]["id"], detected)
             else:
                 self._launch(self.options, None, detected)
 
@@ -673,6 +692,8 @@ def parse_args(argv):
     parser.add_argument("--quality", type=int, default=70, help="camera JPEG quality (1 to 100)")
     parser.add_argument("--depth", action="store_true", help="show RealSense depth with false colors beside RGB")
     parser.add_argument("--serial", help="select a RealSense camera by serial number")
+    parser.add_argument("--retry-camera", action="store_true",
+                        help="retry failed capture every 5 seconds (used by the boot service)")
     parser.add_argument("--device", help="V4L2 RGB device path (required for --source v4l2)")
     options = parser.parse_args(argv)
     if options.source == "v4l2":

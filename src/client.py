@@ -279,6 +279,7 @@ def read_windows_deploy_source(path):
 
 def deploy(args, jump):
     # Capture both files before SSH can wait for login or another process can change the checkout.
+    installer = remote_source("install_service.py")
     with tempfile.TemporaryDirectory(prefix="lite3-camera-deploy-") as directory:
         sources = []
         for path, destination in SERVER_BUNDLE:
@@ -293,6 +294,10 @@ def deploy(args, jump):
         scp_target = "[{}]".format(args.target) if len(args.target) == 1 else args.target
         commands.extend(["scp"] + ssh_options(jump) + [str(path), scp_target + ":" + destination]
                         for path, destination in sources)
+        options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args)
+        # A remote terminal lets sudo prompt normally; no password crosses our Python process.
+        commands.append(["ssh"] + ssh_options(jump) + ["-tt", args.target,
+                        remote_shell("install_service.sh", installer, *options)])
         for command in commands:
             if args.dry_run:
                 show_command(command)
@@ -368,7 +373,7 @@ def parser():
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
     for name, help_text in (("doctor", "check the host environment through SSH without changes"),
-                            ("deploy", "copy the camera server to the perception host"),
+                            ("deploy", "copy the camera server and enable its system boot service"),
                             ("view", "start or reuse the remote camera server and open an SSH tunnel")):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("target", type=target, help="SSH alias or user@perception-host")
@@ -382,10 +387,13 @@ def parser():
         if name == "view":
             command.add_argument("--local-port", type=bounded_int(1, 65535), default=18080)
             command.add_argument("--no-open", action="store_true", help="do not open a browser automatically")
-            command.add_argument("--backend", choices=("ros", "realsense", "v4l2"), default="ros")
-            command.add_argument("--remote-port", type=bounded_int(1, 65535), default=8080)
             command.add_argument("--ros-setup", help="absolute path to the ROS or workspace setup.bash on the perception host")
             command.add_argument("--topic", help="ROS image topic to show (default: show the topic list)")
+        if name in ("view", "deploy"):
+            command.add_argument("--backend", choices=("ros", "realsense", "v4l2") if name == "view" else ("realsense", "v4l2"),
+                                 default="ros" if name == "view" else "realsense",
+                                 help="camera backend (deploy: boot service backend, default realsense)")
+            command.add_argument("--remote-port", type=bounded_int(1, 65535), default=8080)
             command.add_argument("--depth", action="store_true", help="show a RealSense depth preview with false colors")
             command.add_argument("--serial", help="RealSense serial number")
             command.add_argument("--device", type=video_device, help="confirmed V4L2 RGB device path on the perception host")
@@ -399,18 +407,18 @@ def parser():
 def main(argv=None):
     cli = parser()
     args = cli.parse_args(argv)
-    if args.command == "view":
+    if args.command in ("view", "deploy"):
         if args.backend == "ros" and any((args.width, args.height, args.fps, args.quality)):
             cli.error("--width, --height, --fps, and --quality require --backend realsense or v4l2")
         if args.backend != "realsense" and (args.depth or args.serial):
             cli.error("--depth and --serial require --backend realsense")
-        if args.backend != "ros" and (args.topic or args.ros_setup):
+        if args.command == "view" and args.backend != "ros" and (args.topic or args.ros_setup):
             cli.error("--topic and --ros-setup require --backend ros")
         if args.backend == "v4l2" and not args.device:
             cli.error("--backend v4l2 requires --device with a confirmed RGB device path")
         if args.backend != "v4l2" and args.device:
             cli.error("--device requires --backend v4l2")
-        if args.ros_setup and not args.ros_setup.startswith("/"):
+        if args.command == "view" and args.ros_setup and not args.ros_setup.startswith("/"):
             cli.error("--ros-setup must be an absolute path on the perception host")
     try:
         jump = resolve_jump(args)

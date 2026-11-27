@@ -55,7 +55,7 @@ python3 src/client.py view user@192.168.1.100
 | --- | --- | --- |
 | ROS (default) | An active image topic, the matching ROS environment, and `web_video_server` | `view HOST` |
 | RealSense | A camera that is not in use, compatible `pyrealsense2`, `numpy`, and `cv2` | Run `deploy HOST`. Then run `view HOST --backend realsense`. |
-| V4L2 RGB | Linux, OpenCV with V4L2 support, and a confirmed RGB device node that is not in use | Run `deploy HOST`. Then run `view HOST --backend v4l2 --device /dev/videoN`. |
+| V4L2 RGB | Linux, OpenCV with V4L2 support, and a confirmed RGB device node that is not in use | Run `deploy HOST --backend v4l2 --device /dev/videoN`. Then run `view HOST --backend v4l2 --device /dev/videoN`. |
 
 Camera dependencies must match the device architecture, Python version, and vendor SDK. The repository does not install these dependencies from a shared requirements file. The server uses Python 3.6-compatible syntax. The full test suite requires Python 3.8 or later. Python 3.6 runtime operation remains unverified.
 
@@ -63,13 +63,15 @@ On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces 
 
 To select a jump host manually, use `--jump user@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
 
-Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script and viewer page to `~/lite3-camera-server/`.
+Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script and viewer page to `~/lite3-camera-server/` and installs/enables the systemd service `lite3-camera-server.service`. The remote host needs systemd and root or sudo access; sudo can prompt in the SSH terminal.
+
+The service starts at every boot without an SSH login, using the deployment account and its Python interpreter. Its defaults are RealSense, port 8080, 640 x 480, 15 fps, and quality 70. For V4L2, deploy with `--backend v4l2 --device /dev/v4l/by-id/NAME`, replacing `NAME` with the confirmed RGB camera link. `deploy` also accepts `--remote-port`, `--width`, `--height`, `--fps`, `--quality`, and RealSense `--depth`/`--serial` to save boot settings. It leaves current camera processes running; new settings take effect at the next boot or an explicit service restart. See [boot service management](docs/CAMERA_STREAM.md#boot-service) for migration, logs, and disabling autostart.
 
 On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/client.py view user@192.168.1.100 --jump user@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
 
 The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://PERCEPTION_HOST:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. No session token or private link is needed. The local tunnel still binds to `127.0.0.1`.
 
-Multiple clients can run `view` against the same native server and remote port. The first starts a shared server; later clients reuse it without opening the camera again. Each client can disconnect independently. **Ctrl+C closes that client's tunnel; the native server keeps running**, even after all clients disconnect. All viewers share the selected camera and capture settings. Options such as `--depth`, `--device`, and resolution only apply when starting a new server. On one computer, use different `--local-port` values for separate launcher processes, or open multiple tabs on one tunnel.
+Multiple clients can run `view` against the same native server and remote port. Clients reuse the boot service when it is listening; if no server is listening, the first client starts a detached shared server. Each client can disconnect independently. **Ctrl+C closes that client's tunnel; the native server keeps running**, even after all clients disconnect. All viewers share the selected camera and capture settings. Options such as `--depth`, `--device`, and resolution on `view` only apply when starting a new detached server. On one computer, use different `--local-port` values for separate launcher processes, or open multiple tabs on one tunnel.
 
 See [shared server lifecycle](docs/CAMERA_STREAM.md#shared-server-lifecycle) for stopping, restarting and updating the server. A manual foreground server can use `--bind 127.0.0.1` to listen only on loopback. Requests carrying an Origin header must still match the request's origin. ROS mode continues to use the upstream `web_video_server`, its authentication policy, and its foreground SSH lifecycle.
 
@@ -121,6 +123,7 @@ CI is configured to run offline tests on Linux, macOS, and Windows, with browser
 
 ## Test status and limits
 
+- Systemd service installation, stop/start, and automatic recovery after terminating the server process were verified on a Lite3 perception host on 2026-11-27, with live SXW and D435i RGB streams and source switching. The host was not rebooted; actual boot startup and delayed USB initialization still require hardware tests.
 - Source switching was tested on connected Lite3 hardware with V4L2 and RealSense SDK capture, including restoration of the D435i false-color depth preview after switching back from SXW. RealSense `--depth` does not give calibrated distance measurements. Recovery after USB disconnection, extended Wi-Fi operation, and video delay still require hardware tests.
 - The separate `native-depth` helper backend is not implemented. Its four tests remain skipped. Skipped tests do not count as passed checks. After you implement this backend, remove the skip markers. All tests must pass.
 - The ROS page can keep the last frame after the publisher stops. Check the ROS topic frequency to confirm that new frames arrive.

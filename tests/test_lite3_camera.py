@@ -101,7 +101,7 @@ class CameraCommandsTest(unittest.TestCase):
 
     def test_optional_jump_reaches_all_remote_commands(self):
         cases = (("doctor", [], ["ssh"]),
-                 ("deploy", [], ["ssh", "scp", "scp"]),
+                 ("deploy", [], ["ssh", "scp", "scp", "ssh"]),
                  ("view", ["--backend", "ros", "--no-open"], ["ssh"]),
                  ("view", ["--backend", "realsense", "--no-open"], ["ssh"]),
                  ("view", ["--backend", "v4l2", "--device", "/dev/video4", "--no-open"], ["ssh"]))
@@ -140,7 +140,7 @@ class CameraCommandsTest(unittest.TestCase):
         result = self.run_cli("deploy", "robot")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertEqual([call[0] for call in calls], ["ssh", "scp", "scp"])
+        self.assertEqual([call[0] for call in calls], ["ssh", "scp", "scp", "ssh"])
         self.assertIn("mkdir -p", calls[0][-1])
         for command in calls[1:]:
             self.assertNotIn("-r", command)
@@ -149,6 +149,31 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(Path(calls[2][-2]).name, "camera.html")
         self.assertEqual(calls[2][-1], "robot:lite3-camera-server/web/")
         self.assertFalse(Path(calls[1][-2]).exists(), "Temporary deployment files must be removed")
+        self.assertIn("-tt", calls[3])  # Allow sudo to prompt on the perception host.
+        import shlex
+        install = shlex.split(calls[3][-1])
+        self.assertEqual(install[:2], ["bash", "-lc"])
+        self.assertEqual(install[5:], ["--source", "realsense", "--port", "8080",
+                                      "--width", "640", "--height", "480",
+                                      "--fps", "15", "--quality", "70"])
+
+    def test_deploy_passes_v4l2_boot_settings_to_installer(self):
+        import shlex
+        result = self.run_cli("deploy", "robot", "--backend", "v4l2", "--device", "/dev/video4",
+                              "--remote-port", "8081", "--width", "1280", "--fps", "10")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        install = shlex.split(self.calls()[-1][-1])
+        self.assertEqual(install[5:], ["--source", "v4l2", "--port", "8081",
+                                      "--width", "1280", "--height", "480",
+                                      "--fps", "10", "--quality", "70", "--device", "/dev/video4"])
+
+    def test_deploy_rejects_invalid_service_settings_before_connecting(self):
+        for options in (("--backend", "ros"), ("--backend", "v4l2"),
+                        ("--backend", "v4l2", "--device", "/dev/video4", "--depth"),
+                        ("--device", "/dev/video4"), ("--remote-port", "0")):
+            result = self.run_cli("deploy", "robot", *options)
+            self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls(), [])
 
     def test_native_view_prints_plain_local_url(self):
         port = self.free_port()
@@ -167,12 +192,22 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 23)
         self.assertEqual(len(self.calls()), 1)
 
+    def test_failed_upload_prevents_service_installation(self):
+        with patch.object(self.cli.subprocess, "call", side_effect=[0, 0, 23]) as remote:
+            self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 23)
+        self.assertEqual(remote.call_count, 3)
+
+    def test_service_installation_failure_reaches_caller(self):
+        with patch.object(self.cli.subprocess, "call", side_effect=[0, 0, 0, 23]) as remote:
+            self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 23)
+        self.assertEqual(remote.call_count, 4)
+
     def test_deploy_disambiguates_single_letter_ssh_alias_from_windows_drive(self):
         result = self.run_cli("deploy", "r", "--direct")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
         self.assertEqual(calls[0][-2], "r")
-        self.assertEqual([command[-1] for command in calls[1:]],
+        self.assertEqual([command[-1] for command in calls if command[0] == "scp"],
                          ["[r]:lite3-camera-server/", "[r]:lite3-camera-server/web/"])
 
     def test_deploy_refuses_symlinked_assets_before_remote_commands(self):

@@ -105,7 +105,7 @@ class CameraRoutingTest(unittest.TestCase):
 
     def test_wifi_plus_usb_automatically_uses_robot_jump_for_all_commands(self):
         for command, options, executables in (
-                ("doctor", [], ["ssh"]), ("deploy", [], ["ssh", "scp", "scp"]),
+                ("doctor", [], ["ssh"]), ("deploy", [], ["ssh", "scp", "scp", "ssh"]),
                 ("view", ["--backend", "ros"], ["ssh"]),
                 ("view", ["--backend", "realsense"], ["ssh"]),
                 ("view", ["--backend", "v4l2", "--device", "/dev/video4"], ["ssh"])):

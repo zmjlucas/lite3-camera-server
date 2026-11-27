@@ -108,7 +108,7 @@ python3 src/client.py deploy user@192.168.1.100
 python3 src/client.py view user@192.168.1.100 --backend realsense
 ```
 
-The `deploy` command uploads only `src/server.py` and `src/web/camera.html` to `~/lite3-camera-server/` and its `web/` subdirectory on the perception host. It rejects symlinked source paths and does not copy unrelated files or Git-ignored content. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. To change these values, use `--width`, `--height`, `--fps`, and `--quality`. If multiple cameras are connected, use `--serial` to select one.
+The `deploy` command uploads only `src/server.py` and `src/web/camera.html` to `~/lite3-camera-server/` and its `web/` subdirectory on the perception host, then runs a remote installer to enable the [systemd boot service](#boot-service). It rejects symlinked source paths and does not copy unrelated files or Git-ignored content. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. Use `deploy --width`, `--height`, `--fps`, and `--quality` to save boot settings. If multiple RealSense cameras are connected, use `deploy --serial` to select one. Matching options on `view` apply only if it starts a new detached server.
 
 To show a depth preview beside RGB, add `--depth`. The preview uses false colors. Do not use these colors as distance measurements.
 
@@ -133,7 +133,7 @@ If the camera already publishes ROS images, use the existing topic. Do not stop 
 From the client computer, run these commands in order:
 
 ```bash
-python3 src/client.py deploy user@192.168.1.100
+python3 src/client.py deploy user@192.168.1.100 --backend v4l2 --device /dev/video4
 python3 src/client.py view user@192.168.1.100 --backend v4l2 --device /dev/video4
 ```
 
@@ -159,11 +159,39 @@ If a selection fails, read the source error and check the connection, permission
 
 The RealSense/V4L2 server trusts the LAN and listens on all IPv4 interfaces (`0.0.0.0`) by default. Once it is running, any device that can reach the perception host can open `http://PERCEPTION_HOST:8080/`. All native endpoints work without a token, URL fragment, browser session storage or Authorization header. Source selection uses POST with a JSON body; requests with an Origin header must match the current origin.
 
-Alternatively, run `view` on each client. It forwards that computer's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080`. With `--no-open`, open the printed URL manually. The first native client starts a detached server; concurrent and later clients reuse it. Camera selection and capture settings are shared. New `view` arguments do not reconfigure an existing server. Use different `--local-port` values for multiple launcher processes on one computer; clients on separate computers can all use the default local port.
+Alternatively, run `view` on each client. It forwards that computer's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080`. With `--no-open`, open the printed URL manually. Native clients reuse a listening boot service or detached server. If no server is listening, the first client starts a detached server. Camera selection and capture settings are shared. New `view` arguments do not reconfigure an existing server. Use different `--local-port` values for multiple launcher processes on one computer; clients on separate computers can all use the default local port.
 
 Press Ctrl+C (or Ctrl+Break on Windows) to close just that client's tunnel. Other clients keep watching, and the native server remains running even with no viewers. Force-ending the launcher in Task Manager bypasses tunnel cleanup. ROS mode retains its upstream authentication and foreground lifecycle: Ctrl+C also stops the ROS preview process it launched.
 
-Native background logs and PID files are under `~/lite3-camera-server/.runtime/` on the perception host. To release the camera, change startup options, or load deployed code updates, explicitly stop the shared server. This interrupts all its viewers. For the default port, run on the perception host:
+### Boot service
+
+Each `deploy` installs `/etc/systemd/system/lite3-camera-server.service`, reloads systemd, and enables it for every boot. Installation needs a running systemd host and root or sudo access. The SSH terminal allows a sudo password prompt. The service runs as the deployment account, with its home directory, camera permissions, and the Python interpreter found during deployment. Dependencies must be installed for that interpreter and account; the service does not source interactive shell startup files.
+
+Deployment leaves current processes running. On first installation, the service starts at the next boot; on redeployment, the new code and boot settings apply at the next boot or explicit restart. There is one service per host: deploying again replaces its configured account, backend, port, and capture options. It does not remember camera selections made in the browser. ROS `web_video_server` is not managed by this service.
+
+For a stable V4L2 boot device, use the camera's confirmed RGB `/dev/v4l/by-id/NAME` link instead of a `/dev/videoN` number that can change after reboot:
+
+```bash
+# On the client; replace NAME with the host's actual RGB device link.
+python3 src/client.py deploy user@192.168.1.100 --backend v4l2 --device /dev/v4l/by-id/NAME
+
+# On the perception host:
+systemctl is-enabled lite3-camera-server.service
+systemctl status lite3-camera-server.service
+journalctl -u lite3-camera-server.service -b -f
+```
+
+To use the service immediately, first stop any detached or foreground camera server using the instructions below, then run `sudo systemctl restart lite3-camera-server.service`. Do not run both processes against the same camera or port. Subsequent service restarts use the same command. A service restart interrupts all viewers; existing pages reconnect at the same URL.
+
+Wait for the service's HTTP listener before launching a new `view` during a restart. If `view` starts its detached fallback first, stop that detached process so the service can claim the port on its next retry.
+
+The service retries camera initialization every five seconds so a USB camera that becomes available after boot can recover. It also reopens V4L2 capture after a read failure; RealSense frame-read errors retain the existing SDK pipeline and retry frame reads. HTTP can remain available with `/healthz` returning 503 while capture is unavailable. A crashed server process is restarted by systemd. `systemctl is-active` checks the process, not whether frames are arriving; check `/healthz` and the live image too. Delayed USB and actual robot reboot behavior still need hardware acceptance.
+
+Use `sudo systemctl stop lite3-camera-server.service` to stop it until the next boot, or `sudo systemctl disable --now lite3-camera-server.service` to stop it and disable autostart. Running `deploy` enables it again. A later `view` can still start a detached server if the service is stopped. Service logs are in the journal; service processes do not use the launcher's `.runtime/*.pid` files.
+
+### Detached and foreground servers
+
+For servers started by `view`, background logs and PID files are under `~/lite3-camera-server/.runtime/` on the perception host. To release the camera or switch to the boot service, explicitly stop the detached server. This interrupts all its viewers. For the default port, run on the perception host:
 
 ```bash
 cat ~/lite3-camera-server/.runtime/8080.pid
@@ -172,7 +200,7 @@ ps -p <PID> -o pid,args
 kill -TERM <PID>
 ```
 
-Use the PID and log filenames matching `--remote-port`. A manually launched server has no launcher PID file; stop it in its own terminal. After the old process exits, run `deploy` if updating code, then `view` again with the desired options. Existing pages reconnect at the same URL. If upgrading from a version that requires session tokens, stop the old foreground server before deploying and starting the new one. An incompatible listener is never silently replaced.
+Use the PID and log filenames matching `--remote-port`. A manually launched server has no launcher PID file; stop it in its own terminal. After the old process exits, run `deploy` if updating code, then start the service or run `view` again with the desired options. Existing pages reconnect at the same URL. If upgrading from a version that requires session tokens, stop the old foreground server before starting the new one. An incompatible listener is never silently replaced.
 
 For a foreground server, run `python3 ~/lite3-camera-server/server.py --source realsense` on the host. Add `--bind 127.0.0.1` to restrict it to SSH tunnel access, or bind to a particular LAN address. Its terminal owns the server lifetime; stopping it disconnects all viewers.
 
