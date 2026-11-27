@@ -35,3 +35,5 @@ camera_hardware_test*.md
 .vscode/
 *.swp
 *~
+
+AGENTS.md
