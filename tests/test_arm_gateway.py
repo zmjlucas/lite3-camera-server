@@ -22,7 +22,7 @@ STATE = {
     "gripper_position_deg": None,
     "observed": True,
     "motion_enabled": False,
-    "reason": "Hardware motion blocked after failed hold on 2026-11-27.",
+    "reason": "Hardware arm motion is disabled.",
 }
 
 

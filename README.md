@@ -5,7 +5,7 @@
 
 Share cameras and bounded robot communications through one development service. The browser console and Python SDK offer Lite3 UDP control, simulation and R5 serial feedback. RealSense/V4L2 camera streaming and existing SSH workflows remain supported; ROS mode remains camera-only.
 
-**Start with the [Dev Server guide](docs/DEV_SERVER.md)** for simulation, control tokens, the `/control` console, API/SDK and deployment. Motion defaults to simulation; real dog output requires explicit hardware mode. R5 hardware motion is blocked because the source project's 2026-11-27 hold test failed; read-only feedback and simulated jogs are available. Software stop cannot prove physical stopping.
+**Start with the [Dev Server guide](docs/DEV_SERVER.md)** for simulation, control tokens, the `/control` console, API/SDK and deployment. Motion defaults to simulation; real dog output requires explicit hardware mode. R5 supports read-only hardware feedback and simulated jogs; hardware motion is disabled. Software stop cannot prove physical stopping.
 
 The launcher, simulation and tests use the Python standard library. R5 hardware feedback additionally needs pySerial on its host. The client does not need ROS.
 
@@ -70,7 +70,7 @@ python3 src/client.py view ysc@192.168.1.103
 | RealSense | A camera that is not in use, compatible `pyrealsense2`, `numpy`, and `cv2` | Run `deploy ysc@192.168.1.103`. Then run `view ysc@192.168.1.103 --backend realsense`. |
 | V4L2 RGB | Linux, OpenCV with V4L2 support, and a confirmed RGB device node that is not in use | Run `deploy ysc@192.168.1.103 --backend v4l2 --device /dev/videoN`. Then run `view ysc@192.168.1.103 --backend v4l2 --device /dev/videoN`. |
 
-Camera dependencies must match the device architecture, Python version, and vendor SDK. The repository does not install these dependencies from a shared requirements file. The server uses Python 3.6-compatible syntax. The full test suite requires Python 3.8 or later. Python 3.6 runtime operation remains unverified.
+Camera dependencies must match the device architecture, Python version, and vendor SDK. The repository does not install these dependencies from a shared requirements file. The server uses Python 3.6-compatible syntax. The full test suite requires Python 3.8 or later.
 
 On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces to select a path to `192.168.1.*` targets. If the target route uses robot Wi-Fi, the launcher connects directly. If the target route uses another interface or gateway, the launcher checks for a direct Wi-Fi link to `192.168.2.1`. If that link is available, the launcher uses `192.168.2.1` as an SSH jump host. When the phone and robot subnets overlap, the launcher uses robot Wi-Fi. The same commands work with robot Wi-Fi alone or with a phone USB hotspot, without changes to system routes.
 
@@ -132,15 +132,12 @@ py -3 -B tests/camera_sources_browser_smoke.py
 py -3 -B tests/camera_browser_smoke.py --browser 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 ```
 
-CI is configured to run offline tests on Linux, macOS, and Windows, with browser playback checks on all three. Native Windows tests include deployment file handles and junction refusal. Remote Bash and POSIX signal integration tests run on Linux/macOS and are skipped on Windows; the Windows suite still exercises launcher commands, anonymous HTTP access, interrupt cleanup, and HTTP streaming. CI does not connect to a robot. Configuration of a CI job is not a hardware acceptance result.
+CI is configured to run offline tests on Linux, macOS, and Windows, with browser playback checks on all three. Native Windows tests include deployment file handles and junction refusal. Remote Bash and POSIX signal integration tests run on Linux/macOS and are skipped on Windows; the Windows suite still exercises launcher commands, anonymous HTTP access, interrupt cleanup, and HTTP streaming.
 
-## Existing camera test status and limits
+## Camera limitations
 
-These hardware observations predate the dev server changes. They do not validate the new motion interfaces.
-
-- Systemd service installation, stop/start, and automatic recovery after terminating the server process were verified on a Lite3 perception host on 2026-11-27, with live SXW and D435i RGB streams and source switching. The host was not rebooted; actual boot startup and delayed USB initialization still require hardware tests.
-- Source switching was tested on connected Lite3 hardware with V4L2 and RealSense SDK capture, including restoration of the D435i false-color depth preview after switching back from SXW. RealSense `--depth` does not give calibrated distance measurements. Recovery after USB disconnection, extended Wi-Fi operation, and video delay still require hardware tests.
-- The separate `native-depth` helper backend is not implemented. Its four tests remain skipped. Skipped tests do not count as passed checks. After you implement this backend, remove the skip markers. All tests must pass.
+- RealSense `--depth` does not give calibrated distance measurements.
+- The separate `native-depth` helper backend is not implemented.
 - The ROS page can keep the last frame after the publisher stops. Check the ROS topic frequency to confirm that new frames arrive.
 
 ## Repository layout

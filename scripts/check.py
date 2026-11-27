@@ -35,9 +35,7 @@ def main():
             for path in sorted((ROOT / folder).glob("*.sh")):
                 subprocess.run([bash, "-n", str(path)], check=True)
         print("PASS: remote Bash syntax", flush=True)
-    if args.legacy:
-        print("Python 3.6 runtime operation remains unverified.")
-    elif not args.syntax_only:
+    if not args.legacy and not args.syntax_only:
         return subprocess.call([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-v"], cwd=str(ROOT))
     return 0
 

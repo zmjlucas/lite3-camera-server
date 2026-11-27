@@ -22,8 +22,7 @@ AUTONOMOUS = 0x21010C03
 AXES = (('vx', 0x0140), ('vy', 0x0145), ('yaw', 0x0141))
 LIMITS = {'vx': 0.2, 'vy': 0.1, 'yaw': 0.3, 'ttl': 0.5}
 JOINT_LIMITS = {'b': 180.0, 's': 90.0, 'e': 90.0, 'w': 90.0, 'h': 45.0}
-ARM_BLOCK_REASON = ('Hardware arm motion blocked by 2026-11-27 R5 elbow drift '
-                    'and failed hold evidence; physical stop is unverified.')
+ARM_BLOCK_REASON = 'Hardware arm motion is disabled.'
 PERIOD = 0.05
 LEASE_SECONDS = 2.0
 SEND_TIMEOUT = 0.01
@@ -121,7 +120,7 @@ class ControlService:
             worker.join(2.0)
             if worker.is_alive():
                 with self._lock:
-                    self._error = 'UDP worker shutdown timed out; physical stop is unverified'
+                    self._error = 'UDP worker shutdown timed out'
 
     def status(self):
         with self._lock:
@@ -316,7 +315,7 @@ class ControlService:
     def _failure_locked(self):
         if self._error is None:
             self._safety_revision = secrets.token_urlsafe(32)
-        self._error = 'Dog UDP send failed; physical stop is unverified'
+        self._error = 'Dog UDP send failed'
         if not self._stop_remaining:
             self._stop_locked()
 

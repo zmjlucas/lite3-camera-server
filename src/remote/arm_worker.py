@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fixed, read-only R5 serial worker; Python 3.6 and pySerial 3.4 compatible.
 
-Only T105 feedback queries may leave this process. The failed hold observed on
-2026-11-27 means hardware motion has no implementation or override here.
+Only T105 feedback queries may leave this process. Hardware motion has no
+implementation or override here.
 """
 import argparse
 import json
@@ -12,7 +12,7 @@ import sys
 import time
 
 
-MOTION_BLOCK_REASON = "Hardware motion blocked after failed hold on 2026-11-27."
+MOTION_BLOCK_REASON = "Hardware arm motion is disabled."
 LIMITS_DEG = {"b": 180.0, "s": 90.0, "e": 90.0, "w": 90.0}
 MAX_LINE = 4096
 MAX_QUERY_BYTES = 16384

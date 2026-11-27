@@ -266,7 +266,8 @@ class ControlTests(unittest.TestCase):
         self.assert_error(423, 'arm/jog', {'joint': 'b', 'delta': 1, 'speed': 1}, service)
         self.assertEqual(sink.packets, [])
         self.assertFalse(service.status()['arm']['motion_enabled'])
-        self.assertIn('2026-11-27', service.status()['arm']['reason'])
+        self.assertEqual(service.status()['arm']['reason'],
+                         'Hardware arm motion is disabled.')
 
     def test_simulation_opens_no_sockets_through_full_motion_flow(self):
         with patch.object(control.socket, 'socket', side_effect=AssertionError('simulation opened socket')):

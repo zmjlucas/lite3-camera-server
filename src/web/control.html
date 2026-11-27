@@ -162,7 +162,7 @@ function render() {
   const velocity = dog.velocity || {};
   $('dog-velocity').textContent = `最后接受的速度指令：vx ${velocity.vx ?? '—'} · vy ${velocity.vy ?? '—'} · yaw ${velocity.yaw ?? '—'}`;
   $('arm-mode').textContent = arm.simulated ? '模拟目标角度' : '硬件只读';
-  $('arm-reason').textContent = arm.simulated ? '模拟模式：点动仅更新模拟目标，不连接机械臂。' : '硬件运动锁定：' + (arm.reason || '当前 R5 保持验证未通过，不允许硬件运动。');
+  $('arm-reason').textContent = arm.simulated ? '模拟模式：点动仅更新模拟目标，不连接机械臂。' : '硬件运动锁定：' + (arm.reason || 'R5 硬件模式仅支持状态读取。');
   if (arm.simulated) renderArm(arm);
 }
 function updateState(value) {

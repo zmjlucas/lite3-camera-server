@@ -328,7 +328,7 @@ class CameraCommandsTest(unittest.TestCase):
                 self.assertNotIn("invalid choice", result.stderr)
         self.assertEqual(self.calls(), [])
 
-    def test_v4l2_rejects_unverified_device_forms_before_process_launch(self):
+    def test_v4l2_rejects_invalid_device_forms_before_process_launch(self):
         for device in ("0", "video4", "/tmp/video4", "/dev/video4;id", "/dev/v4l/by-id/../video4", ""):
             with self.subTest(device=device):
                 result = self.run_cli("view", "robot", "--backend", "v4l2", "--device=" + device,

@@ -49,7 +49,7 @@ sudo systemctl restart lite3-camera-server.service
 journalctl -u lite3-camera-server.service -b
 ```
 
-A manually started detached server must first be stopped using the existing [camera lifecycle guide](CAMERA_STREAM.md#shared-server-lifecycle); do not start two instances against the same hardware. The new code does not migrate a live process automatically. Reboot/startup remains subject to the camera guide's hardware acceptance limits.
+A manually started detached server must first be stopped using the existing [camera lifecycle guide](CAMERA_STREAM.md#shared-server-lifecycle); do not start two instances against the same hardware. The new code does not migrate a live process automatically.
 
 From the development computer:
 
@@ -68,7 +68,7 @@ Real dog output requires `--control-mode hardware --control-token-file /absolute
 
 R5 is attached by USB to the perception host. Normally the server owns serial locally, avoiding per-command SSH. If the server runs on another Linux host and needs remote serial access to the perception host, configure `--arm-host ysc@192.168.1.103` with verified OpenSSH configuration/known hosts and noninteractive authentication. One fixed persistent helper handles serialized queries. Opening serial is explicit via arm state retrieval; no background scan or automatic reconnect opens it. A failed session requires explicit `arm/reconnect` before another read. DTR/RTS are cleared before opening; opening may still reset a controller, so confirm its behavior on the device. Exclusive serial locking does not prevent unrelated software that ignores locks.
 
-**Hardware R5 motion is currently blocked in code.** The source project's 2026-11-27 test recorded unintended elbow lowering and continued base displacement during a hold attempt. `robo-comp/scripts/r5_rotate_180.py` and `R5_ROTATE_180.md` explicitly suspend execution. This gateway preserves that restriction, with no override switch. Hardware jog fails before opening SSH or serial. Read-only T105 feedback remains available; simulation supports bounded jogs. Enabling live arm movement requires a separately verified firmware-specific target mapping and stop implementation.
+**Hardware R5 motion is disabled.** Hardware jog fails before opening SSH or serial, with no override switch. Read-only T105 feedback is available; simulation supports bounded jogs.
 
 The protocol sources are the existing `robo-comp/scripts/lite3_stand_walk.py`, `r5_rotate_180.py`, `r5_elbow_down_ssh.py`, and the local Lite3/R5 vendor manuals. The R5 helper sends only `{"T":105}` and validates `T=1051` replies. `b/s/e/w` feedback is converted from radians to degrees under the observed device profile. The gripper has no reliable position feedback: it is returned as unknown, never replaced with a cached target. These ranges and mappings do not establish collision avoidance.
 
@@ -83,8 +83,8 @@ The protocol sources are the existing `robo-comp/scripts/lite3_stand_walk.py`, `
 | Field | Server limit | Meaning |
 | --- | --- | --- |
 | `vx` | ±0.2 m/s | Native forward velocity |
-| `vy` | ±0.1 m/s | Native lateral velocity; sign needs hardware verification |
-| `yaw` | ±0.3 rad/s | Native yaw rate; sign needs hardware verification |
+| `vy` | ±0.1 m/s | Native lateral velocity |
+| `yaw` | ±0.3 rad/s | Native yaw rate |
 | `ttl` | >0, ≤0.5 s | Command lifetime using server monotonic time |
 | Arm `b` | ±180° | Simulated base target |
 | Arm `s`, `e`, `w` | ±90° | Simulated shoulder/elbow/wrist target |
@@ -92,11 +92,11 @@ The protocol sources are the existing `robo-comp/scripts/lite3_stand_walk.py`, `
 | Arm `delta` | ±2° per request | Simulated jog increment |
 | Arm `speed` | >0, ≤5°/s | Simulation request bound |
 
-Limits reject invalid inputs rather than silently clipping them. Boolean values, NaN/infinity, unknown fields/actions, stale sequences and wrong/expired leases are rejected. Native lateral/yaw signs are deliberately not labeled left/right: existing sources do not establish a consistent convention for these complex velocity commands.
+Limits reject invalid inputs rather than silently clipping them. Boolean values, NaN/infinity, unknown fields/actions, stale sequences and wrong/expired leases are rejected. Native lateral/yaw values are passed through without left/right labels.
 
-Dog sends use the stock little-endian `<III` and `<IIId` formats. An independent worker maintains 20 Hz heartbeat/velocity output. On stop it attempts zero forward/lateral/yaw and stationary packets independently, repeating a bounded burst. There is no UDP acknowledgement; a successful send does not prove execution or physical stop. This service does not send the vendor's separate soft-estop opcode, torque-release or posture-toggle commands without validation.
+Dog sends use the stock little-endian `<III` and `<IIId` formats. An independent worker maintains 20 Hz heartbeat/velocity output. On stop it attempts zero forward/lateral/yaw and stationary packets independently, repeating a bounded burst. There is no UDP acknowledgement; a successful send does not prove execution or physical stop. This service does not send the vendor's separate soft-estop opcode, torque-release or posture-toggle commands.
 
-**Software emergency stop is a command latch and best-effort dog stop, not a hardware emergency stop.** Arm physical stop is unverified and no guessed hold packet is sent. OS stalls, process kill, power loss, network loss or controller failure can defeat software stopping. Retain the physical remote/stop procedure and clear operating space. Command TTL is a server deadline, not a guaranteed stopping time or distance. No collision sensing, balance telemetry or hardware safety certification is provided.
+**Software emergency stop is a command latch and best-effort dog stop, not a hardware emergency stop.** No arm hold packet is sent. OS stalls, process kill, power loss, network loss or controller failure can defeat software stopping. Retain the physical remote/stop procedure and clear operating space. Command TTL is a server deadline, not a guaranteed stopping time or distance. No collision sensing, balance telemetry or hardware safety certification is provided.
 
 ## HTTP contract
 
@@ -146,4 +146,4 @@ Run this against the simulation command above first. Normal context exit release
 
 ## Verification
 
-`python3 -B scripts/check.py --shell` runs offline syntax/unit/integration checks; `make browser-test` includes viewer and dev console behavior. Fakes and loopback are used for UDP, serial, SSH and control lifecycle checks. These checks do not establish real dog response, R5 stop behavior, live deployment, reboot recovery or Windows hardware operation. Existing camera hardware acceptance records apply only to their recorded version and date.
+`python3 -B scripts/check.py --shell` runs offline syntax/unit/integration checks; `make browser-test` includes viewer and dev console behavior. Fakes and loopback are used for UDP, serial, SSH and control lifecycle checks.

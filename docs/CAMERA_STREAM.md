@@ -84,7 +84,7 @@ The `--jump` and `--direct` options both bypass automatic selection. You cannot 
 
 The jump host only forwards the SSH connection. Camera commands still run on the perception host. Control defaults to simulation; hardware communication requires the explicit settings in the [Dev Server guide](DEV_SERVER.md). Both hosts require authentication and host key checks. OpenSSH handles password prompts. The launcher does not change routes or SSH configuration.
 
-The launcher selects the route each time a command starts. After a USB or Wi-Fi connection change, stop the preview. Then run the command again. Offline route samples cover both network conditions. Each condition still requires a test on the real network.
+The launcher selects the route each time a command starts. After a USB or Wi-Fi connection change, stop the preview. Then run the command again.
 
 ### Use an existing ROS image topic
 
@@ -194,7 +194,7 @@ To use the service immediately, first stop any detached or foreground camera ser
 
 Wait for the service's HTTP listener before launching a new `view` during a restart. If `view` starts its detached fallback first, stop that detached process so the service can claim the port on its next retry.
 
-The service retries camera initialization every five seconds so a USB camera that becomes available after boot can recover. It also reopens V4L2 capture after a read failure; RealSense frame-read errors retain the existing SDK pipeline and retry frame reads. HTTP can remain available with `/healthz` returning 503 while capture is unavailable. A crashed server process is restarted by systemd. `systemctl is-active` checks the process, not whether frames are arriving; check `/healthz` and the live image too. Delayed USB and actual robot reboot behavior still need hardware acceptance.
+The service retries camera initialization every five seconds so a USB camera that becomes available after boot can recover. It also reopens V4L2 capture after a read failure; RealSense frame-read errors retain the existing SDK pipeline and retry frame reads. HTTP can remain available with `/healthz` returning 503 while capture is unavailable. A crashed server process is restarted by systemd. `systemctl is-active` checks the process, not whether frames are arriving; check `/healthz` and the live image too.
 
 Use `sudo systemctl stop lite3-camera-server.service` to stop it until the next boot, or `sudo systemctl disable --now lite3-camera-server.service` to stop it and disable autostart. Running `deploy` enables it again. A later `view` can still start a detached server if the service is stopped. Service logs are in the journal; service processes do not use the launcher's `.runtime/*.pid` files.
 
