@@ -1,6 +1,5 @@
 """Offline source discovery, serialized capture switching, and trusted HTTP access."""
 import errno
-import io
 import json
 import os
 from pathlib import Path
@@ -13,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from src import server
+from fixtures.http_connection import MemoryConnection
 
 
 def sources():
@@ -77,7 +77,6 @@ class DiscoveryTests(unittest.TestCase):
             raise
 
     def test_discovery_filters_unsupported_formats_and_hardware_and_sorts_numerically(self):
-        self.assertTrue(hasattr(server, "discover_sources"), "Camera discovery is missing")
         self.node(10, "0bda", "525a", "SXW USB Camera")
         self.node(4)
         self.node(5)
@@ -95,13 +94,11 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(found[0].get("usb_path"), str((self.root / "usb-4").resolve()))
 
     def test_product_fallback_and_device_renumbering_do_not_assume_fixed_nodes(self):
-        self.assertTrue(hasattr(server, "discover_sources"), "Camera discovery is missing")
         self.node(22, "8086", "ffff", "Intel(R) RealSense(TM) Depth Camera 435i")
         found = self.discover(probe=lambda device: {"YUYV"})
         self.assertEqual([entry["device"] for entry in found], ["/dev/video22"])
 
     def test_unreadable_rgb_node_remains_visible_with_error_and_recovers(self):
-        self.assertTrue(hasattr(server, "discover_sources"), "Camera discovery is missing")
         self.node(4)
         self.node(8, "0bda", "525a", "SXW USB Camera")
         def probe(device):
@@ -173,7 +170,6 @@ class DiscoveryTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "fcntl is available on Unix")
     def test_query_uses_node_capabilities_and_enumerates_formats_without_starting_capture(self):
-        self.assertTrue(hasattr(server, "v4l2_formats"), "Read-only capability probe is missing")
         import fcntl
         node = self.root / "fake-video"
         node.write_bytes(b"")
@@ -203,7 +199,6 @@ class DiscoveryTests(unittest.TestCase):
 
 class CaptureControllerTests(unittest.TestCase):
     def controller(self, capture_fn=None, sdk=False):
-        self.assertTrue(hasattr(server, "CaptureController"), "Capture switching is missing")
         arguments = ["--depth", "--serial", "fixture-front"] if sdk else [
             "--source", "v4l2", "--device", "/dev/video4"]
         self.started = threading.Event()
@@ -449,22 +444,9 @@ class RealSenseIdentityTests(unittest.TestCase):
         self.assertEqual(controller.frames.source_id, "front")
 
 
-class MemoryConnection:
-    def __init__(self, data):
-        self.input = io.BytesIO(data)
-        self.output = bytearray()
-    def settimeout(self, timeout):
-        pass
-    def makefile(self, *args, **kwargs):
-        return self.input
-    def sendall(self, data):
-        self.output.extend(data)
-
-
 class SourceHTTPTests(unittest.TestCase):
 
     def setUp(self):
-        self.assertTrue(hasattr(server, "CaptureController"), "Capture switching is missing")
         options = server.parse_args(["--source", "v4l2", "--device", "/dev/video4"])
         self.controller = server.CaptureController(options, discover=sources,
                                                    capture_fn=lambda options, frames, stop: stop.wait())

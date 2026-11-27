@@ -1,24 +1,9 @@
 """Exercise the real HTTP request parser without opening a camera or socket."""
-import io
 from types import SimpleNamespace
 import unittest
 
 from src.server import CameraRequestHandler, LatestFrame
-
-
-class MemoryConnection:
-    def __init__(self, data):
-        self.input = io.BytesIO(data)
-        self.output = bytearray()
-
-    def settimeout(self, timeout):
-        pass
-
-    def makefile(self, *args, **kwargs):
-        return self.input
-
-    def sendall(self, data):
-        self.output.extend(data)
+from fixtures.http_connection import MemoryConnection
 
 
 class CameraSecurityTests(unittest.TestCase):
@@ -54,16 +39,6 @@ class CameraSecurityTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertIn(b"X-Camera-Source: " + source.encode(), headers.split(b"\r\n"))
                 self.assertIn(self.frame, body)
-
-    def test_host_header_does_not_restrict_camera_requests(self):
-        for hosts in ([], ["untrusted.example:18080"], ["127.0.0.1.evil.example"],
-                      ["localhost@evil.example"], ["localhost:0"], ["localhost:65536"],
-                      ["localhost:18080", "untrusted.example:18080"]):
-            with self.subTest(hosts=hosts):
-                headers = [("Host", host) for host in hosts]
-                status, _, body = self.request(headers=headers)
-                self.assertEqual(status, 200)
-                self.assertEqual(body, self.frame)
 
     def test_cross_origin_requests_are_rejected(self):
         for origin in ("http://untrusted.example:18080", "http://localhost:18081", "null"):

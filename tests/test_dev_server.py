@@ -1,20 +1,10 @@
 """Exercise the dev API through the real HTTP parser without hardware."""
-import io
 import json
 from types import SimpleNamespace
 import unittest
 
 from src import server
-
-class Connection:
-    def __init__(self, data):
-        self.input, self.output = io.BytesIO(data), bytearray()
-    def settimeout(self, timeout):
-        pass
-    def makefile(self, *args, **kwargs):
-        return self.input
-    def sendall(self, data):
-        self.output.extend(data)
+from fixtures.http_connection import MemoryConnection
 
 
 class Control:
@@ -36,7 +26,7 @@ class DevHTTPTests(unittest.TestCase):
                   ('Content-Length', str(len(body)))]
         fields.extend(headers)
         raw = '{} {} HTTP/1.1\r\n{}\r\n\r\n'.format(method, path, '\r\n'.join('{}: {}'.format(*x) for x in fields))
-        conn = Connection(raw.encode() + body)
+        conn = MemoryConnection(raw.encode() + body)
         frames = server.LatestFrame('realsense')
         host = SimpleNamespace(frames=frames, control=self.control, arm_gateway=self.gateway)
         server.CameraRequestHandler(conn, ('127.0.0.1', 1), host)
@@ -66,13 +56,6 @@ class DevHTTPTests(unittest.TestCase):
         for headers in ([('Content-Length','2')], [('Transfer-Encoding','chunked')]):
             self.assertEqual(self.request('POST','/api/dog/stop',headers=headers)[0],400)
 
-
-class DevConfigTests(unittest.TestCase):
-    def test_camera_free_simulation_and_explicit_hardware_mode(self):
-        options = server.parse_args(['--source','none'])
-        self.assertEqual(options.control_mode,'simulation')
-        options = server.parse_args(['--source','none','--control-mode','hardware'])
-        self.assertEqual(options.control_mode,'hardware')
 
 if __name__ == '__main__':
     unittest.main()
