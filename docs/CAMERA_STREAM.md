@@ -2,14 +2,23 @@
 
 The computer connects to the Linux perception host through SSH. The browser shows the camera stream through this connection. The Windows or macOS client needs Python 3.8 or later, OpenSSH (`ssh` and `scp`), and a browser. The camera commands do not send motion commands. Camera drivers, ROS and Bash run on the perception host.
 
-Run these commands from the repository root. Account names and addresses in examples are placeholders, not a record of any deployed robot. Replace them with the values for your robot.
+Run these commands from the repository root. All robot connection examples use these defaults:
+
+| Setting | Default |
+| --- | --- |
+| Username | `ysc` |
+| Password | `'` (one ASCII single quote) |
+| Perception host | `192.168.1.103` |
+| Motion control (UDP) | `192.168.1.120:43893` |
+
+Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The control API uses a separate token.
 
 Examples below use `python3` for macOS/Linux. In Windows PowerShell, replace it with `py -3` or your installed `python` command. No local Bash or WSL is required. Confirm `Get-Command ssh, scp` succeeds; otherwise install **OpenSSH Client** in Windows Optional Features and reopen the terminal. See [Microsoft's instructions](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse).
 
 ```powershell
-py -3 src/client.py doctor user@192.168.1.100
-py -3 src/client.py deploy user@192.168.1.100
-py -3 src/client.py view user@192.168.1.100 --backend realsense
+py -3 src/client.py doctor ysc@192.168.1.103
+py -3 src/client.py deploy ysc@192.168.1.103
+py -3 src/client.py view ysc@192.168.1.103 --backend realsense
 ```
 
 Deployment refuses symbolic links in source paths and, on Windows, all reparse points including junctions. Use a normal local checkout if a redirected or cloud-managed folder is rejected. Capture files are read before SSH login and only allowlisted runtime assets are uploaded. The service now also provides the [development control API and console](DEV_SERVER.md); camera endpoints remain compatible.
@@ -21,7 +30,7 @@ Deployment refuses symbolic links in source paths and, on Windows, all reparse p
 3. Check the camera interfaces on the perception host:
 
 ```bash
-python3 src/client.py doctor user@192.168.1.100
+python3 src/client.py doctor ysc@192.168.1.103
 ```
 
 The `doctor` command reads system details, Python dependencies, ROS environments, camera service status, and video device information. It does not open a camera. To inspect the route and commands, add `--dry-run` to `doctor`, `deploy`, or `view`. This option reads local routes and prints the selected path and commands. It does not log in to or probe the robot.
@@ -35,20 +44,20 @@ On macOS, use the same commands with robot Wi-Fi alone or with robot Wi-Fi and a
 On Windows, the launcher uses your existing SSH configuration and system routes. With a phone hotspot and robot Wi-Fi connected together, select the robot gateway with `--jump` if the direct target route goes through the phone. Apply this option to all three commands:
 
 ```powershell
-py -3 src/client.py doctor user@192.168.1.100 --jump user@192.168.2.1
-py -3 src/client.py deploy user@192.168.1.100 --jump user@192.168.2.1
-py -3 src/client.py view user@192.168.1.100 --backend realsense --jump user@192.168.2.1
+py -3 src/client.py doctor ysc@192.168.1.103 --jump ysc@192.168.2.1
+py -3 src/client.py deploy ysc@192.168.1.103 --jump ysc@192.168.2.1
+py -3 src/client.py view ysc@192.168.1.103 --backend realsense --jump ysc@192.168.2.1
 ```
 
 The automatic selection details below apply to macOS only.
 
 ```bash
-python3 src/client.py doctor user@192.168.1.100
-python3 src/client.py view user@192.168.1.100
+python3 src/client.py doctor ysc@192.168.1.103
+python3 src/client.py view ysc@192.168.1.103
 # Deploy only when you need the RealSense or V4L2 server described below.
-python3 src/client.py deploy user@192.168.1.100
+python3 src/client.py deploy ysc@192.168.1.103
 # Inspect the selected route without a robot connection.
-python3 src/client.py view user@192.168.1.100 --dry-run
+python3 src/client.py view ysc@192.168.1.103 --dry-run
 ```
 
 The launcher uses macOS `route -n get` to read routes to the perception host and robot gateway. It uses `networksetup -listallhardwareports` to find Wi-Fi hardware interfaces. Selection does not depend on the phone model or USB interface number.
@@ -56,7 +65,7 @@ The launcher uses macOS `route -n get` to read routes to the perception host and
 | Current route | Selected path |
 | --- | --- |
 | The target uses a direct robot Wi-Fi link or the Wi-Fi gateway `192.168.2.1`. | Connect directly to the target through SSH. |
-| The target uses another interface or gateway, and `192.168.2.1` has a direct Wi-Fi link. | Add `-J user@192.168.2.1`. Use robot Wi-Fi when the phone and robot subnets overlap. |
+| The target uses another interface or gateway, and `192.168.2.1` has a direct Wi-Fi link. | Add `-J ysc@192.168.2.1`. Use robot Wi-Fi when the phone and robot subnets overlap. |
 | The target route is missing or cannot be read, but the robot gateway has a confirmed direct Wi-Fi link. | Connect through the confirmed robot gateway. |
 | No direct Wi-Fi link to the robot gateway is confirmed, or interface information is missing. | Use the existing direct SSH command. If the target also lacks a direct link, show the reason and manual options. |
 
@@ -64,16 +73,16 @@ The terminal's `Route:` message shows the selected path and related interface or
 
 Automatic selection requires macOS and an explicit `192.168.1.*` IPv4 target. Automatic jump selection also requires the default robot gateway, `192.168.2.1`, on a direct Wi-Fi link. The launcher does not identify devices by Wi-Fi name or discover the perception host's IP address. SSH aliases, hostnames, other subnets, and other operating systems use the existing SSH configuration.
 
-Use a manual option for another network layout, a preferred wired interface, or a different gateway account:
+Use a manual option to select the robot gateway or a preferred wired interface:
 
 ```bash
-python3 src/client.py view user@192.168.1.100 --jump otheruser@192.168.2.1
-python3 src/client.py view user@192.168.1.100 --direct
+python3 src/client.py view ysc@192.168.1.103 --jump ysc@192.168.2.1
+python3 src/client.py view ysc@192.168.1.103 --direct
 ```
 
-The `--jump` and `--direct` options both bypass automatic selection. You cannot use them together. The `--direct` option adds no automatic jump but still uses proxies from the existing SSH configuration. The `--jump` option accepts one SSH alias, hostname, or `user@IPv4` address. It uses OpenSSH `-J` for SSH and SCP.
+The `--jump` and `--direct` options both bypass automatic selection. You cannot use them together. The `--direct` option adds no automatic jump but still uses proxies from the existing SSH configuration. The `--jump` option accepts one SSH alias, hostname, or SSH target such as `ysc@192.168.2.1`. It uses OpenSSH `-J` for SSH and SCP.
 
-The jump host only forwards the SSH connection. Camera commands still run on the perception host. Control defaults to simulation; hardware communication requires the explicit settings in the [Dev Server guide](DEV_SERVER.md). Both hosts require authentication and host key checks. The launcher does not save passwords or change routes or SSH configuration.
+The jump host only forwards the SSH connection. Camera commands still run on the perception host. Control defaults to simulation; hardware communication requires the explicit settings in the [Dev Server guide](DEV_SERVER.md). Both hosts require authentication and host key checks. OpenSSH handles password prompts. The launcher does not change routes or SSH configuration.
 
 The launcher selects the route each time a command starts. After a USB or Wi-Fi connection change, stop the preview. Then run the command again. Offline route samples cover both network conditions. Each condition still requires a test on the real network.
 
@@ -82,7 +91,7 @@ The launcher selects the route each time a command starts. After a USB or Wi-Fi 
 Use an active RGB image topic when one is available. The perception host must run a camera publisher node. Its ROS environment must contain `web_video_server`. The `view` command starts the preview service and forwards its port. The browser page lists the available image topics.
 
 ```bash
-python3 src/client.py view user@192.168.1.100
+python3 src/client.py view ysc@192.168.1.103
 ```
 
 If the host has multiple ROS environments, use `--ros-setup` to select the camera node's environment. For example, use `--ros-setup /opt/ros/melodic/setup.bash`. You can also select a workspace `setup.bash` that provides the required packages. The launcher uses `ROS_VERSION` to select ROS 1 or ROS 2. After you find the image topic, use `--topic /camera/image_topic` with its actual name.
@@ -104,8 +113,8 @@ Older environments, such as Melodic or Foxy, might have no candidate package. In
 You can read RGB frames directly when the camera is not in use. Python 3 on the perception host must import `pyrealsense2`, `numpy`, and `cv2`. The vendor manual states that the system image includes native librealsense. Use `doctor` to check whether the Python bindings are available.
 
 ```bash
-python3 src/client.py deploy user@192.168.1.100
-python3 src/client.py view user@192.168.1.100 --backend realsense
+python3 src/client.py deploy ysc@192.168.1.103
+python3 src/client.py view ysc@192.168.1.103 --backend realsense
 ```
 
 The `deploy` command uploads the server, control modules, fixed arm helper and viewer pages to `~/lite3-camera-server/` and its `web/` and `remote/` subdirectories on the perception host, then runs a remote installer to enable the [systemd boot service](#boot-service). It rejects symlinked source paths and does not copy unrelated files or Git-ignored content. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. Use `deploy --width`, `--height`, `--fps`, and `--quality` to save boot settings. If multiple RealSense cameras are connected, use `deploy --serial` to select one. Matching options on `view` apply only if it starts a new detached server.
@@ -133,8 +142,8 @@ If the camera already publishes ROS images, use the existing topic. Do not stop 
 From the client computer, run these commands in order:
 
 ```bash
-python3 src/client.py deploy user@192.168.1.100 --backend v4l2 --device /dev/video4
-python3 src/client.py view user@192.168.1.100 --backend v4l2 --device /dev/video4
+python3 src/client.py deploy ysc@192.168.1.103 --backend v4l2 --device /dev/video4
+python3 src/client.py view ysc@192.168.1.103 --backend v4l2 --device /dev/video4
 ```
 
 The launcher selects the connection path with the rules above. Set `--device` to a confirmed `/dev/videoN` or `/dev/v4l/by-id/name` path. Device numbers can change after a restart or a USB connection change. V4L2 mode provides RGB only. It does not support `--depth` or `--serial`.
@@ -157,7 +166,7 @@ If a selection fails, read the source error and check the connection, permission
 
 ## Shared server lifecycle
 
-The RealSense/V4L2 server trusts the LAN and listens on all IPv4 interfaces (`0.0.0.0`) by default. Once it is running, any device that can reach the perception host can open `http://PERCEPTION_HOST:8080/`. All native endpoints work without a token, URL fragment, browser session storage or Authorization header. Source selection uses POST with a JSON body; requests with an Origin header must match the current origin.
+The RealSense/V4L2 server trusts the LAN and listens on all IPv4 interfaces (`0.0.0.0`) by default. Once it is running, any device that can reach the perception host can open `http://192.168.1.103:8080/`. All native endpoints work without a token, URL fragment, browser session storage or Authorization header. Source selection uses POST with a JSON body; requests with an Origin header must match the current origin.
 
 Alternatively, run `view` on each client. It forwards that computer's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080`. With `--no-open`, open the printed URL manually. Native clients reuse a listening boot service or detached server. If no server is listening, the first client starts a detached server. Camera selection and capture settings are shared. New `view` arguments do not reconfigure an existing server. Use different `--local-port` values for multiple launcher processes on one computer; clients on separate computers can all use the default local port.
 
@@ -173,7 +182,7 @@ For a stable V4L2 boot device, use the camera's confirmed RGB `/dev/v4l/by-id/NA
 
 ```bash
 # On the client; replace NAME with the host's actual RGB device link.
-python3 src/client.py deploy user@192.168.1.100 --backend v4l2 --device /dev/v4l/by-id/NAME
+python3 src/client.py deploy ysc@192.168.1.103 --backend v4l2 --device /dev/v4l/by-id/NAME
 
 # On the perception host:
 systemctl is-enabled lite3-camera-server.service

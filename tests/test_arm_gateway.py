@@ -192,7 +192,7 @@ class GatewayTests(unittest.TestCase):
 
     def test_ssh_is_noninteractive_strict_and_runs_fixed_quoted_worker(self):
         with mock.patch.object(arm_gateway.subprocess, "Popen", side_effect=self.factory()) as popen:
-            gateway = self.gateway(device="/dev/serial/by-id/usb-r5", host="robot@eo4wif")
+            gateway = self.gateway(device="/dev/serial/by-id/usb-r5", host="ysc@192.168.1.103")
             gateway.read_state()
             args, kwargs = popen.call_args
             argv = args[0]
@@ -201,7 +201,7 @@ class GatewayTests(unittest.TestCase):
             self.assertIn("StrictHostKeyChecking=yes", argv)
             self.assertIn("ConnectTimeout=3", argv)
             self.assertIn("ServerAliveCountMax=2", argv)
-            self.assertEqual(argv[-2], "robot@eo4wif")
+            self.assertEqual(argv[-2], "ysc@192.168.1.103")
             remote_argv = shlex.split(argv[-1])
             self.assertEqual(remote_argv[:3], ["python3", "-u", "-c"])
             self.assertEqual(remote_argv[-2:], ["--device", "/dev/serial/by-id/usb-r5"])

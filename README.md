@@ -13,6 +13,17 @@ The RealSense/V4L2 viewer has a **Source** dropdown for the Lite3's D435i RGB ca
 
 ## Quick start
 
+Use these default robot connection values in code and examples:
+
+| Setting | Default |
+| --- | --- |
+| Username | `ysc` |
+| Password | `'` (one ASCII single quote) |
+| Perception host | `192.168.1.103` |
+| Motion control (UDP) | `192.168.1.120:43893` |
+
+Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The control API uses a separate token.
+
 The launcher requires Python 3.8 or later. A robot connection also requires OpenSSH (`ssh` and `scp`) and network access to the perception host. Use a maintained Python version for development. Python 3.8 support is for older devices.
 
 The client runs natively on Windows 10/11 and macOS. The perception host still runs Linux with Bash and its camera dependencies. Windows does not need WSL, Git Bash, Make, or ROS to run the client.
@@ -32,46 +43,46 @@ git clone https://github.com/zmjlucas/lite3-dev-server.git
 cd lite3-dev-server
 py -3 src/client.py --help
 Get-Command ssh, scp
-py -3 src/client.py doctor user@192.168.1.100
-py -3 src/client.py view user@192.168.1.100
+py -3 src/client.py doctor ysc@192.168.1.103
+py -3 src/client.py view ysc@192.168.1.103
 # For RealSense or V4L2, deploy before starting that backend:
-py -3 src/client.py deploy user@192.168.1.100
-py -3 src/client.py view user@192.168.1.100 --backend realsense
+py -3 src/client.py deploy ysc@192.168.1.103
+py -3 src/client.py view ysc@192.168.1.103 --backend realsense
 ```
 
 If `ssh` or `scp` is missing, install **OpenSSH Client** through Windows Optional Features, then reopen PowerShell. See [Microsoft's OpenSSH installation guide](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse). The local computer needs only the client component.
 
 ## Connect to a robot
 
-Replace the example address with your perception host. Before the first connection, check the SSH host key.
+Connect to the default perception host at `ysc@192.168.1.103`. Before the first connection, check the SSH host key.
 
 ```bash
 # Check the host, dependencies, camera services, and ROS environment.
-python3 src/client.py doctor user@192.168.1.100
+python3 src/client.py doctor ysc@192.168.1.103
 
 # Use an existing ROS image topic and a compatible web_video_server.
-python3 src/client.py view user@192.168.1.100
+python3 src/client.py view ysc@192.168.1.103
 ```
 
 | Mode | Requirements on the perception host | Command |
 | --- | --- | --- |
-| ROS (default) | An active image topic, the matching ROS environment, and `web_video_server` | `view HOST` |
-| RealSense | A camera that is not in use, compatible `pyrealsense2`, `numpy`, and `cv2` | Run `deploy HOST`. Then run `view HOST --backend realsense`. |
-| V4L2 RGB | Linux, OpenCV with V4L2 support, and a confirmed RGB device node that is not in use | Run `deploy HOST --backend v4l2 --device /dev/videoN`. Then run `view HOST --backend v4l2 --device /dev/videoN`. |
+| ROS (default) | An active image topic, the matching ROS environment, and `web_video_server` | `view ysc@192.168.1.103` |
+| RealSense | A camera that is not in use, compatible `pyrealsense2`, `numpy`, and `cv2` | Run `deploy ysc@192.168.1.103`. Then run `view ysc@192.168.1.103 --backend realsense`. |
+| V4L2 RGB | Linux, OpenCV with V4L2 support, and a confirmed RGB device node that is not in use | Run `deploy ysc@192.168.1.103 --backend v4l2 --device /dev/videoN`. Then run `view ysc@192.168.1.103 --backend v4l2 --device /dev/videoN`. |
 
 Camera dependencies must match the device architecture, Python version, and vendor SDK. The repository does not install these dependencies from a shared requirements file. The server uses Python 3.6-compatible syntax. The full test suite requires Python 3.8 or later. Python 3.6 runtime operation remains unverified.
 
 On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces to select a path to `192.168.1.*` targets. If the target route uses robot Wi-Fi, the launcher connects directly. If the target route uses another interface or gateway, the launcher checks for a direct Wi-Fi link to `192.168.2.1`. If that link is available, the launcher uses `192.168.2.1` as an SSH jump host. When the phone and robot subnets overlap, the launcher uses robot Wi-Fi. The same commands work with robot Wi-Fi alone or with a phone USB hotspot, without changes to system routes.
 
-To select a jump host manually, use `--jump user@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
+To select a jump host manually, use `--jump ysc@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
 
 Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server, control modules, arm helper and viewer pages to `~/lite3-camera-server/` and installs/enables the systemd service `lite3-camera-server.service`. The remote host needs systemd and root or sudo access; sudo can prompt in the SSH terminal.
 
 The service starts at every boot without an SSH login, using the deployment account and its Python interpreter. Its defaults are RealSense, port 8080, 640 x 480, 15 fps, and quality 70. For V4L2, deploy with `--backend v4l2 --device /dev/v4l/by-id/NAME`, replacing `NAME` with the confirmed RGB camera link. `deploy` also accepts `--remote-port`, `--width`, `--height`, `--fps`, `--quality`, and RealSense `--depth`/`--serial` to save boot settings. It leaves current camera processes running; new settings take effect at the next boot or an explicit service restart. See [boot service management](docs/CAMERA_STREAM.md#boot-service) for migration, logs, and disabling autostart.
 
-On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/client.py view user@192.168.1.100 --jump user@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
+On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/client.py view ysc@192.168.1.103 --jump ysc@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
 
-The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://PERCEPTION_HOST:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. Camera viewing needs no session token or private link; control POSTs require the configured control token. The local tunnel still binds to `127.0.0.1`.
+The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://192.168.1.103:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. Camera viewing needs no session token or private link; control POSTs require the configured control token. The local tunnel still binds to `127.0.0.1`.
 
 Multiple clients can run `view` against the same native server and remote port. Clients reuse the boot service when it is listening; if no server is listening, the first client starts a detached shared server. Each client can disconnect independently. **Ctrl+C closes that client's tunnel; the native server keeps running**, even after all clients disconnect. All viewers share the selected camera and capture settings. Options such as `--depth`, `--device`, and resolution on `view` only apply when starting a new detached server. On one computer, use different `--local-port` values for separate launcher processes, or open multiple tabs on one tunnel.
 

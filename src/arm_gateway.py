@@ -28,7 +28,7 @@ def _validate_host(host):
         return None
     if (not isinstance(host, str) or len(host) > 255 or
             not re.fullmatch(r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.-]*", host)):
-        raise ValueError("Arm host must be a plain SSH hostname, optionally user@host.")
+        raise ValueError("Arm host must be an SSH hostname or a target such as ysc@192.168.1.103.")
     return host
 
 

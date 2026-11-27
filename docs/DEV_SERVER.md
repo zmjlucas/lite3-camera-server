@@ -4,6 +4,17 @@ Dev Server centralizes camera streaming, Lite3 UDP commands and R5 serial feedba
 
 The camera viewer remains at `/`; the control console is `/control`. Existing deployment directories and `lite3-camera-server.service` remain in use so an upgrade does not create a competing camera owner. ROS mode still uses the external camera-only `web_video_server`.
 
+## Default robot connection
+
+| Setting | Default |
+| --- | --- |
+| Username | `ysc` |
+| Password | `'` (one ASCII single quote) |
+| Perception host | `192.168.1.103` |
+| Motion control (UDP) | `192.168.1.120:43893` |
+
+Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The camera page is `http://192.168.1.103:8080/`, and the control console is `http://192.168.1.103:8080/control`. The control API uses a separate token.
+
 ## Run locally in simulation
 
 Python 3.8+ is recommended for development. No camera, SSH, serial package or robot is needed:
@@ -53,9 +64,9 @@ Use `--jump ysc@192.168.2.1` if needed, or existing automatic macOS route select
 
 For deployment acceptance with **no motion output**, use `--control-mode readonly --control-token-file /absolute/private/file`. This mode provides real camera streams and explicit R5 feedback reads, but rejects every control/ownership/motion action and never creates a dog UDP socket, including on shutdown. Check `/api/status` reports `readonly` after explicitly restarting the service; a reused server keeps its old settings. Serial opening can still affect a controller's reset lines, so use the verified DTR/RTS configuration and an unoccupied device. The service needs access to the serial device group (on Ubuntu, a service-only `SupplementaryGroups=dialout` drop-in can provide it without changing the login account).
 
-Real dog output requires `--control-mode hardware --control-token-file /absolute/private/file`. The default motion target is `192.168.1.120:43893`; change `--dog-host` only to the verified motion host. The default serial device is `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`; `--arm-device` selects a confirmed serial node. The service account needs serial permissions and pySerial; the service does not run interactive sudo.
+Real dog output requires `--control-mode hardware --control-token-file /absolute/private/file`. The default motion target is `192.168.1.120:43893`; use `--dog-host 192.168.1.120` to set the same host explicitly. The default serial device is `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`; `--arm-device` selects a confirmed serial node. The service account needs serial permissions and pySerial; the service does not run interactive sudo.
 
-R5 is attached by USB to the perception host. Normally the server owns serial locally, avoiding per-command SSH. If serial is on another Linux host, configure `--arm-host USER@HOST` with verified OpenSSH configuration/known hosts and noninteractive authentication. One fixed persistent helper handles serialized queries. Opening serial is explicit via arm state retrieval; no background scan or automatic reconnect opens it. A failed session requires explicit `arm/reconnect` before another read. DTR/RTS are cleared before opening; opening may still reset a controller, so confirm its behavior on the device. Exclusive serial locking does not prevent unrelated software that ignores locks.
+R5 is attached by USB to the perception host. Normally the server owns serial locally, avoiding per-command SSH. If the server runs on another Linux host and needs remote serial access to the perception host, configure `--arm-host ysc@192.168.1.103` with verified OpenSSH configuration/known hosts and noninteractive authentication. One fixed persistent helper handles serialized queries. Opening serial is explicit via arm state retrieval; no background scan or automatic reconnect opens it. A failed session requires explicit `arm/reconnect` before another read. DTR/RTS are cleared before opening; opening may still reset a controller, so confirm its behavior on the device. Exclusive serial locking does not prevent unrelated software that ignores locks.
 
 **Hardware R5 motion is currently blocked in code.** The source project's 2026-11-27 test recorded unintended elbow lowering and continued base displacement during a hold attempt. `robo-comp/scripts/r5_rotate_180.py` and `R5_ROTATE_180.md` explicitly suspend execution. This gateway preserves that restriction, with no override switch. Hardware jog fails before opening SSH or serial. Read-only T105 feedback remains available; simulation supports bounded jogs. Enabling live arm movement requires a separately verified firmware-specific target mapping and stop implementation.
 

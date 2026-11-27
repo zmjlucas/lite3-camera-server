@@ -12,7 +12,7 @@ body:
     id: reproduction
     attributes:
       label: Steps to reproduce
-      description: Give the commands and steps to reproduce the problem. Remove credentials and private information.
+      description: Give the commands and steps to reproduce the problem. Use the robot connection defaults in README. Remove private credentials and private information.
     validations:
       required: true
   - type: textarea
@@ -25,4 +25,4 @@ body:
     id: logs
     attributes:
       label: Logs and test conditions
-      description: Include relevant errors or authenticated /healthz output. Redact session links, Authorization headers, host addresses, usernames, device serial numbers, ROS identifiers, and private paths. Do not attach unredacted camera images or hardware session logs. State whether the issue occurred in an offline test or with a real camera.
+      description: Include relevant errors or authenticated /healthz output. Remove session links, Authorization headers, private host addresses and usernames, device serial numbers, ROS identifiers, and private paths. The documented robot defaults do not need to be removed. Do not attach unredacted camera images or hardware session logs. State whether the issue occurred in an offline test or with a real camera.

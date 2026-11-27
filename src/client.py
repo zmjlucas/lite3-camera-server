@@ -35,7 +35,7 @@ ROBOT_GATEWAY = "192.168.2.1"
 
 def target(value):
     if not re.fullmatch(r"(?:[A-Za-z0-9_][A-Za-z0-9_.-]*@)?[A-Za-z0-9_][A-Za-z0-9_.-]*", value):
-        raise argparse.ArgumentTypeError("use an SSH alias, hostname, or user@IPv4. Do not include shell characters.")
+        raise argparse.ArgumentTypeError("use an SSH alias, hostname, or ysc@192.168.1.103. Do not include shell characters.")
     return value
 
 
@@ -154,7 +154,7 @@ def resolve_jump(args):
             host, path, jump, gateway["interface"]), file=sys.stderr)
         return jump
     print("Route: direct to {} ({}). The launcher did not find a robot gateway on a local Wi-Fi link. "
-          "Check the robot Wi-Fi connection. To select the route manually, use --jump USER@HOST or --direct.".format(host, path),
+          "Check the robot Wi-Fi connection. To select the route manually, use --jump ysc@192.168.2.1 or --direct.".format(host, path),
           file=sys.stderr)
     return None
 
@@ -385,16 +385,18 @@ def run_foreground(command, url, open_browser, native=False):
 
 
 def parser():
-    result = argparse.ArgumentParser(description=__doc__)
+    result = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="Default robot SSH login: ysc@192.168.1.103. Password: ' (one ASCII single quote).")
     commands = result.add_subparsers(dest="command", required=True)
     for name, help_text in (("doctor", "check the host environment through SSH without changes"),
                             ("deploy", "copy the development server and enable its system boot service"),
                             ("view", "start or reuse the remote camera server and open an SSH tunnel")):
         command = commands.add_parser(name, help=help_text)
-        command.add_argument("target", type=target, help="SSH alias or user@perception-host")
+        command.add_argument("target", type=target, help="perception host SSH target: ysc@192.168.1.103")
         routing = command.add_mutually_exclusive_group()
         routing.add_argument("--jump", type=target,
-                             help="set the SSH jump host (default: automatic selection on macOS for 192.168.1.*)")
+                             help="set the SSH jump host, e.g. ysc@192.168.2.1 (default: automatic selection on macOS for 192.168.1.*)")
         routing.add_argument("--direct", action="store_true",
                              help="use the existing SSH configuration without automatic route selection")
         command.add_argument("--dry-run", action="store_true",
@@ -419,9 +421,9 @@ def parser():
             command.add_argument("--quality", type=bounded_int(1, 95))
             command.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"))
             command.add_argument("--control-token-file", help="existing private token file on the remote host")
-            command.add_argument("--dog-host", help="motion host IPv4")
+            command.add_argument("--dog-host", help="motion host IPv4 (server default: 192.168.1.120, UDP port 43893)")
             command.add_argument("--arm-device", help="serial device on the arm host")
-            command.add_argument("--arm-host", type=target, help="optional SSH target from the server to the arm host")
+            command.add_argument("--arm-host", type=target, help="optional SSH target for remote arm access: ysc@192.168.1.103")
     return result
 
 
