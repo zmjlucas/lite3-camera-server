@@ -1,11 +1,13 @@
-# Lite3 Camera Server
+# Lite3 Dev Server
 
 [![CI](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml/badge.svg)](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-View the camera on a Lite3 robot in a Windows or macOS browser through SSH. Use an existing ROS image topic, RealSense, or V4L2 RGB.
+Share cameras and bounded robot communications through one development service. The browser console and Python SDK offer Lite3 UDP control, simulation and R5 serial feedback. RealSense/V4L2 camera streaming and existing SSH workflows remain supported; ROS mode remains camera-only.
 
-This tool shows camera images. It does not send motion commands. The client does not need ROS. The client and unit tests use only the Python standard library.
+**Start with the [Dev Server guide](docs/DEV_SERVER.md)** for simulation, control tokens, the `/control` console, API/SDK and deployment. Motion defaults to simulation; real dog output requires explicit hardware mode. R5 hardware motion is blocked because the source project's 2026-11-27 hold test failed; read-only feedback and simulated jogs are available. Software stop cannot prove physical stopping.
+
+The launcher, simulation and tests use the Python standard library. R5 hardware feedback additionally needs pySerial on its host. The client does not need ROS.
 
 The RealSense/V4L2 viewer has a **Source** dropdown for the Lite3's D435i RGB camera and arm-mounted **SXW USB Camera**. It discovers their usable `/dev/videoN` capture nodes and labels each camera. Switching stops the previous capture and briefly interrupts video; all viewers of that server share the selected source. See [camera selection](docs/CAMERA_STREAM.md#switch-between-the-d435i-and-arm-camera).
 
@@ -63,13 +65,13 @@ On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces 
 
 To select a jump host manually, use `--jump user@192.168.2.1`. To use your existing SSH configuration without automatic route selection, use `--direct`. The `--dry-run` option reads local routes and prints the selected path and commands. It does not connect to the robot.
 
-Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server script and viewer page to `~/lite3-camera-server/` and installs/enables the systemd service `lite3-camera-server.service`. The remote host needs systemd and root or sudo access; sudo can prompt in the SSH terminal.
+Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server, control modules, arm helper and viewer pages to `~/lite3-camera-server/` and installs/enables the systemd service `lite3-camera-server.service`. The remote host needs systemd and root or sudo access; sudo can prompt in the SSH terminal.
 
 The service starts at every boot without an SSH login, using the deployment account and its Python interpreter. Its defaults are RealSense, port 8080, 640 x 480, 15 fps, and quality 70. For V4L2, deploy with `--backend v4l2 --device /dev/v4l/by-id/NAME`, replacing `NAME` with the confirmed RGB camera link. `deploy` also accepts `--remote-port`, `--width`, `--height`, `--fps`, `--quality`, and RealSense `--depth`/`--serial` to save boot settings. It leaves current camera processes running; new settings take effect at the next boot or an explicit service restart. See [boot service management](docs/CAMERA_STREAM.md#boot-service) for migration, logs, and disabling autostart.
 
 On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/client.py view user@192.168.1.100 --jump user@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
 
-The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://PERCEPTION_HOST:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. No session token or private link is needed. The local tunnel still binds to `127.0.0.1`.
+The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://PERCEPTION_HOST:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. Camera viewing needs no session token or private link; control POSTs require the configured control token. The local tunnel still binds to `127.0.0.1`.
 
 Multiple clients can run `view` against the same native server and remote port. Clients reuse the boot service when it is listening; if no server is listening, the first client starts a detached shared server. Each client can disconnect independently. **Ctrl+C closes that client's tunnel; the native server keeps running**, even after all clients disconnect. All viewers share the selected camera and capture settings. Options such as `--depth`, `--device`, and resolution on `view` only apply when starting a new detached server. On one computer, use different `--local-port` values for separate launcher processes, or open multiple tabs on one tunnel.
 
@@ -79,7 +81,7 @@ See [shared server lifecycle](docs/CAMERA_STREAM.md#shared-server-lifecycle) for
 
 These endpoints apply to the RealSense and V4L2 servers. ROS mode uses the endpoints from `web_video_server`.
 
-All native endpoints are available without credentials to clients that can reach the server. The page's snapshot link downloads the latest displayed frame.
+The camera endpoints below remain available without credentials to clients that can reach the server. New control POST endpoints require a private bearer token; see the [control API](docs/DEV_SERVER.md#http-contract). The page's snapshot link downloads the latest displayed frame.
 
 | Path | Response |
 | --- | --- |
@@ -121,7 +123,9 @@ py -3 -B tests/camera_browser_smoke.py --browser 'C:\Program Files\Google\Chrome
 
 CI is configured to run offline tests on Linux, macOS, and Windows, with browser playback checks on all three. Native Windows tests include deployment file handles and junction refusal. Remote Bash and POSIX signal integration tests run on Linux/macOS and are skipped on Windows; the Windows suite still exercises launcher commands, anonymous HTTP access, interrupt cleanup, and HTTP streaming. CI does not connect to a robot. Configuration of a CI job is not a hardware acceptance result.
 
-## Test status and limits
+## Existing camera test status and limits
+
+These hardware observations predate the dev server changes. They do not validate the new motion interfaces.
 
 - Systemd service installation, stop/start, and automatic recovery after terminating the server process were verified on a Lite3 perception host on 2026-11-27, with live SXW and D435i RGB streams and source switching. The host was not rebooted; actual boot startup and delayed USB initialization still require hardware tests.
 - Source switching was tested on connected Lite3 hardware with V4L2 and RealSense SDK capture, including restoration of the D435i false-color depth preview after switching back from SXW. RealSense `--depth` does not give calibrated distance measurements. Recovery after USB disconnection, extended Wi-Fi operation, and video delay still require hardware tests.
@@ -131,10 +135,10 @@ CI is configured to run offline tests on Linux, macOS, and Windows, with browser
 ## Repository layout
 
 ```text
-src/             SSH launcher and camera server
+src/             SSH launcher, dev server, motion gateway and Python SDK
 src/remote/      Remote diagnostic and startup helpers
-src/web/         Browser viewer page
-docs/            Camera usage guide
+src/web/         Camera viewer and development console
+docs/            Development API and camera usage guides
 tests/           Unit tests and the optional Chrome test
 .github/         CI, dependency updates, and contribution templates
 ```

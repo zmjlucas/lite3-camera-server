@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Lite3 Dev Server · 控制台</title>
+<style>
+  :root { color-scheme: light; font: 14px/1.55 system-ui, -apple-system, "PingFang SC", sans-serif; color: #172d32; background: #edf1ef; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  button, input, select { font: inherit; }
+  button, .link-button { border: 1px solid #c9d4cf; border-radius: 7px; background: white; color: #173a33; padding: 9px 14px; cursor: pointer; font-weight: 600; text-decoration: none; }
+  button:hover:not(:disabled), .link-button:hover { background: #eef6f1; border-color: #82a595; }
+  button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #dd9b38; outline-offset: 3px; }
+  button:disabled { cursor: not-allowed; opacity: .42; }
+  button.primary { background: #14664e; color: white; border-color: #14664e; }
+  button.primary:hover:not(:disabled) { background: #0d503c; }
+  button.danger { background: #a82d2b; color: white; border-color: #a82d2b; }
+  button.danger:hover:not(:disabled) { background: #8d2422; }
+  button.held { background: #14664e; color: white; border-color: #14664e; }
+  input, select { min-width: 0; width: 100%; background: white; border: 1px solid #bbc9c1; border-radius: 6px; color: #172d32; padding: 9px 10px; }
+  a { color: #14664e; }
+  header { background: #112d27; color: #edf7f0; padding: 24px max(24px, calc((100vw - 1280px) / 2)); display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+  header .eyebrow { color: #9eb9ae; }
+  h1 { font-size: 25px; letter-spacing: -.6px; line-height: 1.3; margin: 4px 0 0; }
+  .eyebrow { font-size: 10px; letter-spacing: 2px; font-weight: 700; text-transform: uppercase; }
+  .header-right, .row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  .pill { display: inline-flex; align-items: center; gap: 7px; border-radius: 20px; padding: 5px 10px; background: #e8f1eb; color: #275b48; font-size: 12px; font-weight: 600; }
+  #connection { color: #c4d8cf; font-size: 12px; }
+  main { max-width: 1328px; margin: auto; padding: 22px 24px 36px; }
+  .notice { padding: 12px 16px; border: 1px solid #d9c79f; border-radius: 8px; color: #72541d; background: #fbf6e9; min-height: 47px; margin-bottom: 18px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(340px, 1fr); gap: 18px; }
+  .card { background: #fff; border: 1px solid #d6ded9; border-radius: 10px; padding: 22px; min-width: 0; }
+  .card-head { display: flex; justify-content: space-between; align-items: start; gap: 14px; margin-bottom: 16px; }
+  h2 { font-size: 18px; margin: 3px 0 0; letter-spacing: -.3px; }
+  h3 { font-size: 13px; margin: 16px 0 8px; }
+  p { margin: 10px 0; }
+  .muted { color: #64736b; font-size: 12px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+  .camera { background: #142b26; border-radius: 7px; aspect-ratio: 16 / 9; display: grid; place-items: center; overflow: hidden; position: relative; }
+  .camera img { width: 100%; height: 100%; object-fit: contain; position: absolute; }
+  .camera img[hidden] { display: none; }
+  #camera-message { color: #acc2b7; font-size: 13px; text-align: center; padding: 20px; }
+  .camera-caption { display: flex; justify-content: space-between; gap: 12px; margin-top: 10px; }
+  .token-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 7px 0; }
+  label { font-size: 12px; color: #52645a; }
+  .ownership { background: #f4f7f4; border-radius: 7px; padding: 13px; margin: 17px 0; }
+  #owner-state { font-size: 16px; font-weight: 650; }
+  .full { width: 100%; }
+  .divider { height: 1px; background: #e4e9e5; margin: 18px 0; }
+  .status-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: #f0f5f1; border-radius: 7px; }
+  .drive-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 16px 0; }
+  .drive-grid button { min-height: 65px; touch-action: none; user-select: none; -webkit-user-select: none; }
+  .drive-grid button span { display: block; font: 11px/1.5 ui-monospace, monospace; opacity: .75; margin-top: 3px; }
+  .drive-grid .wide { grid-column: span 3; min-height: 44px; }
+  #dog-stop { color: #92332e; background: #fff5f2; border-color: #dfb2aa; }
+  .readout { display: flex; flex-wrap: wrap; gap: 16px; margin: 10px 0; font: 12px ui-monospace, monospace; color: #546a5e; }
+  .warning { border-left: 3px solid #d19938; padding-left: 10px; color: #755422; font-size: 12px; }
+  .arm-lock { padding: 11px 13px; background: #f9f2e4; border-radius: 7px; font-size: 12px; color: #71501e; margin-bottom: 12px; overflow-wrap: anywhere; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th { text-align: left; color: #6c7a71; font-weight: 500; }
+  td, th { border-bottom: 1px solid #e8ece8; padding: 9px 4px; }
+  td:last-child, th:last-child { text-align: right; }
+  td button { padding: 4px 10px; margin-left: 4px; }
+  footer { font-size: 11px; color: #758078; margin-top: 20px; display: flex; justify-content: space-between; gap: 20px; }
+  @media (max-width: 850px) { .grid { grid-template-columns: 1fr; } header { padding: 20px; align-items: start; } .header-right { justify-content: end; } main { padding: 16px; } .card { padding: 18px; } }
+  @media (max-width: 500px) { header { flex-direction: column; gap: 14px; } .header-right { justify-content: start; } h1 { font-size: 23px; } footer { flex-direction: column; gap: 4px; } }
+</style>
+</head>
+<body>
+<header>
+  <div><div class="eyebrow">Developer communications</div><h1>Lite3 Dev Server</h1></div>
+  <div class="header-right"><span id="mode" class="pill">等待状态</span><span id="connection" role="status">正在连接</span><button id="estop" class="danger" disabled>软件急停</button></div>
+</header>
+<main>
+  <div id="notice" class="notice" role="status" aria-live="polite">输入令牌后，手动获取控制权。默认模拟模式不会连接机器人。</div>
+  <div class="grid">
+    <section class="card">
+      <div class="card-head"><div><div class="eyebrow">01 / Camera</div><h2>共享相机</h2></div><a class="link-button" href="/" target="_blank" rel="noopener">打开相机查看器 ↗</a></div>
+      <div class="camera"><span id="camera-message">正在读取预览…</span><img id="camera-frame" alt="共享相机最新预览" hidden></div>
+      <div class="camera-caption muted"><span>预览自动更新；相机切换与完整视频在查看器中操作。</span><span id="camera-time" class="mono">—</span></div>
+    </section>
+    <section class="card">
+      <div class="card-head"><div><div class="eyebrow">02 / Session</div><h2>控制权与连接</h2></div><span id="auth-state" class="pill">未设置令牌</span></div>
+      <label for="token">访问令牌 · 仅保存在本页内存</label>
+      <div class="token-row"><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴服务端令牌" aria-label="访问令牌"><button id="save-token">应用</button></div>
+      <p class="muted">刷新页面后需要重新输入。令牌不会写入地址或浏览器存储。</p>
+      <div class="ownership"><div id="owner-state">尚未获取控制权</div><div id="lease-detail" class="muted">一次只允许一个控制者；心跳中断后自动失效。</div></div>
+      <div class="row"><button id="acquire" class="primary" disabled>获取控制权</button><button id="release" disabled>释放控制权</button></div>
+      <div class="divider"></div>
+      <div class="row"><button id="reset" disabled>复位急停 / 故障</button><span class="muted">复位后仍需手动获取控制权。</span></div>
+      <p class="warning">软件急停和停止请求无法确认实体机器人已停止。硬件操作须保留物理遥控停止手段。</p>
+    </section>
+    <section class="card">
+      <div class="card-head"><div><div class="eyebrow">03 / Quadruped</div><h2>机器狗控制</h2></div><span id="dog-phase" class="pill">未准备</span></div>
+      <div class="status-line"><div><strong>先准备，再按住移动</strong><div class="muted">站立准备约 6 秒；松开、切换窗口或断线即停止。</div></div><button id="stand" class="primary" disabled>站立准备</button></div>
+      <div class="drive-grid" aria-label="按住移动控制">
+        <button data-axis="yaw" data-value="-0.15" disabled>yaw −<span>−0.15 rad/s</span></button>
+        <button data-axis="vx" data-value="0.10" disabled>vx +<span>+0.10 m/s</span></button>
+        <button data-axis="yaw" data-value="0.15" disabled>yaw +<span>+0.15 rad/s</span></button>
+        <button data-axis="vy" data-value="-0.05" disabled>vy −<span>−0.05 m/s</span></button>
+        <button data-axis="vx" data-value="-0.10" disabled>vx −<span>−0.10 m/s</span></button>
+        <button data-axis="vy" data-value="0.05" disabled>vy +<span>+0.05 m/s</span></button>
+        <button id="dog-stop" class="wide" disabled>停止并释放控制权</button>
+      </div>
+      <div id="dog-limits" class="mono muted">服务端速度上限：等待状态</div>
+      <div id="dog-velocity" class="readout">最后接受的速度指令：—</div>
+      <p class="muted">按钮使用设备原生坐标；vy / yaw 正负方向需要在现场确认。支持鼠标、触摸，或聚焦按钮后按住空格 / Enter。</p>
+      <p class="warning">界面显示的是指令状态，没有姿态或速度反馈。每次停止后都需要重新获取控制权并站立准备。</p>
+    </section>
+    <section class="card">
+      <div class="card-head"><div><div class="eyebrow">04 / R5 Arm</div><h2>机械臂</h2></div><span id="arm-mode" class="pill">等待状态</span></div>
+      <div id="arm-reason" class="arm-lock">硬件运动锁定：当前版本仅支持读取反馈；模拟模式可进行关节点动。</div>
+      <div class="row"><button id="arm-state" disabled>读取反馈</button><button id="arm-reconnect" disabled>显式重连</button></div>
+      <p id="arm-caption" class="muted">读取会建立串口 / SSH 会话；失败后须手动重连。</p>
+      <table aria-label="机械臂关节状态"><thead><tr><th>关节</th><th>角度 °</th><th>模拟点动 · 1°</th></tr></thead><tbody>
+        <tr><td>基座 b</td><td id="joint-b" class="mono">—</td><td><button data-joint="b" data-delta="-1" disabled aria-label="基座减一度">−</button><button data-joint="b" data-delta="1" disabled aria-label="基座加一度">+</button></td></tr>
+        <tr><td>肩 s</td><td id="joint-s" class="mono">—</td><td><button data-joint="s" data-delta="-1" disabled aria-label="肩减一度">−</button><button data-joint="s" data-delta="1" disabled aria-label="肩加一度">+</button></td></tr>
+        <tr><td>肘 e</td><td id="joint-e" class="mono">—</td><td><button data-joint="e" data-delta="-1" disabled aria-label="肘减一度">−</button><button data-joint="e" data-delta="1" disabled aria-label="肘加一度">+</button></td></tr>
+        <tr><td>腕 w</td><td id="joint-w" class="mono">—</td><td><button data-joint="w" data-delta="-1" disabled aria-label="腕减一度">−</button><button data-joint="w" data-delta="1" disabled aria-label="腕加一度">+</button></td></tr>
+        <tr><td>夹爪 h</td><td id="joint-h" class="mono">未知</td><td><button data-joint="h" data-delta="-1" disabled aria-label="模拟夹爪减一度">−</button><button data-joint="h" data-delta="1" disabled aria-label="模拟夹爪加一度">+</button></td></tr>
+      </tbody></table>
+      <p class="muted">模拟点动速度 2°/s。硬件读取不提供夹爪角度；缓存目标不能作为实测位置。</p>
+    </section>
+  </div>
+  <footer><span>Lite3 Dev Server · 共享通信服务</span><span>相机与公共状态可读 · 控制 API 需要令牌 · 不自动恢复运动</span></footer>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const driveButtons = [...document.querySelectorAll('[data-axis]')];
+const jointButtons = [...document.querySelectorAll('[data-joint]')];
+let token = '', lease = null, sequence = 0, epoch = 0;
+let state = null, connected = false, acquiring = false, motionBusy = false, armBusy = false;
+let heartbeatTimer, velocityTimer, hold = null;
+let cameraTimer, cameraController, cameraURL = null, cameraEpoch = 0;
+const phaseLabels = {disarmed: '未准备', preparing: '准备中', ready: '已准备', moving: '正在发送运动指令', stopping: '停止中', error: '故障锁定'};
+
+function notice(message) { $('notice').textContent = message; }
+function render() {
+  const dog = state?.dog || {}, arm = state?.arm || {};
+  const usable = Boolean(token && connected && state && state.mode !== 'disabled' && !state.estop);
+  $('connection').textContent = connected ? '● 服务在线' : '○ 服务离线';
+  $('mode').textContent = ({simulation: '模拟模式', hardware: '硬件模式', disabled: '控制已禁用'})[state?.mode] || '等待状态';
+  $('auth-state').textContent = token ? '令牌已设置' : '未设置令牌';
+  $('owner-state').textContent = lease ? '本页持有控制权' : acquiring ? '正在申请…' : state?.lease_active ? '服务端控制权已占用' : '尚未获取控制权';
+  $('lease-detail').textContent = lease ? '心跳已启用；松开移动按钮后释放控制权。' : '需要手动获取；断线、停止或失焦后不会自动恢复。';
+  $('acquire').disabled = !usable || Boolean(lease) || acquiring || Boolean(state?.lease_active);
+  $('release').disabled = !lease;
+  $('estop').disabled = !token;
+  $('reset').disabled = !token || !(state?.estop || dog.error);
+  $('dog-stop').disabled = !token;
+  $('stand').disabled = !usable || !lease || motionBusy || Boolean(hold) || ['preparing', 'stopping', 'error', 'ready', 'moving'].includes(dog.phase);
+  $('dog-phase').textContent = state?.estop ? '软件急停已锁定' : phaseLabels[dog.phase] || '等待状态';
+  for (const button of driveButtons) button.disabled = !usable || !lease || motionBusy || !['ready', 'moving'].includes(dog.phase) || Boolean(hold && hold.button !== button);
+  for (const button of jointButtons) button.disabled = !usable || !lease || motionBusy || Boolean(hold) || !arm.motion_enabled || state?.mode !== 'simulation';
+  $('arm-state').disabled = !token || armBusy;
+  $('arm-reconnect').disabled = !token || armBusy;
+  const limits = dog.limits || {};
+  if (state) $('dog-limits').textContent = `服务端速度上限：|vx| ≤ ${limits.vx ?? '—'} m/s · |vy| ≤ ${limits.vy ?? '—'} m/s · |yaw| ≤ ${limits.yaw ?? '—'} rad/s`;
+  const velocity = dog.velocity || {};
+  $('dog-velocity').textContent = `最后接受的速度指令：vx ${velocity.vx ?? '—'} · vy ${velocity.vy ?? '—'} · yaw ${velocity.yaw ?? '—'}`;
+  $('arm-mode').textContent = arm.simulated ? '模拟目标角度' : '硬件只读';
+  $('arm-reason').textContent = arm.simulated ? '模拟模式：点动仅更新模拟目标，不连接机械臂。' : '硬件运动锁定：' + (arm.reason || '当前 R5 保持验证未通过，不允许硬件运动。');
+  if (arm.simulated) renderArm(arm);
+}
+function updateState(value) {
+  value = value?.status || value;
+  if (value && value.mode) { state = value; connected = true; render(); }
+}
+function renderArm(arm) {
+  const positions = arm.position_deg || {};
+  for (const joint of ['b', 's', 'e', 'w', 'h']) {
+    const value = positions[joint];
+    $('joint-' + joint).textContent = Number.isFinite(value) ? value.toFixed(1) : '未知';
+  }
+  $('arm-caption').textContent = arm.simulated ? '模拟目标角度 · 不代表实体机械臂位置' : arm.observed ? '刚读取的硬件反馈 · ' + new Date().toLocaleTimeString() : '等待显式读取硬件反馈';
+}
+async function api(action, body, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeout || 1500);
+  const headers = {Accept: 'application/json'};
+  if (body !== undefined) { headers['Content-Type'] = 'application/json'; headers.Authorization = 'Bearer ' + (options.token ?? token); }
+  try {
+    const response = await fetch('/api/' + action, {method: body === undefined ? 'GET' : 'POST', headers,
+      body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', redirect: 'error',
+      signal: controller.signal, keepalive: Boolean(options.keepalive)});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data?.error || 'HTTP ' + response.status);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('服务端返回格式错误');
+    return data;
+  } finally { clearTimeout(timer); }
+}
+function clearLocalControl() {
+  epoch++;
+  lease = null; acquiring = false; motionBusy = false;
+  clearTimeout(heartbeatTimer); clearTimeout(velocityTimer);
+  if (hold) hold.button.classList.remove('held');
+  hold = null;
+  render();
+}
+function fail(error) {
+  const previous = lease, auth = token;
+  clearLocalControl();
+  notice('请求失败，已停止本页控制：' + (error.message || String(error)) + '。检查连接后手动获取控制权。');
+  // One best-effort stop only. Failed requests never restart motion or heartbeats.
+  if (previous && auth) api('dog/stop', {lease: previous}, {token: auth, keepalive: true}).catch(() => {});
+}
+async function stop(action = 'dog/stop', message = '已请求停止并释放控制权；再次移动需要获取控制权并站立准备。') {
+  const previous = lease, auth = token;
+  clearLocalControl();
+  const stamp = epoch;
+  notice(message);
+  if (!auth || (action === 'control/release' && !previous)) return;
+  const body = previous && ['dog/stop', 'control/release'].includes(action) ? {lease: previous} : {};
+  try { const data = await api(action, body, {token: auth, keepalive: true}); if (epoch === stamp) updateState(data); }
+  catch (error) { if (epoch === stamp) notice('停止请求失败：' + error.message + '。本页已停止续发；请使用物理停止手段。'); }
+}
+function startHeartbeat(stamp) {
+  heartbeatTimer = setTimeout(async () => {
+    if (stamp !== epoch || !lease) return;
+    try {
+      const data = await api('control/heartbeat', {lease});
+      if (stamp !== epoch || !lease) return;
+      updateState(data);
+      startHeartbeat(stamp);
+    } catch (error) { if (stamp === epoch) fail(error); }
+  }, 450);
+}
+async function acquire() {
+  if (lease || acquiring || !token) return;
+  acquiring = true; render();
+  const stamp = epoch, auth = token;
+  try {
+    const data = await api('control/acquire', {owner: 'browser-console'}, {token: auth});
+    if (typeof data.lease !== 'string' || !data.lease) throw new Error('未收到有效控制权');
+    if (stamp !== epoch || document.hidden) {
+      // A response that arrives after blur/release must not resurrect ownership.
+      api('control/release', {lease: data.lease}, {token: auth, keepalive: true}).catch(() => {});
+      return;
+    }
+    lease = data.lease; sequence = 0; acquiring = false;
+    updateState(data); startHeartbeat(stamp);
+    notice('已获取控制权。机器狗需要先点击「站立准备」；模拟机械臂可直接点动。');
+  } catch (error) { if (stamp === epoch) fail(error); }
+  finally { if (stamp === epoch) { acquiring = false; render(); } }
+}
+async function owned(action, values = {}) {
+  if (!lease || motionBusy || hold) return;
+  const stamp = epoch;
+  motionBusy = true; render();
+  try {
+    const data = await api(action, {...values, lease, seq: ++sequence});
+    if (stamp === epoch) { updateState(data); if (action === 'dog/stand') notice('站立准备已接受，请等待「已准备」。UDP 无反馈，实体站姿需要现场确认。'); }
+  } catch (error) { if (stamp === epoch) fail(error); }
+  finally { if (stamp === epoch) { motionBusy = false; render(); } }
+}
+async function renewVelocity(active) {
+  if (hold !== active || epoch !== active.epoch || !lease) return;
+  try {
+    const data = await api('dog/velocity', {lease, seq: ++sequence, vx: 0, vy: 0, yaw: 0,
+      [active.button.dataset.axis]: Number(active.button.dataset.value), ttl: 0.4});
+    if (hold !== active || epoch !== active.epoch || !lease) return;
+    updateState(data);
+    velocityTimer = setTimeout(() => renewVelocity(active), 100);
+  } catch (error) { if (hold === active && epoch === active.epoch) fail(error); }
+}
+function beginHold(button, pointerId, key) {
+  if (button.disabled || hold || !lease || document.hidden) return;
+  hold = {button, pointerId, key, epoch};
+  button.classList.add('held'); render();
+  notice('按住期间续发速度指令；松开立即请求停止并释放控制权。');
+  renewVelocity(hold);
+}
+for (const button of driveButtons) {
+  button.addEventListener('pointerdown', event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    beginHold(button, event.pointerId);
+    if (hold?.button === button) { try { button.setPointerCapture(event.pointerId); } catch (_) {} }
+  });
+  button.addEventListener('keydown', event => {
+    if (![' ', 'Enter'].includes(event.key)) return;
+    event.preventDefault();
+    if (!event.repeat) beginHold(button, undefined, event.key);
+  });
+  button.addEventListener('lostpointercapture', () => { if (hold?.button === button) stop(); });
+  button.addEventListener('blur', () => { if (hold?.button === button) stop(); });
+  button.addEventListener('contextmenu', event => event.preventDefault());
+}
+window.addEventListener('pointerup', event => { if (hold && hold.pointerId === event.pointerId) stop(); });
+window.addEventListener('pointercancel', () => { if (hold) stop(); });
+window.addEventListener('keyup', event => { if (hold?.key === event.key) { event.preventDefault(); stop(); } });
+function suspend() { if (lease || acquiring || hold) stop('dog/stop', '页面失焦或离开，已停止续发并请求停止。再次操作请手动获取控制权。'); }
+window.addEventListener('blur', suspend);
+window.addEventListener('pagehide', () => { suspend(); clearCamera('页面已离开'); });
+$('save-token').addEventListener('click', () => {
+  const next = $('token').value.trim();
+  if (!next || /[^\x21-\x7e]/.test(next)) { notice('请输入有效的 ASCII 访问令牌。'); return; }
+  if (lease || acquiring) stop('dog/stop', '更换令牌前已请求停止；请重新获取控制权。');
+  token = next; $('token').value = ''; render();
+  notice('令牌已存入本页内存。点击「获取控制权」开始。');
+});
+$('token').addEventListener('keydown', event => { if (event.key === 'Enter') $('save-token').click(); });
+$('acquire').addEventListener('click', acquire);
+$('release').addEventListener('click', () => stop('control/release', '已请求释放控制权，所有续发已停止。'));
+$('dog-stop').addEventListener('click', () => stop());
+$('estop').addEventListener('click', () => stop('control/estop', '已请求锁定软件急停；实体停止状态仍需现场确认。'));
+$('reset').addEventListener('click', () => stop('control/reset', '已请求复位软件急停。请手动获取控制权；复位不会启动运动。'));
+$('stand').addEventListener('click', () => owned('dog/stand'));
+for (const button of jointButtons) button.addEventListener('click', () => owned('arm/jog', {joint: button.dataset.joint, delta: Number(button.dataset.delta), speed: 2}));
+async function readArm(action) {
+  if (!token || armBusy) return;
+  const stamp = epoch, requestedLease = lease;
+  armBusy = true; render();
+  try {
+    const data = await api(action, {}, {timeout: 6000});
+    if (stamp !== epoch || requestedLease !== lease) return;
+    renderArm(data.arm || data);
+    notice(action === 'arm/state' ? '机械臂状态已读取。' : '机械臂已显式重连；请手动读取反馈。');
+  } catch (error) {
+    if (stamp !== epoch || requestedLease !== lease) return;
+    for (const joint of ['b', 's', 'e', 'w', 'h']) $('joint-' + joint).textContent = '未知';
+    fail(error);
+  }
+  finally { armBusy = false; render(); }
+}
+$('arm-state').addEventListener('click', () => readArm('arm/state'));
+$('arm-reconnect').addEventListener('click', () => readArm('arm/reconnect'));
+async function pollStatus() {
+  const stamp = epoch, requestedLease = lease;
+  try {
+    const data = await api('status');
+    // A snapshot begun before acquire/release describes the previous session.
+    if (stamp !== epoch || requestedLease !== lease) return;
+    updateState(data);
+    if (lease && (!data.lease_active || data.estop)) fail(new Error('服务端控制权已失效'));
+  } catch (error) {
+    if (stamp !== epoch || requestedLease !== lease) return;
+    connected = false;
+    if (lease || acquiring) fail(error);
+    render();
+  } finally { setTimeout(pollStatus, 800); }
+}
+function clearCamera(message) {
+  cameraEpoch++; clearTimeout(cameraTimer);
+  if (cameraController) cameraController.abort();
+  $('camera-frame').hidden = true; $('camera-frame').removeAttribute('src');
+  if (cameraURL) URL.revokeObjectURL(cameraURL);
+  cameraURL = null; $('camera-message').hidden = false;
+  $('camera-message').textContent = message; $('camera-time').textContent = '—';
+}
+async function pollCamera() {
+  if (document.hidden) return;
+  const stamp = cameraEpoch;
+  const controller = cameraController = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2000);
+  try {
+    const response = await fetch('/snapshot.jpg', {cache: 'no-store', signal: controller.signal});
+    if (!response.ok) throw new Error('相机暂不可用');
+    const blob = await response.blob();
+    if (stamp !== cameraEpoch || document.hidden) return;
+    const previous = cameraURL;
+    cameraURL = URL.createObjectURL(blob);
+    $('camera-frame').src = cameraURL;
+    await $('camera-frame').decode();
+    if (previous) URL.revokeObjectURL(previous);
+    if (stamp !== cameraEpoch || document.hidden) return;
+    $('camera-frame').hidden = false; $('camera-message').hidden = true;
+    $('camera-time').textContent = new Date().toLocaleTimeString();
+  } catch (_) {
+    if (stamp === cameraEpoch) clearCamera('相机暂不可用 · 已清除过期画面');
+  } finally {
+    clearTimeout(timer);
+    if (!document.hidden) cameraTimer = setTimeout(pollCamera, 500);
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { suspend(); clearCamera('页面已隐藏，预览已暂停'); }
+  else pollCamera();
+});
+render(); pollStatus(); pollCamera();
+</script>
+</body>
+</html>

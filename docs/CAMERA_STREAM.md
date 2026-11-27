@@ -12,7 +12,7 @@ py -3 src/client.py deploy user@192.168.1.100
 py -3 src/client.py view user@192.168.1.100 --backend realsense
 ```
 
-Deployment refuses symbolic links in source paths and, on Windows, all reparse points including junctions. Use a normal local checkout if a redirected or cloud-managed folder is rejected. Capture files are read before SSH login and only the two runtime assets are uploaded.
+Deployment refuses symbolic links in source paths and, on Windows, all reparse points including junctions. Use a normal local checkout if a redirected or cloud-managed folder is rejected. Capture files are read before SSH login and only allowlisted runtime assets are uploaded. The service now also provides the [development control API and console](DEV_SERVER.md); camera endpoints remain compatible.
 
 ## Connect to the robot
 
@@ -73,7 +73,7 @@ python3 src/client.py view user@192.168.1.100 --direct
 
 The `--jump` and `--direct` options both bypass automatic selection. You cannot use them together. The `--direct` option adds no automatic jump but still uses proxies from the existing SSH configuration. The `--jump` option accepts one SSH alias, hostname, or `user@IPv4` address. It uses OpenSSH `-J` for SSH and SCP.
 
-The jump host only forwards the SSH connection. Camera commands still run on the perception host. The launcher does not start a motion controller. Both hosts require authentication and host key checks. The launcher does not save passwords or change routes or SSH configuration.
+The jump host only forwards the SSH connection. Camera commands still run on the perception host. Control defaults to simulation; hardware communication requires the explicit settings in the [Dev Server guide](DEV_SERVER.md). Both hosts require authentication and host key checks. The launcher does not save passwords or change routes or SSH configuration.
 
 The launcher selects the route each time a command starts. After a USB or Wi-Fi connection change, stop the preview. Then run the command again. Offline route samples cover both network conditions. Each condition still requires a test on the real network.
 
@@ -108,7 +108,7 @@ python3 src/client.py deploy user@192.168.1.100
 python3 src/client.py view user@192.168.1.100 --backend realsense
 ```
 
-The `deploy` command uploads only `src/server.py` and `src/web/camera.html` to `~/lite3-camera-server/` and its `web/` subdirectory on the perception host, then runs a remote installer to enable the [systemd boot service](#boot-service). It rejects symlinked source paths and does not copy unrelated files or Git-ignored content. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. Use `deploy --width`, `--height`, `--fps`, and `--quality` to save boot settings. If multiple RealSense cameras are connected, use `deploy --serial` to select one. Matching options on `view` apply only if it starts a new detached server.
+The `deploy` command uploads the server, control modules, fixed arm helper and viewer pages to `~/lite3-camera-server/` and its `web/` and `remote/` subdirectories on the perception host, then runs a remote installer to enable the [systemd boot service](#boot-service). It rejects symlinked source paths and does not copy unrelated files or Git-ignored content. Defaults are 640 x 480 pixels, 15 fps, and JPEG quality 70. Use `deploy --width`, `--height`, `--fps`, and `--quality` to save boot settings. If multiple RealSense cameras are connected, use `deploy --serial` to select one. Matching options on `view` apply only if it starts a new detached server.
 
 To show a depth preview beside RGB, add `--depth`. The preview uses false colors. Do not use these colors as distance measurements.
 
@@ -167,7 +167,7 @@ Press Ctrl+C (or Ctrl+Break on Windows) to close just that client's tunnel. Othe
 
 Each `deploy` installs `/etc/systemd/system/lite3-camera-server.service`, reloads systemd, and enables it for every boot. Installation needs a running systemd host and root or sudo access. The SSH terminal allows a sudo password prompt. The service runs as the deployment account, with its home directory, camera permissions, and the Python interpreter found during deployment. Dependencies must be installed for that interpreter and account; the service does not source interactive shell startup files.
 
-Deployment leaves current processes running. On first installation, the service starts at the next boot; on redeployment, the new code and boot settings apply at the next boot or explicit restart. There is one service per host: deploying again replaces its configured account, backend, port, and capture options. It does not remember camera selections made in the browser. ROS `web_video_server` is not managed by this service.
+Deployment leaves current processes running. On first installation, the service starts at the next boot; on redeployment, the new code and boot settings apply at the next boot or explicit restart. There is one service per host: deploying again replaces its configured account, backend, port, capture options and control configuration. Include the desired control flags on each deployment; omitted flags return to the default simulation mode. It does not remember camera selections made in the browser. ROS `web_video_server` is not managed by this service.
 
 For a stable V4L2 boot device, use the camera's confirmed RGB `/dev/v4l/by-id/NAME` link instead of a `/dev/videoN` number that can change after reboot:
 
