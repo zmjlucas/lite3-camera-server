@@ -1,6 +1,6 @@
 # Lite3 Dev Server
 
-[![CI](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml/badge.svg)](https://github.com/zmjlucas/lite3-camera-server/actions/workflows/ci.yml)
+[![CI](https://github.com/zmjlucas/lite3-dev-server/actions/workflows/ci.yml/badge.svg)](https://github.com/zmjlucas/lite3-dev-server/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Share cameras and bounded robot communications through one development service. The browser console and Python SDK offer Lite3 UDP control, simulation and R5 serial feedback. RealSense/V4L2 camera streaming and existing SSH workflows remain supported; ROS mode remains camera-only.
@@ -18,8 +18,8 @@ The launcher requires Python 3.8 or later. A robot connection also requires Open
 The client runs natively on Windows 10/11 and macOS. The perception host still runs Linux with Bash and its camera dependencies. Windows does not need WSL, Git Bash, Make, or ROS to run the client.
 
 ```bash
-git clone https://github.com/zmjlucas/lite3-camera-server.git
-cd lite3-camera-server
+git clone https://github.com/zmjlucas/lite3-dev-server.git
+cd lite3-dev-server
 python3 src/client.py --help
 ```
 
@@ -28,8 +28,8 @@ Run the Python entry points in `src/` directly. You do not need `pip install`. S
 On Windows, use PowerShell and replace `python3` in the examples with `py -3` (or `python` if that is your Python 3 command):
 
 ```powershell
-git clone https://github.com/zmjlucas/lite3-camera-server.git
-cd lite3-camera-server
+git clone https://github.com/zmjlucas/lite3-dev-server.git
+cd lite3-dev-server
 py -3 src/client.py --help
 Get-Command ssh, scp
 py -3 src/client.py doctor user@192.168.1.100
