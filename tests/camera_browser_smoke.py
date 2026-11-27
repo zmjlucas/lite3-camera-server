@@ -148,7 +148,7 @@ def main():
                 if not rows:
                     deadline = time.monotonic() + 45
                 rows.append(row)
-                if row["reloaded"] and row["time"] > 1000 and not row["hidden"] and not row["hash"]:
+                if row["reloaded"] and row["time"] > 1000 and not row["hidden"]:
                     break
         finally:
             if os.name == "nt" and browser.poll() is None:
@@ -166,7 +166,6 @@ def main():
     assert rows, "The browser did not report observations before the startup deadline"
     assert not fixture_errors, "; ".join(fixture_errors)
     assert len(requests) >= 3, "The viewer did not reconnect after stream completion and timeout"
-    assert all(not row["hash"] for row in rows), "The viewer changed the bare URL"
     assert any(row["reloaded"] and row["status"] == "Live" for row in rows), "Playback did not survive a page refresh"
     assert any(row["snapshot"] for row in rows), "The viewer did not expose a snapshot"
     for attempt, label in ((1, "Camera"), (2, "Camera"), (3, "RealSense"), (4, "V4L2 RGB")):

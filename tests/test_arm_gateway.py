@@ -9,12 +9,8 @@ import time
 import unittest
 from unittest import mock
 
-try:
-    from src import arm_gateway
-    from src.remote import arm_worker
-except ImportError:
-    arm_gateway = None
-    arm_worker = None
+from src import arm_gateway
+from src.remote import arm_worker
 
 
 STATE = {
@@ -91,7 +87,6 @@ def good_reply(request):
 @unittest.skipIf(os.name == "nt", "Hardware gateway requires POSIX pipe readiness; unsupported on Windows")
 class GatewayTests(unittest.TestCase):
     def setUp(self):
-        self.assertIsNotNone(arm_gateway, "read-only arm gateway is not implemented")
         self.processes = []
         self.gateways = []
 
@@ -291,9 +286,6 @@ def feedback(**updates):
 
 
 class WorkerTests(unittest.TestCase):
-    def setUp(self):
-        self.assertIsNotNone(arm_worker, "read-only arm worker is not implemented")
-
     def session(self, fake):
         serial_module = mock.Mock()
         serial_module.Serial.return_value = fake

@@ -32,7 +32,7 @@ function testView() {
     sourceErrors: document.getElementById('source-errors')?.textContent || '',
     unavailableOptions: select ? Array.from(select.options).filter(item => item.disabled && item.value).map(item => item.value) : [],
     refreshDisabled: document.getElementById('refresh-sources').disabled,
-    hash: location.hash, aborted: testAbortedStreams, abortedCatalogs: testAbortedCatalogs,
+    aborted: testAbortedStreams, abortedCatalogs: testAbortedCatalogs,
     streamSource: testStreamSource, retryVisible: !!retry && !retry.hidden,
     retryDisabled: retry?.disabled};
 }

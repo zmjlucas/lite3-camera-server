@@ -6,10 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-try:
-    from src import control
-except ImportError:
-    control = None
+from src import control
 
 
 class Clock:
@@ -52,7 +49,6 @@ class DatagramSink:
 
 class ControlTests(unittest.TestCase):
     def setUp(self):
-        self.assertIsNotNone(control, 'The control core has not been implemented')
         self.clock = Clock()
         self.service = control.ControlService(clock=self.clock)
         self.addCleanup(self.service.close)

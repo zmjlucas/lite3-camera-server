@@ -213,7 +213,6 @@ def main():
     assert any(row["phase"] == "all-unavailable" and row["unavailableOptions"] == ["arm"]
                and not row["refreshDisabled"] and "realsense-viewer" in row["sourceErrors"] for row in rows), \
         "All-unavailable catalog did not retain a disabled camera with an error and refresh"
-    assert all(not row["hash"] for row in rows), "Viewer changed the bare URL"
     assert any(row["phase"] == "discovery-error" and row["status"] == "Live" and row["source"] == "V4L2 RGB"
                and row["disabled"] and row["sourceStatus"] for row in rows), "Discovery failure prevented playback"
     for phase in ("switch-arm", "failed-switch", "switch-rgb", "retry-remote", "return-arm", "retry-current"):

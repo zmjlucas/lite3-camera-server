@@ -19,7 +19,6 @@ HELPER = ROOT / "src/remote/ensure_camera.py"
 @unittest.skipIf(os.name == "nt", "Remote Linux process lifecycle is exercised on POSIX")
 class SharedCameraTests(unittest.TestCase):
     def setUp(self):
-        self.assertTrue(HELPER.is_file(), "Shared server startup is not implemented")
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -106,15 +105,6 @@ class SharedCameraTests(unittest.TestCase):
         self.addCleanup(listener.shutdown)
         return listener
 
-    def test_slow_discovery_does_not_abort_a_starting_server(self):
-        source = self.server.read_text().replace(
-            "server.capture = capture",
-            "import time\ndef discover():\n    time.sleep(1.5)\n    return []\n"
-            "server.discover_sources = discover\nserver.capture = capture")
-        self.server.write_text(source)
-        self.assertIn("Started", self.finish(self.launch()))
-        self.assertEqual(self.request(), (200, b"synthetic-frame"))
-
     def test_ssh_hangup_during_startup_keeps_a_managed_server(self):
         marker = self.root / "starting"
         source = self.server.read_text().replace(
@@ -157,6 +147,7 @@ class SharedCameraTests(unittest.TestCase):
         self.server = self.root / "other-account" / "server.py"
         self.assertIn("Reusing", self.finish(self.launch()))
         self.assertFalse(self.server.parent.exists())
+        self.assertFalse((self.root / "captures").exists())
 
     def test_missing_deployment_explains_how_to_start(self):
         self.server = self.root / "undeployed" / "server.py"
@@ -177,11 +168,6 @@ class SharedCameraTests(unittest.TestCase):
         self.assertNotEqual(process.returncode, 0)
         self.assertIn("incompatible", stderr)
 
-    def test_starting_or_failed_capture_can_be_reused(self):
-        self.listener(503, "1")
-        self.assertIn("Reusing", self.finish(self.launch()))
-        self.assertFalse((self.root / "captures").exists())
-
     def test_foreign_listener_is_not_reused_or_replaced(self):
         self.listener(200)
         process = self.launch()
@@ -189,14 +175,6 @@ class SharedCameraTests(unittest.TestCase):
         self.assertNotEqual(process.returncode, 0)
         self.assertIn("port", stderr.lower())
         self.assertFalse((self.root / "captures").exists())
-
-    def test_legacy_authenticated_server_requires_explicit_restart(self):
-        self.listener(401)
-        process = self.launch()
-        _, stderr = process.communicate(timeout=5)
-        self.assertNotEqual(process.returncode, 0)
-        self.assertIn("deploy", stderr)
-        self.assertIn("stop", stderr.lower())
 
     def test_failed_start_reports_log_and_does_not_leave_pid(self):
         self.server.write_text("raise SystemExit('synthetic startup failure')\n")

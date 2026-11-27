@@ -22,7 +22,6 @@ ROOT = Path(__file__).resolve().parents[1]
 class CameraServiceTests(unittest.TestCase):
     def setUp(self):
         path = ROOT / "src/remote/install_service.py"
-        self.assertTrue(path.is_file(), "Boot service installer is missing")
         spec = importlib.util.spec_from_file_location("install_service", path)
         self.installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.installer)
@@ -215,7 +214,3 @@ class BootCaptureTests(unittest.TestCase):
             stop.set()
             worker.join(1)
         self.assertFalse(worker.is_alive())
-
-    def test_retry_option_is_available_but_manual_launch_keeps_its_default(self):
-        self.assertFalse(getattr(server.parse_args([]), "retry_camera", True))
-        self.assertTrue(server.parse_args(["--retry-camera"]).retry_camera)

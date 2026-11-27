@@ -12,7 +12,7 @@ setInterval(async () => {
   if (navigating) return;
   const row = {
     time: performance.now(), hidden: document.getElementById('stream').hidden,
-    width: document.getElementById('stream').naturalWidth, hash: location.hash,
+    width: document.getElementById('stream').naturalWidth,
     reloaded: sessionStorage.getItem('test-reloaded') === 'yes',
     attempt: testStreamAttempt,
     snapshot: document.getElementById('snapshot').href.startsWith('blob:'),

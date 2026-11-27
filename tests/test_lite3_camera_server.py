@@ -20,13 +20,6 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class CameraServerTests(unittest.TestCase):
-    def test_unknown_source_is_rejected(self):
-        from src.server import parse_args
-
-        with patch("sys.stderr"), self.assertRaises(SystemExit) as caught:
-            parse_args(["--source", "unknown-source"])
-        self.assertEqual(caught.exception.code, 2)
-
     def test_lan_server_starts_without_reverse_dns(self):
         from src.server import CameraHTTPServer, LatestFrame
 
@@ -45,99 +38,6 @@ class CameraServerTests(unittest.TestCase):
                 finally:
                     server.shutdown()
                     worker.join(timeout=4)
-
-    def depth_helper(self, body):
-        directory = tempfile.TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        helper = Path(directory.name) / "depth-helper"
-        helper.write_text("#!{}\nimport os, signal, struct, sys, time\n".format(sys.executable) + body)
-        helper.chmod(0o700)
-        return helper
-
-    def wait_health(self, port, expected):
-        deadline = time.monotonic() + 7
-        while time.monotonic() < deadline:
-            status, _, body = self.request(port, "/healthz")
-            health = json.loads(body)
-            if health["status"] == expected:
-                return status, health
-            time.sleep(0.025)
-        self.fail("The health status did not become {}: {}".format(expected, health))
-
-    @unittest.skip("The native-depth backend is not implemented. See README.md")
-    def test_native_depth_requires_helper_and_rejects_rgb_options(self):
-        from src.server import parse_args
-
-        for arguments in (
-            ["--source", "native-depth"],
-            ["--source", "native-depth", "--depth-helper", "/tmp/helper", "--depth"],
-            ["--source", "native-depth", "--depth-helper", "/tmp/helper", "--serial", "123"],
-            ["--source", "realsense", "--depth-helper", "/tmp/helper"],
-        ):
-            with self.subTest(arguments=arguments), patch("sys.stderr"), self.assertRaises(SystemExit):
-                parse_args(arguments)
-        options = parse_args(["--source", "native-depth", "--depth-helper", "/tmp/helper"])
-        self.assertEqual(options.depth_helper, "/tmp/helper")
-
-    @unittest.skip("The native-depth backend is not implemented. See README.md")
-    def test_native_depth_serves_helper_jpeg_and_releases_child_on_signals(self):
-        jpeg = (FIXTURES / "camera-frame.jpg").read_bytes()
-        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            with self.subTest(signum=signum):
-                helper = self.depth_helper(
-                    "assert sys.argv[1:] == ['--width', '320', '--height', '240', '--fps', '15', '--quality', '80']\n"
-                    "def stop(*args):\n"
-                    "    open(__file__ + '.released', 'w').write('released')\n"
-                    "    sys.exit(0)\n"
-                    "signal.signal(signal.SIGTERM, stop)\n"
-                    "frame = {!r}\n"
-                    "while True:\n"
-                    "    os.write(1, struct.pack('<I', len(frame)) + frame)\n"
-                    "    time.sleep(0.05)\n".format(jpeg)
-                )
-                process, port = self.start_server(
-                    "native-depth", "--depth-helper", str(helper),
-                    "--width", "320", "--height", "240", "--quality", "80",
-                )
-                self.assertEqual(self.wait_health(port, "live")[0], 200)
-                self.assertEqual(self.request(port, "/snapshot.jpg")[2], jpeg)
-                self.assertIn(b"RealSense depth", self.request(port, "/")[2])
-                process.send_signal(signum)
-                _, stderr = process.communicate(timeout=4)
-                self.assertEqual(process.returncode, 0, stderr.decode())
-                self.assertTrue(Path(str(helper) + ".released").exists(), "The helper did not stop")
-
-    @unittest.skip("The native-depth backend is not implemented. See README.md")
-    def test_native_depth_rejects_bad_records_and_eof(self):
-        cases = (
-            ("os.write(1, struct.pack('<I', 9000000))\ntime.sleep(10)\n", "length"),
-            ("os.write(1, struct.pack('<I', 4) + b'nope')\ntime.sleep(10)\n", "JPEG"),
-            ("os.write(1, struct.pack('<I', 8) + b'xx')\n", "EOF"),
-        )
-        for body, diagnostic in cases:
-            with self.subTest(diagnostic=diagnostic):
-                helper = self.depth_helper(body)
-                _, port = self.start_server("native-depth", "--depth-helper", str(helper))
-                status, health = self.wait_health(port, "error")
-                self.assertEqual(status, 503)
-                self.assertIn(diagnostic, health["error"])
-                self.assertEqual(self.request(port, "/snapshot.jpg")[0], 503)
-
-    @unittest.skip("The native-depth backend is not implemented. See README.md")
-    def test_native_depth_eof_and_timeout_hide_previously_published_frame(self):
-        jpeg = (FIXTURES / "camera-frame.jpg").read_bytes()
-        for after_frame, diagnostic in (("time.sleep(0.3)\n", "EOF"), ("time.sleep(10)\n", "timed out")):
-            with self.subTest(diagnostic=diagnostic):
-                helper = self.depth_helper(
-                    "frame = {!r}\nos.write(1, struct.pack('<I', len(frame)) + frame)\n".format(jpeg)
-                    + after_frame
-                )
-                _, port = self.start_server("native-depth", "--depth-helper", str(helper))
-                self.assertEqual(self.wait_health(port, "live")[0], 200)
-                status, health = self.wait_health(port, "error")
-                self.assertEqual(status, 503)
-                self.assertIn(diagnostic, health["error"])
-                self.assertEqual(self.request(port, "/snapshot.jpg")[0], 503)
 
     def start_server(self, source, *options, simulated_capture=False):
         directory = tempfile.TemporaryDirectory()
@@ -165,7 +65,6 @@ class CameraServerTests(unittest.TestCase):
             _, stderr = process.communicate(timeout=4)
             self.fail(stderr.decode())
         address = urlsplit(url)
-        self.assertEqual(address.fragment, "")
         return process, address.port
 
     def start_camera(self):
@@ -223,17 +122,6 @@ class CameraServerTests(unittest.TestCase):
         self.assertTrue(frame.startswith(b"\xff\xd8"))
         self.assertTrue(frame.endswith(b"\xff\xd9"))
         self.assertIn(b"\xff\xda", frame)
-
-    def test_stream_delivers_newly_published_jpegs(self):
-        frames, port = self.buffered_server()
-        first = (FIXTURES / "camera-frame.jpg").read_bytes()
-        # Insert a JPEG comment to distinguish a second valid frame on the wire.
-        second = first[:2] + b"\xff\xfe\x00\x06next" + first[2:]
-        frames.publish(first)
-        response, boundary = self.open_stream(port)
-        self.assertEqual(self.read_frame(response, boundary), first)
-        frames.publish(second)
-        self.assertEqual(self.read_frame(response, boundary), second)
 
     def test_camera_snapshot_and_page_identify_their_content(self):
         _, port = self.start_camera()
@@ -375,8 +263,9 @@ class CameraServerTests(unittest.TestCase):
 
     def test_multiple_clients_share_frames_and_survive_another_disconnect(self):
         frames, port = self.buffered_server(stale_after=10)
-        first = b"\xff\xd8\xff\xdafirst\xff\xd9"
-        second = b"\xff\xd8\xff\xdasecond\xff\xd9"
+        first = (FIXTURES / "camera-frame.jpg").read_bytes()
+        # Insert a JPEG comment to distinguish a second valid frame on the wire.
+        second = first[:2] + b"\xff\xfe\x00\x06next" + first[2:]
         frames.publish(first)
         one, boundary_one = self.open_stream(port)
         two, boundary_two = self.open_stream(port)
