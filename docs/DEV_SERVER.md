@@ -13,20 +13,17 @@ The camera viewer remains at `/`; the control console is `/control`. Existing de
 | Perception host | `192.168.1.103` |
 | Motion control (UDP) | `192.168.1.120:43893` |
 
-Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The camera page is `http://192.168.1.103:8080/`, and the control console is `http://192.168.1.103:8080/control`. The control API uses a separate token.
+Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The camera page is `http://192.168.1.103:8080/`, and the control console is `http://192.168.1.103:8080/control`. All dev server endpoints are available without authentication. The server assumes a secure, trusted network with no public internet access. Do not add authentication to the dev server.
 
 ## Run locally in simulation
 
 Python 3.8+ is recommended for development. No camera, SSH, serial package or robot is needed:
 
 ```bash
-# Generate this once; keep the file outside the checkout.
-python3 -c 'import os,secrets; p=os.path.expanduser("~/.lite3-dev-token"); fd=os.open(p,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600); os.write(fd,(secrets.token_urlsafe(32)+"\n").encode()); os.close(fd)'
-python3 src/server.py --source none --bind 127.0.0.1 --port 8080 \
-  --control-token-file "$HOME/.lite3-dev-token"
+python3 src/server.py --source none --bind 127.0.0.1 --port 8080
 ```
 
-Open `http://127.0.0.1:8080/control`, enter the file's token and acquire control. Simulation is the default and never opens a motion UDP socket, SSH session or serial port. Without a configured token file, status and cameras work but control mutations are unavailable. Token files contain 32–128 URL-safe letters/digits/underscore/hyphen; POSIX file permissions must exclude group/other access. The browser retains the token only in page memory.
+Open `http://127.0.0.1:8080/control` and acquire control. Simulation is the default and never opens a motion UDP socket, SSH session or serial port. The console and SDK can use the API as soon as the server is ready.
 
 The console provides camera snapshots plus a link to the full streaming/source-selection viewer. It distinguishes simulated targets, sent commands and observed arm feedback. Camera failure does not disable the control API.
 
@@ -34,15 +31,15 @@ The console provides camera snapshots plus a link to the full streaming/source-s
 
 Existing camera commands remain valid. New deployment captures and uploads the server, control modules, fixed arm helper and both pages. It installs/enables the existing system service without interrupting the running process.
 
-Create a private token file on the perception host using the generation command above, then:
+Deploy from the checkout:
 
 ```bash
 python3 src/client.py deploy ysc@192.168.1.103 \
   --backend v4l2 --device /dev/v4l/by-id/CONFIRMED_RGB_CAMERA \
-  --control-mode simulation --control-token-file /home/ysc/.lite3-dev-token
+  --control-mode simulation
 ```
 
-Use the confirmed camera path in place of the example. Use `--backend none` for a service without camera capture. The token value is never uploaded or placed in systemd arguments. Once ready to replace the current process, use the existing service lifecycle:
+Use the confirmed camera path in place of the example. Use `--backend none` for a service without camera capture. Deployment writes the current launch options to the service unit. For an existing installation, deploy again and check local systemd overrides for obsolete options. Once ready to replace the current process, use the existing service lifecycle:
 
 ```bash
 sudo systemctl restart lite3-camera-server.service
@@ -62,9 +59,9 @@ Use `--jump ysc@192.168.2.1` if needed, or existing automatic macOS route select
 
 ## Hardware capabilities
 
-For deployment acceptance with **no motion output**, use `--control-mode readonly --control-token-file /absolute/private/file`. This mode provides real camera streams and explicit R5 feedback reads, but rejects every control/ownership/motion action and never creates a dog UDP socket, including on shutdown. Check `/api/status` reports `readonly` after explicitly restarting the service; a reused server keeps its old settings. Serial opening can still affect a controller's reset lines, so use the verified DTR/RTS configuration and an unoccupied device. The service needs access to the serial device group (on Ubuntu, a service-only `SupplementaryGroups=dialout` drop-in can provide it without changing the login account).
+For deployment acceptance with **no motion output**, use `--control-mode readonly`. This mode provides real camera streams and explicit R5 feedback reads, but rejects every control/ownership/motion action and never creates a dog UDP socket, including on shutdown. Check `/api/status` reports `readonly` after explicitly restarting the service; a reused server keeps its old settings. Serial opening can still affect a controller's reset lines, so use the verified DTR/RTS configuration and an unoccupied device. The service needs access to the serial device group (on Ubuntu, a service-only `SupplementaryGroups=dialout` drop-in can provide it without changing the login account).
 
-Real dog output requires `--control-mode hardware --control-token-file /absolute/private/file`. The default motion target is `192.168.1.120:43893`; use `--dog-host 192.168.1.120` to set the same host explicitly. The default serial device is `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`; `--arm-device` selects a confirmed serial node. The service account needs serial permissions and pySerial; the service does not run interactive sudo.
+Real dog output requires `--control-mode hardware`. The default motion target is `192.168.1.120:43893`; use `--dog-host 192.168.1.120` to set the same host explicitly. The default serial device is `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`; `--arm-device` selects a confirmed serial node. The service account needs serial permissions and pySerial; the service does not run interactive sudo.
 
 R5 is attached by USB to the perception host. Normally the server owns serial locally, avoiding per-command SSH. If the server runs on another Linux host and needs remote serial access to the perception host, configure `--arm-host ysc@192.168.1.103` with verified OpenSSH configuration/known hosts and noninteractive authentication. One fixed persistent helper handles serialized queries. Opening serial is explicit via arm state retrieval; no background scan or automatic reconnect opens it. A failed session requires explicit `arm/reconnect` before another read. DTR/RTS are cleared before opening; opening may still reset a controller, so confirm its behavior on the device. Exclusive serial locking does not prevent unrelated software that ignores locks.
 
@@ -100,14 +97,14 @@ Dog sends use the stock little-endian `<III` and `<IIId` formats. An independent
 
 ## HTTP contract
 
-Camera endpoints retain anonymous trusted-LAN access. `GET /api/status` is public and returns mode, latch, lease occupancy, dog phase, limits and arm capability. It never returns credentials or the lease ID. It includes an opaque `safety_revision`: pass the value observed by the operator to reset. Every emergency stop, newly latched transport fault and successful reset changes it, so a delayed reset cannot clear a newer latch. Every control POST requires `Authorization: Bearer TOKEN`, `Content-Type: application/json`, one bounded Content-Length and an object body. Body limit is 4096 bytes. Browser requests with an Origin must match the server origin. Credentials are not accepted in URLs. Use SSH/TLS on networks where bearer tokens could be observed.
+All camera and control endpoints use anonymous trusted-LAN access. `GET /api/status` is public and returns mode, latch, lease occupancy, dog phase, limits and arm capability. The lease ID is omitted. It includes an opaque `safety_revision`: pass the value observed by the operator to reset. Every emergency stop, newly latched transport fault and successful reset changes it, so a delayed reset cannot clear a newer latch. Every control POST requires `Content-Type: application/json`, one bounded Content-Length and an object body. Body limit is 4096 bytes. Browser requests with an Origin must match the server origin.
 
 | POST path | JSON body |
 | --- | --- |
 | `/api/control/acquire` | `{"owner":"my-script"}`; response includes the private `lease` |
 | `/api/control/heartbeat` | `{"lease":"..."}` |
 | `/api/control/release` | `{"lease":"..."}` |
-| `/api/control/estop` | `{}`; any authenticated operator can stop |
+| `/api/control/estop` | `{}`; any LAN client can stop |
 | `/api/control/reset` | `{"revision":"<observed safety_revision>"}`; stale revisions are rejected |
 | `/api/dog/stand` | `{"lease":"...","seq":1}` |
 | `/api/dog/velocity` | `{"lease":"...","seq":2,"vx":0.1,"vy":0,"yaw":0,"ttl":0.3}` |
@@ -116,19 +113,17 @@ Camera endpoints retain anonymous trusted-LAN access. `GET /api/status` is publi
 | `/api/arm/state` | `{}`; explicit hardware serial query or simulated state |
 | `/api/arm/reconnect` | `{}`; explicitly clear failed read session, lazy until next read |
 
-Success is HTTP 200; validation 400, auth 401, origin 403, missing action 404, ownership conflicts 409, too-large body 413, safety latch/capability block 423, transport/unavailable 503. Error bodies contain `error`. POST requests are never automatically retried. A transport failure can mean an operation was accepted but the response was lost; reacquire only after inspecting status and taking appropriate stop action.
+Success is HTTP 200; validation 400, origin 403, missing action 404, ownership conflicts 409, too-large body 413, safety latch/capability block 423, transport/unavailable 503. Error bodies contain `error`. POST requests are never automatically retried. A transport failure can mean an operation was accepted but the response was lost; reacquire only after inspecting status and taking appropriate stop action.
 
 ## Python scripts
 
 The SDK needs only the standard library. Put `src` on your module search path or import `src.dev_client` from the checkout. It retains a private lease and serializes motion requests with increasing sequence numbers. Reads, heartbeats and stop/estop use separate HTTP requests and can run concurrently; slow reads cannot block them. Requests have bounded timeouts, refuse redirects and never retry motion. Old responses/errors are scoped to their originating session; superseded acquire/motion calls raise `DevClientError`. It does not run an automatic heartbeat thread.
 
 ```python
-from pathlib import Path
 import time
 from src.dev_client import DevClient
 
-token = (Path.home() / '.lite3-dev-token').read_text().strip()
-with DevClient('http://127.0.0.1:8080', token) as robot:
+with DevClient('http://127.0.0.1:8080') as robot:
     robot.acquire('offline-demo')
     robot.stand()
     deadline = time.monotonic() + 6

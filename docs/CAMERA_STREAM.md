@@ -11,7 +11,7 @@ Run these commands from the repository root. All robot connection examples use t
 | Perception host | `192.168.1.103` |
 | Motion control (UDP) | `192.168.1.120:43893` |
 
-Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The control API uses a separate token.
+Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The camera and control APIs are available without authentication on the trusted LAN.
 
 Examples below use `python3` for macOS/Linux. In Windows PowerShell, replace it with `py -3` or your installed `python` command. No local Bash or WSL is required. Confirm `Get-Command ssh, scp` succeeds; otherwise install **OpenSSH Client** in Windows Optional Features and reopen the terminal. See [Microsoft's instructions](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse).
 
@@ -170,7 +170,7 @@ The RealSense/V4L2 server trusts the LAN and listens on all IPv4 interfaces (`0.
 
 Alternatively, run `view` on each client. It forwards that computer's `127.0.0.1:18080` to the perception host's `127.0.0.1:8080`. With `--no-open`, open the printed URL manually. Native clients reuse a listening boot service or detached server. If no server is listening, the first client starts a detached server. Camera selection and capture settings are shared. New `view` arguments do not reconfigure an existing server. Use different `--local-port` values for multiple launcher processes on one computer; clients on separate computers can all use the default local port.
 
-Press Ctrl+C (or Ctrl+Break on Windows) to close just that client's tunnel. Other clients keep watching, and the native server remains running even with no viewers. Force-ending the launcher in Task Manager bypasses tunnel cleanup. ROS mode retains its upstream authentication and foreground lifecycle: Ctrl+C also stops the ROS preview process it launched.
+Press Ctrl+C (or Ctrl+Break on Windows) to close just that client's tunnel. Other clients keep watching, and the native server remains running even with no viewers. Force-ending the launcher in Task Manager bypasses tunnel cleanup. ROS mode retains its foreground lifecycle: Ctrl+C also stops the ROS preview process it launched.
 
 ### Boot service
 

@@ -25,4 +25,4 @@ body:
     id: logs
     attributes:
       label: Logs and test conditions
-      description: Include relevant errors or authenticated /healthz output. Remove session links, Authorization headers, private host addresses and usernames, device serial numbers, ROS identifiers, and private paths. The documented robot defaults do not need to be removed. Do not attach unredacted camera images or hardware session logs. State whether the issue occurred in an offline test or with a real camera.
+      description: Include relevant errors or /healthz output. Remove private host addresses and usernames, device serial numbers, ROS identifiers, and private paths. The documented robot defaults do not need to be removed. Do not attach unredacted camera images or hardware session logs. State whether the issue occurred in an offline test or with a real camera.

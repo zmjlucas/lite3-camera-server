@@ -5,7 +5,7 @@
 
 Share cameras and bounded robot communications through one development service. The browser console and Python SDK offer Lite3 UDP control, simulation and R5 serial feedback. RealSense/V4L2 camera streaming and existing SSH workflows remain supported; ROS mode remains camera-only.
 
-**Start with the [Dev Server guide](docs/DEV_SERVER.md)** for simulation, control tokens, the `/control` console, API/SDK and deployment. Motion defaults to simulation; real dog output requires explicit hardware mode. R5 supports read-only hardware feedback and simulated jogs; hardware motion is disabled. Software stop cannot prove physical stopping.
+**Start with the [Dev Server guide](docs/DEV_SERVER.md)** for simulation, the `/control` console, API/SDK and deployment. Motion defaults to simulation; real dog output requires explicit hardware mode. R5 supports read-only hardware feedback and simulated jogs; hardware motion is disabled. Software stop cannot prove physical stopping.
 
 The launcher, simulation and tests use the Python standard library. R5 hardware feedback additionally needs pySerial on its host. The client does not need ROS.
 
@@ -22,7 +22,7 @@ Use these default robot connection values in code and examples:
 | Perception host | `192.168.1.103` |
 | Motion control (UDP) | `192.168.1.120:43893` |
 
-Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The control API uses a separate token.
+Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The dev server assumes a secure, trusted network with no public internet access. All endpoints work without authentication. Do not add authentication to the dev server.
 
 The launcher requires Python 3.8 or later. A robot connection also requires OpenSSH (`ssh` and `scp`) and network access to the perception host. Use a maintained Python version for development. Python 3.8 support is for older devices.
 
@@ -82,17 +82,17 @@ The service starts at every boot without an SSH login, using the deployment acco
 
 On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/client.py view ysc@192.168.1.103 --jump ysc@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
 
-The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://192.168.1.103:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. Camera viewing needs no session token or private link; control POSTs require the configured control token. The local tunnel still binds to `127.0.0.1`.
+The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://192.168.1.103:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. All camera and control endpoints are available to clients on the trusted LAN. The local tunnel still binds to `127.0.0.1`.
 
 Multiple clients can run `view` against the same native server and remote port. Clients reuse the boot service when it is listening; if no server is listening, the first client starts a detached shared server. Each client can disconnect independently. **Ctrl+C closes that client's tunnel; the native server keeps running**, even after all clients disconnect. All viewers share the selected camera and capture settings. Options such as `--depth`, `--device`, and resolution on `view` only apply when starting a new detached server. On one computer, use different `--local-port` values for separate launcher processes, or open multiple tabs on one tunnel.
 
-See [shared server lifecycle](docs/CAMERA_STREAM.md#shared-server-lifecycle) for stopping, restarting and updating the server. A manual foreground server can use `--bind 127.0.0.1` to listen only on loopback. Requests carrying an Origin header must still match the request's origin. ROS mode continues to use the upstream `web_video_server`, its authentication policy, and its foreground SSH lifecycle.
+See [shared server lifecycle](docs/CAMERA_STREAM.md#shared-server-lifecycle) for stopping, restarting and updating the server. A manual foreground server can use `--bind 127.0.0.1` to listen only on loopback. Requests carrying an Origin header must still match the request's origin. ROS mode continues to use the upstream `web_video_server` and its foreground SSH lifecycle.
 
 ## HTTP endpoints
 
 These endpoints apply to the RealSense and V4L2 servers. ROS mode uses the endpoints from `web_video_server`.
 
-The camera endpoints below remain available without credentials to clients that can reach the server. New control POST endpoints require a private bearer token; see the [control API](docs/DEV_SERVER.md#http-contract). The page's snapshot link downloads the latest displayed frame.
+The camera endpoints below and the [control API](docs/DEV_SERVER.md#http-contract) are available without credentials to clients that can reach the server. The page's snapshot link downloads the latest displayed frame.
 
 | Path | Response |
 | --- | --- |
