@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""View the Lite3 camera from Windows or macOS through SSH. The client does not need ROS."""
+"""Deploy and access the Lite3 development server through SSH."""
 import argparse
 import ipaddress
 import json
@@ -22,7 +22,11 @@ import webbrowser
 SERVER = Path(__file__).resolve().with_name("server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
 SERVER_BUNDLE = ((SERVER, "lite3-camera-server/"),
-                 (SERVER.parent / "web" / "camera.html", "lite3-camera-server/web/"))
+                 (SERVER.parent / "web" / "camera.html", "lite3-camera-server/web/"),
+                 (SERVER.parent / "control.py", "lite3-camera-server/"),
+                 (SERVER.parent / "arm_gateway.py", "lite3-camera-server/"),
+                 (SERVER.parent / "remote" / "arm_worker.py", "lite3-camera-server/remote/"),
+                 (SERVER.parent / "web" / "control.html", "lite3-camera-server/web/"))
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
 ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")
@@ -188,8 +192,19 @@ def camera_options(args):
     return values
 
 
+def control_options(args):
+    values = []
+    for name in ("control_mode", "control_token_file", "dog_host", "arm_device", "arm_host"):
+        value = getattr(args, name, None)
+        if value is not None:
+            values.extend(["--" + name.replace("_", "-"), value])
+    return values
+
+
 def real_script(args):
-    options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args)
+    options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args) + control_options(args)
+    if getattr(args, "console", False) or control_options(args):
+        options.insert(0, "--require-dev")
     return remote_shell("view_camera.sh", remote_source("ensure_camera.py"),
                         args.remote_port, *options)
 
@@ -278,7 +293,7 @@ def read_windows_deploy_source(path):
 
 
 def deploy(args, jump):
-    # Capture both files before SSH can wait for login or another process can change the checkout.
+    # Capture all allowlisted files before SSH can wait for login or another process can change the checkout.
     installer = remote_source("install_service.py")
     with tempfile.TemporaryDirectory(prefix="lite3-camera-deploy-") as directory:
         sources = []
@@ -294,7 +309,7 @@ def deploy(args, jump):
         scp_target = "[{}]".format(args.target) if len(args.target) == 1 else args.target
         commands.extend(["scp"] + ssh_options(jump) + [str(path), scp_target + ":" + destination]
                         for path, destination in sources)
-        options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args)
+        options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args) + control_options(args)
         # A remote terminal lets sudo prompt normally; no password crosses our Python process.
         commands.append(["ssh"] + ssh_options(jump) + ["-tt", args.target,
                         remote_shell("install_service.sh", installer, *options)])
@@ -373,7 +388,7 @@ def parser():
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
     for name, help_text in (("doctor", "check the host environment through SSH without changes"),
-                            ("deploy", "copy the camera server and enable its system boot service"),
+                            ("deploy", "copy the development server and enable its system boot service"),
                             ("view", "start or reuse the remote camera server and open an SSH tunnel")):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("target", type=target, help="SSH alias or user@perception-host")
@@ -386,11 +401,12 @@ def parser():
                              help="print commands without a connection. The launcher can read local routes.")
         if name == "view":
             command.add_argument("--local-port", type=bounded_int(1, 65535), default=18080)
+            command.add_argument("--console", action="store_true", help="open the development control console")
             command.add_argument("--no-open", action="store_true", help="do not open a browser automatically")
             command.add_argument("--ros-setup", help="absolute path to the ROS or workspace setup.bash on the perception host")
             command.add_argument("--topic", help="ROS image topic to show (default: show the topic list)")
         if name in ("view", "deploy"):
-            command.add_argument("--backend", choices=("ros", "realsense", "v4l2") if name == "view" else ("realsense", "v4l2"),
+            command.add_argument("--backend", choices=("ros", "realsense", "v4l2", "none") if name == "view" else ("realsense", "v4l2", "none"),
                                  default="ros" if name == "view" else "realsense",
                                  help="camera backend (deploy: boot service backend, default realsense)")
             command.add_argument("--remote-port", type=bounded_int(1, 65535), default=8080)
@@ -401,6 +417,11 @@ def parser():
             command.add_argument("--height", type=bounded_int(1, 2160))
             command.add_argument("--fps", type=bounded_int(1, 60))
             command.add_argument("--quality", type=bounded_int(1, 95))
+            command.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"))
+            command.add_argument("--control-token-file", help="existing private token file on the remote host")
+            command.add_argument("--dog-host", help="motion host IPv4")
+            command.add_argument("--arm-device", help="serial device on the arm host")
+            command.add_argument("--arm-host", type=target, help="optional SSH target from the server to the arm host")
     return result
 
 
@@ -408,6 +429,13 @@ def main(argv=None):
     cli = parser()
     args = cli.parse_args(argv)
     if args.command in ("view", "deploy"):
+        if args.backend == "ros" and (control_options(args) or getattr(args, "console", False)):
+            cli.error("Robot control and --console require a native backend (use --backend none without cameras)")
+        if args.control_mode in ("hardware", "readonly") and not args.control_token_file:
+            cli.error("Hardware and read-only modes require --control-token-file on the remote host")
+        if args.control_token_file and (not args.control_token_file.startswith("/") or
+                                       any(ord(c) < 32 for c in args.control_token_file)):
+            cli.error("--control-token-file must be an absolute remote path")
         if args.backend == "ros" and any((args.width, args.height, args.fps, args.quality)):
             cli.error("--width, --height, --fps, and --quality require --backend realsense or v4l2")
         if args.backend != "realsense" and (args.depth or args.serial):
@@ -433,6 +461,8 @@ def main(argv=None):
         if args.command == "deploy":
             return deploy(args, jump)
         url = "http://127.0.0.1:{}/".format(args.local_port)
+        if getattr(args, "console", False):
+            url += "control"
         if args.backend == "ros" and args.topic:
             url += "stream_viewer?" + urlencode({"topic": args.topic, "type": "mjpeg", "width": 640, "height": 480, "quality": 70}, safe="/")
         remote = ros_script(args) if args.backend == "ros" else real_script(args)

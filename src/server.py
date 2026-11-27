@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Share Lite3 camera frames with clients on a trusted local network."""
+"""Lite3 development server: shared cameras and bounded robot communications."""
 
 import argparse
 import contextlib
 import errno
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import re
 import signal
 import socket
 import struct
+import stat
 import sys
 import threading
 import time
@@ -21,7 +23,7 @@ from socketserver import TCPServer, ThreadingMixIn
 
 DEFAULT_BIND = "0.0.0.0"
 BOUNDARY = b"--frame\r\n"
-SOURCE_LABELS = {"realsense": "RealSense", "v4l2": "V4L2 RGB"}
+SOURCE_LABELS = {"realsense": "RealSense", "v4l2": "V4L2 RGB", "none": "No camera"}
 
 PAGE = (Path(__file__).resolve().parent / "web" / "camera.html").read_text(encoding="utf-8")
 
@@ -260,7 +262,11 @@ class CameraHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     timeout = 0.2
 
-    def __init__(self, port, frames, controller=None, bind=DEFAULT_BIND):
+    def __init__(self, port, frames, controller=None, bind=DEFAULT_BIND,
+                 control=None, control_token=None, arm_gateway=None):
+        self.control = control
+        self.control_token = control_token
+        self.arm_gateway = arm_gateway
         self._frames = frames
         self.controller = controller
         super().__init__((bind, port), CameraRequestHandler)
@@ -278,7 +284,7 @@ class CameraHTTPServer(ThreadingMixIn, HTTPServer):
 
 class CameraRequestHandler(BaseHTTPRequestHandler):
     def version_string(self):
-        return "Lite3Camera"
+        return "Lite3Dev"
 
     def setup(self):
         self.request.settimeout(2)
@@ -299,6 +305,14 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         if not self._same_origin():
             return
         path = self.path.partition("?")[0]
+        if path == "/api/status":
+            control = getattr(self.server, "control", None)
+            self._json(200, control.status() if control else {"mode": "disabled"})
+            return
+        if path == "/control":
+            page = (Path(__file__).resolve().parent / "web" / "control.html").read_bytes()
+            self._respond(200, "text/html; charset=utf-8", page)
+            return
         frames = self.server.frames
         if path == "/":
             source_label = SOURCE_LABELS[frames.source]
@@ -343,6 +357,9 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
     def _post(self):
         if not self._same_origin():
             return
+        if self.path.partition("?")[0].startswith("/api/"):
+            self._control_post()
+            return
         if self.path.partition("?")[0] != "/source":
             self._json(404, {"error": "Not found"})
             return
@@ -376,6 +393,74 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         else:
             self._json(200, catalog)
 
+    def _control_post(self):
+        token = getattr(self.server, "control_token", None)
+        credentials = self.headers.get_all("Authorization", [])
+        if (not token or len(credentials) != 1
+                or not hmac.compare_digest(credentials[0].encode("utf-8"),
+                                           ("Bearer " + token).encode("utf-8"))):
+            self._json(401, {"error": "A configured control bearer token is required"})
+            return
+        action = self.path.partition("?")[0][5:]
+        allowed = {"control/acquire", "control/heartbeat", "control/release", "control/estop",
+                   "control/reset", "dog/stand", "dog/velocity", "dog/stop", "arm/jog",
+                   "arm/state", "arm/reconnect"}
+        if action not in allowed:
+            self._json(404, {"error": "Unknown control operation"})
+            return
+        lengths = self.headers.get_all("Content-Length", [])
+        if (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,8}", lengths[0])
+                or self.headers.get_all("Transfer-Encoding")):
+            self._json(400, {"error": "One valid Content-Length is required"})
+            return
+        size = int(lengths[0])
+        if size > 4096:
+            self._json(413, {"error": "Control request is too large"})
+            return
+        if self.headers.get_content_type() != "application/json":
+            self._json(400, {"error": "Use application/json"})
+            return
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate JSON field")
+                result[key] = value
+            return result
+        def reject_constant(value):
+            raise ValueError("Non-finite JSON number")
+        try:
+            raw = self.rfile.read(size)
+            if len(raw) != size:
+                raise ValueError("Incomplete request body")
+            body = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object,
+                              parse_constant=reject_constant)
+            if not isinstance(body, dict):
+                raise ValueError("Expected a JSON object")
+            control = getattr(self.server, "control", None)
+            if control is None:
+                self._json(503, {"error": "Control is disabled"})
+                return
+            if action in ("arm/state", "arm/reconnect"):
+                if body:
+                    raise ValueError("This operation takes an empty object")
+                gateway = getattr(self.server, "arm_gateway", None)
+                if gateway is None:
+                    state = control.status()
+                    if state.get("mode") == "disabled":
+                        self._json(409, {"error": "Control is disabled"})
+                        return
+                    result = dict(state.get("arm", {}), observed=False)
+                else:
+                    result = gateway.read_state() if action == "arm/state" else gateway.reconnect()
+            else:
+                result = control.dispatch(action, body)
+            self._json(200, result)
+        except (ValueError, UnicodeError, RecursionError) as error:
+            self._json(getattr(error, "status", 400), {"error": str(error)})
+        except (OSError, RuntimeError) as error:
+            self._json(getattr(error, "status", 503), {"error": str(error)})
+
     def _json(self, status, value):
         self._respond(status, "application/json", json.dumps(value).encode())
 
@@ -383,6 +468,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("X-Lite3-Camera-Protocol", "1")
+        self.send_header("X-Lite3-Dev-Protocol", "1")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -681,6 +767,21 @@ class CaptureController:
             return True
 
 
+def load_control_token(path):
+    if not path:
+        return None
+    with open(path, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError("Control token must be a regular file")
+        if os.name != "nt" and info.st_mode & 0o077:
+            raise ValueError("Control token file must be private (chmod 600)")
+        token = handle.read(513).decode("ascii").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token):
+        raise ValueError("Control token must contain 32-128 URL-safe characters")
+    return token
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=SOURCE_LABELS, default="realsense")
@@ -695,7 +796,14 @@ def parse_args(argv):
     parser.add_argument("--retry-camera", action="store_true",
                         help="retry failed capture every 5 seconds (used by the boot service)")
     parser.add_argument("--device", help="V4L2 RGB device path (required for --source v4l2)")
+    parser.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"), default="simulation")
+    parser.add_argument("--control-token-file", help="private token file on this host (never a token value)")
+    parser.add_argument("--dog-host", default="192.168.1.120", help="motion host IPv4 for UDP port 43893")
+    parser.add_argument("--arm-device", default="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")
+    parser.add_argument("--arm-host", help="optional SSH host for the read-only serial gateway")
     options = parser.parse_args(argv)
+    if options.control_mode in ("hardware", "readonly") and not options.control_token_file:
+        parser.error("Hardware and read-only modes require --control-token-file")
     if options.source == "v4l2":
         if not re.fullmatch(r"/dev/(?:video[0-9]+|v4l/by-id/[A-Za-z0-9_][A-Za-z0-9_.:+-]*)", options.device or ""):
             parser.error("--source v4l2 requires --device /dev/videoN or /dev/v4l/by-id/NAME")
@@ -714,7 +822,22 @@ def parse_args(argv):
 
 def main(argv=None):
     options = parse_args(argv)
-    controller = CaptureController(options)
+    try:
+        if __package__:
+            from .control import ControlService
+            from .arm_gateway import ArmGateway
+        else:
+            from control import ControlService
+            from arm_gateway import ArmGateway
+        token = load_control_token(options.control_token_file)
+        control = ControlService(mode=options.control_mode, dog_host=options.dog_host)
+        arm_gateway = (ArmGateway(device=options.arm_device, host=options.arm_host)
+                       if options.control_mode in ("hardware", "readonly") else None)
+    except (OSError, ValueError) as error:
+        print("Invalid development server configuration: {}".format(error), file=sys.stderr)
+        return 2
+    controller = CaptureController(options) if options.source != "none" else None
+    frames = controller.frames if controller else LatestFrame("none")
     stopping = False
 
     def request_stop(_signum, _frame):
@@ -727,20 +850,26 @@ def main(argv=None):
             signal.signal(signum, request_stop)
 
     try:
-        server = CameraHTTPServer(options.port, controller.frames, controller, bind=options.bind)
+        server = CameraHTTPServer(options.port, frames, controller, bind=options.bind,
+                                  control=control, control_token=token, arm_gateway=arm_gateway)
     except OSError as error:
         print("Cannot listen on {}:{}: {}".format(options.bind, options.port, error), file=sys.stderr)
         return 1
 
     stopped = True
     with server:
-        controller.start()
+        control.start()
+        if controller:
+            controller.start()
         try:
             print("http://{}:{}/".format(options.bind, server.server_port), flush=True)
             while not stopping:
                 server.handle_request()
         finally:
-            stopped = controller.shutdown()
+            control.close()
+            if arm_gateway:
+                arm_gateway.close()
+            stopped = controller.shutdown() if controller else True
     if not stopped:
         print("Camera shutdown timed out", file=sys.stderr)
         return 1

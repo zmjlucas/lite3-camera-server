@@ -10,13 +10,15 @@ import sys
 import time
 
 
-def camera_available(port, starting=False):
+def camera_available(port, starting=False, require_dev=False):
     # Probe exactly this listener: no environment proxy or HTTP redirects.
     connection = HTTPConnection("127.0.0.1", port, timeout=1)
     try:
         connection.request("GET", "/healthz")
         response = connection.getresponse()
         if response.status in (200, 503) and response.getheader("X-Lite3-Camera-Protocol") == "1":
+            if require_dev and response.getheader("X-Lite3-Dev-Protocol") != "1":
+                raise RuntimeError("This listener is a camera-only server. Deploy and explicitly restart it to use robot control.")
             return True
         raise RuntimeError("The remote port is occupied by an incompatible server. "
                            "Stop the old server and run deploy, or select another --remote-port.")
@@ -37,10 +39,14 @@ def report(message):
 
 
 def ensure_server(server_path, port, options):
+    options = list(options)
+    require_dev = "--require-dev" in options
+    if require_dev:
+        options.remove("--require-dev")
     server_path = Path(server_path)
     # A sibling launcher may hold the lock while its new listener initializes.
-    if camera_available(port, starting=server_path.is_file()):
-        report("Reusing camera server on port {} (existing source and capture settings).".format(port))
+    if camera_available(port, starting=server_path.is_file(), require_dev=require_dev):
+        report("Reusing camera server on port {} (existing camera and control settings; launch options do not change the running server).".format(port))
         return
     if not server_path.is_file():
         raise RuntimeError("The camera server script is missing. Run deploy first.")
@@ -51,8 +57,8 @@ def ensure_server(server_path, port, options):
     # Serialize probe + spawn across simultaneous SSH clients; the camera opens only once.
     with (runtime / (str(port) + ".lock")).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if camera_available(port):
-            report("Reusing camera server on port {} (existing source and capture settings).".format(port))
+        if camera_available(port, require_dev=require_dev):
+            report("Reusing camera server on port {} (existing camera and control settings; launch options do not change the running server).".format(port))
             return
         # Check all interfaces, not just loopback, before detaching a new LAN listener.
         with socket.socket() as listener:
@@ -69,7 +75,7 @@ def ensure_server(server_path, port, options):
             pid_path.write_text(str(process.pid) + "\n")
             deadline = time.monotonic() + 15
             while process.poll() is None and time.monotonic() < deadline:
-                if camera_available(port, starting=True):
+                if camera_available(port, starting=True, require_dev=require_dev):
                     report("Started shared camera server on port {}. Log: {}. PID: {}.".format(
                         port, log_path, pid_path))
                     return

@@ -13,6 +13,8 @@ def camera_frames(options, stop):
 
 
 if __name__ == "__main__":
+    # Match the sibling-module search path of executing src/server.py directly.
+    sys.path.insert(0, str(Path(sys.argv[1]).resolve().parent))
     spec = importlib.util.spec_from_file_location("camera_server_under_test", sys.argv[1])
     server = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(server)

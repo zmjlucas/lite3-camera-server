@@ -31,7 +31,7 @@ def install_service(home, options):
     command = ["/usr/bin/env", sys.executable, "-u", str(server), "--retry-camera"] + options
     unit = "\n".join([
         "[Unit]",
-        "Description=Lite3 Camera Server",
+        "Description=Lite3 Dev Server",
         "After=network.target",
         "RequiresMountsFor=" + unit_quote(directory),
         "StartLimitIntervalSec=0",

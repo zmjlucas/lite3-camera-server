@@ -24,3 +24,4 @@ test:
 browser-test:
 	$(PYTHON) -B tests/camera_browser_smoke.py $(if $(BROWSER),--browser "$(BROWSER)")
 	$(PYTHON) -B tests/camera_sources_browser_smoke.py $(if $(BROWSER),--browser "$(BROWSER)")
+	$(PYTHON) -B tests/dev_browser_smoke.py $(if $(BROWSER),--browser "$(BROWSER)")
