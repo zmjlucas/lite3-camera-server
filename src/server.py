@@ -5,7 +5,6 @@ import argparse
 import contextlib
 import errno
 import hashlib
-import hmac
 import json
 import os
 from pathlib import Path
@@ -13,7 +12,6 @@ import re
 import signal
 import socket
 import struct
-import stat
 import sys
 import threading
 import time
@@ -263,9 +261,8 @@ class CameraHTTPServer(ThreadingMixIn, HTTPServer):
     timeout = 0.2
 
     def __init__(self, port, frames, controller=None, bind=DEFAULT_BIND,
-                 control=None, control_token=None, arm_gateway=None):
+                 control=None, arm_gateway=None):
         self.control = control
-        self.control_token = control_token
         self.arm_gateway = arm_gateway
         self._frames = frames
         self.controller = controller
@@ -394,13 +391,6 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             self._json(200, catalog)
 
     def _control_post(self):
-        token = getattr(self.server, "control_token", None)
-        credentials = self.headers.get_all("Authorization", [])
-        if (not token or len(credentials) != 1
-                or not hmac.compare_digest(credentials[0].encode("utf-8"),
-                                           ("Bearer " + token).encode("utf-8"))):
-            self._json(401, {"error": "A configured control bearer token is required"})
-            return
         action = self.path.partition("?")[0][5:]
         allowed = {"control/acquire", "control/heartbeat", "control/release", "control/estop",
                    "control/reset", "dog/stand", "dog/velocity", "dog/stop", "arm/jog",
@@ -767,21 +757,6 @@ class CaptureController:
             return True
 
 
-def load_control_token(path):
-    if not path:
-        return None
-    with open(path, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError("Control token must be a regular file")
-        if os.name != "nt" and info.st_mode & 0o077:
-            raise ValueError("Control token file must be private (chmod 600)")
-        token = handle.read(513).decode("ascii").strip()
-    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token):
-        raise ValueError("Control token must contain 32-128 URL-safe characters")
-    return token
-
-
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", choices=SOURCE_LABELS, default="realsense")
@@ -797,13 +772,10 @@ def parse_args(argv):
                         help="retry failed capture every 5 seconds (used by the boot service)")
     parser.add_argument("--device", help="V4L2 RGB device path (required for --source v4l2)")
     parser.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"), default="simulation")
-    parser.add_argument("--control-token-file", help="private token file on this host (never a token value)")
     parser.add_argument("--dog-host", default="192.168.1.120", help="motion host IPv4 for UDP port 43893")
     parser.add_argument("--arm-device", default="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")
     parser.add_argument("--arm-host", help="optional SSH host for the read-only serial gateway")
     options = parser.parse_args(argv)
-    if options.control_mode in ("hardware", "readonly") and not options.control_token_file:
-        parser.error("Hardware and read-only modes require --control-token-file")
     if options.source == "v4l2":
         if not re.fullmatch(r"/dev/(?:video[0-9]+|v4l/by-id/[A-Za-z0-9_][A-Za-z0-9_.:+-]*)", options.device or ""):
             parser.error("--source v4l2 requires --device /dev/videoN or /dev/v4l/by-id/NAME")
@@ -829,7 +801,6 @@ def main(argv=None):
         else:
             from control import ControlService
             from arm_gateway import ArmGateway
-        token = load_control_token(options.control_token_file)
         control = ControlService(mode=options.control_mode, dog_host=options.dog_host)
         arm_gateway = (ArmGateway(device=options.arm_device, host=options.arm_host)
                        if options.control_mode in ("hardware", "readonly") else None)
@@ -851,7 +822,7 @@ def main(argv=None):
 
     try:
         server = CameraHTTPServer(options.port, frames, controller, bind=options.bind,
-                                  control=control, control_token=token, arm_gateway=arm_gateway)
+                                  control=control, arm_gateway=arm_gateway)
     except OSError as error:
         print("Cannot listen on {}:{}: {}".format(options.bind, options.port, error), file=sys.stderr)
         return 1

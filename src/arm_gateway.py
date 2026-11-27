@@ -172,7 +172,7 @@ class ArmGateway:
 
     def reconnect(self):
         # Explicit reconnect resets the failure latch but remains lazy: the next
-        # authenticated read is the only action that may open serial or SSH.
+        # explicit read is the only action that may open serial or SSH.
         with self._lock:
             if self._closed:
                 raise ArmGatewayError("Arm gateway is closed.")

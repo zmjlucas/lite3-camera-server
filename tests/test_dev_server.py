@@ -1,16 +1,10 @@
 """Exercise the dev API through the real HTTP parser without hardware."""
 import io
 import json
-import os
-from pathlib import Path
-import tempfile
 from types import SimpleNamespace
 import unittest
 
 from src import server
-
-TOKEN = 'x' * 40
-
 
 class Connection:
     def __init__(self, data):
@@ -37,30 +31,22 @@ class DevHTTPTests(unittest.TestCase):
     def setUp(self):
         self.control = Control()
         self.gateway = SimpleNamespace(read_state=lambda: {'observed': True}, reconnect=lambda: {})
-    def request(self, method, path, body=b'{}', headers=(), token=TOKEN):
+    def request(self, method, path, body=b'{}', headers=()):
         fields = [('Host', 'localhost:8080'), ('Content-Type', 'application/json'),
                   ('Content-Length', str(len(body)))]
-        if token is not None:
-            fields.append(('Authorization', 'Bearer ' + token))
         fields.extend(headers)
         raw = '{} {} HTTP/1.1\r\n{}\r\n\r\n'.format(method, path, '\r\n'.join('{}: {}'.format(*x) for x in fields))
         conn = Connection(raw.encode() + body)
         frames = server.LatestFrame('realsense')
-        host = SimpleNamespace(frames=frames, control=self.control, control_token=TOKEN, arm_gateway=self.gateway)
+        host = SimpleNamespace(frames=frames, control=self.control, arm_gateway=self.gateway)
         server.CameraRequestHandler(conn, ('127.0.0.1', 1), host)
         head, value = bytes(conn.output).split(b'\r\n\r\n', 1)
         return int(head.split()[1]), value
-    def test_status_does_not_depend_on_camera_or_token(self):
-        code, value = self.request('GET', '/api/status', token=None)
+    def test_status_does_not_depend_on_camera(self):
+        code, value = self.request('GET', '/api/status')
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(value)['mode'], 'simulation')
-        self.assertNotIn(TOKEN.encode(), value)
-    def test_post_requires_exactly_one_bearer_header(self):
-        for token, headers in ((None, ()), ('bad', ()), (TOKEN, [('Authorization', 'Bearer '+TOKEN)])):
-            with self.subTest(token=token, headers=headers):
-                self.assertEqual(self.request('POST', '/api/control/acquire', token=token, headers=headers)[0], 401)
-        self.assertEqual(self.control.calls, [])
-    def test_valid_control_and_explicit_arm_read(self):
+    def test_trusted_lan_control_and_explicit_arm_read(self):
         self.assertEqual(self.request('POST', '/api/control/acquire', b'{"owner":"test"}')[0], 200)
         self.assertEqual(self.control.calls, [('control/acquire', {'owner':'test'})])
         self.assertEqual(json.loads(self.request('POST', '/api/arm/state')[1]), {'observed': True})
@@ -82,26 +68,11 @@ class DevHTTPTests(unittest.TestCase):
 
 
 class DevConfigTests(unittest.TestCase):
-    def test_camera_free_simulation_and_hardware_requires_credentials(self):
+    def test_camera_free_simulation_and_explicit_hardware_mode(self):
         options = server.parse_args(['--source','none'])
         self.assertEqual(options.control_mode,'simulation')
-        with self.assertRaises(SystemExit):
-            server.parse_args(['--control-mode','hardware'])
-    def test_private_token_file_validation(self):
-        self.assertTrue(hasattr(server, 'load_control_token'))
-        with tempfile.TemporaryDirectory() as directory:
-            p = Path(directory)/'token'
-            p.write_text(TOKEN+'\n')
-            p.chmod(0o600)
-            self.assertEqual(server.load_control_token(str(p)),TOKEN)
-            p.write_text('short')
-            with self.assertRaises(ValueError):
-                server.load_control_token(str(p))
-            if os.name != 'nt':
-                p.write_text(TOKEN)
-                p.chmod(0o644)
-                with self.assertRaises(ValueError):
-                    server.load_control_token(str(p))
+        options = server.parse_args(['--source','none','--control-mode','hardware'])
+        self.assertEqual(options.control_mode,'hardware')
 
 if __name__ == '__main__':
     unittest.main()

@@ -194,7 +194,7 @@ def camera_options(args):
 
 def control_options(args):
     values = []
-    for name in ("control_mode", "control_token_file", "dog_host", "arm_device", "arm_host"):
+    for name in ("control_mode", "dog_host", "arm_device", "arm_host"):
         value = getattr(args, name, None)
         if value is not None:
             values.extend(["--" + name.replace("_", "-"), value])
@@ -420,7 +420,6 @@ def parser():
             command.add_argument("--fps", type=bounded_int(1, 60))
             command.add_argument("--quality", type=bounded_int(1, 95))
             command.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"))
-            command.add_argument("--control-token-file", help="existing private token file on the remote host")
             command.add_argument("--dog-host", help="motion host IPv4 (server default: 192.168.1.120, UDP port 43893)")
             command.add_argument("--arm-device", help="serial device on the arm host")
             command.add_argument("--arm-host", type=target, help="optional SSH target for remote arm access: ysc@192.168.1.103")
@@ -433,11 +432,6 @@ def main(argv=None):
     if args.command in ("view", "deploy"):
         if args.backend == "ros" and (control_options(args) or getattr(args, "console", False)):
             cli.error("Robot control and --console require a native backend (use --backend none without cameras)")
-        if args.control_mode in ("hardware", "readonly") and not args.control_token_file:
-            cli.error("Hardware and read-only modes require --control-token-file on the remote host")
-        if args.control_token_file and (not args.control_token_file.startswith("/") or
-                                       any(ord(c) < 32 for c in args.control_token_file)):
-            cli.error("--control-token-file must be an absolute remote path")
         if args.backend == "ros" and any((args.width, args.height, args.fps, args.quality)):
             cli.error("--width, --height, --fps, and --quality require --backend realsense or v4l2")
         if args.backend != "realsense" and (args.depth or args.serial):

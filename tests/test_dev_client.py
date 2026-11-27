@@ -40,18 +40,19 @@ class DevClientTests(unittest.TestCase):
         patcher = patch('src.dev_client.build_opener', return_value=self.endpoint)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.client = DevClient('http://127.0.0.1:8080/', 'test-secret', timeout=0.75)
+        self.client = DevClient('http://127.0.0.1:8080/', timeout=0.75)
 
-    def test_status_has_no_credentials_and_posts_use_header_only(self):
+    def test_status_and_acquire_use_trusted_lan_api(self):
         self.client.status()
         request, body, timeout = self.endpoint.calls[-1]
         self.assertEqual(request.full_url, 'http://127.0.0.1:8080/api/status')
-        self.assertIsNone(request.get_header('Authorization'))
+        self.assertEqual(request.get_method(), 'GET')
         self.assertIsNone(body)
         self.assertEqual(timeout, 0.75)
         self.client.acquire('offline script')
         request, body, _ = self.endpoint.calls[-1]
-        self.assertEqual(request.get_header('Authorization'), 'Bearer test-secret')
+        self.assertEqual(request.get_method(), 'POST')
+        self.assertEqual(request.get_header('Content-type'), 'application/json')
         self.assertEqual(body, {'owner': 'offline script'})
         self.assertEqual(self.client.lease, 'opaque-lease')
 
@@ -126,7 +127,7 @@ class DevClientTests(unittest.TestCase):
         for read_name in ('arm_state', 'arm_reconnect', 'status'):
             for urgent_name in ('heartbeat', 'stop', 'estop'):
                 with self.subTest(read=read_name, urgent=urgent_name):
-                    self.client = DevClient('http://127.0.0.1:8080', 'test-secret')
+                    self.client = DevClient('http://127.0.0.1:8080')
                     self.endpoint = Endpoint()
                     self.client._opener = self.endpoint
                     self.client.acquire()
@@ -271,11 +272,11 @@ class DevClientTests(unittest.TestCase):
         self.assertTrue(request.full_url.endswith('/control/reset'))
         self.assertEqual(body, {'revision': 'observed-safety-revision'})
 
-    def test_read_and_reconnect_arm_are_explicit_authenticated_posts(self):
+    def test_read_and_reconnect_arm_are_explicit_posts(self):
         self.client.arm_state()
         self.client.arm_reconnect()
         self.assertEqual([row[0].full_url.rsplit('/', 1)[-1] for row in self.endpoint.calls], ['state', 'reconnect'])
-        self.assertTrue(all(row[0].get_header('Authorization') == 'Bearer test-secret' for row in self.endpoint.calls))
+        self.assertTrue(all(row[0].get_method() == 'POST' for row in self.endpoint.calls))
         self.assertTrue(all(row[1] == {} for row in self.endpoint.calls))
 
     def test_malformed_or_oversize_reply_never_keeps_ownership(self):
@@ -291,17 +292,14 @@ class DevClientTests(unittest.TestCase):
             self.client.velocity(vx=float('nan'))
         self.assertEqual(len(self.endpoint.calls), 1)
 
-    def test_unsafe_urls_tokens_and_unbounded_timeouts_are_rejected(self):
-        for url in ('file:///tmp/token', 'http://user:secret@host', 'http://host/?token=x',
-                    'http://host/#secret', 'http://host/control'):
+    def test_invalid_origins_and_unbounded_timeouts_are_rejected(self):
+        for url in ('file:///tmp/server', 'http://user:password@host', 'http://host/?mode=x',
+                    'http://host/#control', 'http://host/control'):
             with self.assertRaises(ValueError):
-                DevClient(url, 'token')
-        for token in ('', 'a\nb', 'a\rb'):
-            with self.assertRaises(ValueError):
-                DevClient('http://localhost', token)
+                DevClient(url)
         for timeout in (0, -1, float('inf'), float('nan'), 61, True):
             with self.assertRaises(ValueError):
-                DevClient('http://localhost', 'token', timeout=timeout)
+                DevClient('http://localhost', timeout=timeout)
 
 
 if __name__ == '__main__':

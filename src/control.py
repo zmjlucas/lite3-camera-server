@@ -184,7 +184,7 @@ class ControlService:
         return sequence
 
     def dispatch(self, action, body):
-        """Dispatch an allowlisted operation after the HTTP layer authenticates it."""
+        """Dispatch an allowlisted operation from a trusted LAN client."""
         with self._lock:
             self._expire_locked()
             if self._closed or self.mode in ('disabled', 'readonly'):

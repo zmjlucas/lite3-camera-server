@@ -37,9 +37,7 @@ OBSERVER = r"""
   let result;
   try {
     await until(() => $('connection').textContent.includes('在线'), 'status');
-    $('token').value = 'browser-test-secret'; $('save-token').click();
-    assert($('token').value === '', 'token entry must clear after applying');
-    assert(localStorage.length === 0 && sessionStorage.length === 0, 'token must stay out of storage');
+    assert(!$('acquire').disabled, 'control must be available when the server is online');
     await ready();
     press();
     await until(async () => await count('dog/velocity') === 1, 'first velocity');
@@ -111,6 +109,16 @@ OBSERVER = r"""
     assert($('owner-state').textContent.includes('本页持有'), 'previous-session arm error revoked new lease');
     assert(await count('dog/stop') === stopsBeforePreviousFailure, 'previous-session arm error stopped new lease');
     $('release').click();
+    await until(() => !$('acquire').disabled, 'released before status failure');
+    await fetch('/test/status-offline', {method: 'POST'});
+    await until(() => $('connection').textContent.includes('离线'), 'status unavailable');
+    const observerStops = await count('dog/stop');
+    $('dog-stop').click();
+    await until(async () => await count('dog/stop') === observerStops + 1, 'observer stop during status failure');
+    await until(() => $('connection').textContent.includes('离线'), 'status still unavailable');
+    const emergencyStops = await count('control/estop');
+    $('estop').click();
+    await until(async () => await count('control/estop') === emergencyStops + 1, 'emergency stop during status failure');
     result = {ok: true};
   } catch (error) { result = {ok: false, error: error.stack || String(error)}; }
   await fetch('/test/result', {method: 'POST', body: JSON.stringify(result)});
@@ -131,7 +139,8 @@ def main():
     calls = []
     lock = threading.Lock()
     fixture = {'lease': None, 'phase': 'disarmed', 'fail': False, 'delay_acquire': False,
-               'camera': True, 'dog_error': None, 'delay_status': False, 'delay_arm_failure': False}
+               'camera': True, 'dog_error': None, 'delay_status': False, 'delay_arm_failure': False,
+               'status_offline': False}
 
     def status():
         return {'mode': 'simulation', 'estop': False, 'safety_revision': 'fixture-current-latch', 'lease_active': fixture['lease'] is not None,
@@ -159,6 +168,9 @@ def main():
             if self.path == '/':
                 self.reply(200, page, 'text/html; charset=utf-8')
             elif self.path == '/api/status':
+                if fixture['status_offline']:
+                    self.reply(503, {'error': 'status unavailable'})
+                    return
                 value = status()
                 if fixture['delay_status']:
                     fixture['delay_status'] = False
@@ -192,10 +204,9 @@ def main():
                     fixture['delay_status'] = True
                 elif self.path == '/test/delay-arm-failure':
                     fixture['delay_arm_failure'] = True
+                elif self.path == '/test/status-offline':
+                    fixture['status_offline'] = True
                 self.reply(200, {})
-                return
-            if self.headers.get('Authorization') != 'Bearer browser-test-secret':
-                self.reply(401, {'error': 'wrong token'})
                 return
             action = self.path[len('/api/'):]
             with lock:

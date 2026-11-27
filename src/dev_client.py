@@ -22,7 +22,7 @@ class DevClientError(RuntimeError):
 
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
-        # A redirect must never forward the control token to a different service.
+        # Send robot commands only to the configured service.
         return None
 
 
@@ -38,27 +38,24 @@ class DevClient:
 
     MAX_RESPONSE = 65536
 
-    def __init__(self, url, token, timeout=2.0):
+    def __init__(self, url, timeout=2.0):
         parsed = urlsplit(url)
         if (parsed.scheme not in ('http', 'https') or not parsed.hostname or
                 parsed.username is not None or parsed.password is not None or
                 parsed.query or parsed.fragment or parsed.path not in ('', '/')):
             raise ValueError('url must be an HTTP(S) server origin without credentials, query or path')
-        if not isinstance(token, str) or not token.strip() or any(ord(char) < 33 or ord(char) > 126 for char in token):
-            raise ValueError('token must contain printable non-space ASCII characters')
         if (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or
                 not math.isfinite(timeout) or not 0 < timeout <= 10):
             raise ValueError('timeout must be finite, positive and at most 10 seconds')
         self.url = url.rstrip('/')
         self.timeout = float(timeout)
-        self._token = token
         self._lease = None
         self._sequence = 0
         self._epoch = 0
         self._acquiring = False
         self._lock = threading.RLock()
         self._motion_lock = threading.Lock()
-        # Avoid environment proxies and HTTP redirects carrying local credentials.
+        # Connect directly to the configured LAN service.
         self._opener = build_opener(ProxyHandler({}), _NoRedirect())
 
     @property
@@ -89,8 +86,7 @@ class DevClient:
             data = None
             if body is not None:
                 data = json.dumps(body, allow_nan=False).encode('utf-8')
-                headers.update({'Content-Type': 'application/json',
-                                'Authorization': 'Bearer ' + self._token})
+                headers['Content-Type'] = 'application/json'
             request = Request(self.url + '/api/' + action, data=data, headers=headers)
             with self._opener.open(request, timeout=self.timeout) as response:
                 raw = response.read(self.MAX_RESPONSE + 1)

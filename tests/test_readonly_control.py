@@ -25,14 +25,10 @@ class ReadOnlyTests(unittest.TestCase):
                 service.close()
             self.assertFalse(service._thread.is_alive())
             udp.assert_not_called()
-    def test_server_and_deployer_accept_only_authenticated_readonly_mode(self):
-        with self.assertRaises(SystemExit):
-            server.parse_args(['--control-mode','readonly'])
-        args = server.parse_args(['--source','none','--control-mode','readonly',
-                                  '--control-token-file','/tmp/private-token'])
+    def test_server_and_deployer_accept_readonly_mode(self):
+        args = server.parse_args(['--source','none','--control-mode','readonly'])
         self.assertEqual(args.control_mode,'readonly')
-        args = client.parser().parse_args(['deploy','robot','--control-mode','readonly',
-                                          '--control-token-file','/home/ysc/.dev-token'])
+        args = client.parser().parse_args(['deploy','robot','--control-mode','readonly'])
         self.assertIn('readonly',client.control_options(args))
 
 if __name__ == '__main__':

@@ -24,13 +24,8 @@ class DeployedDevTests(unittest.TestCase):
                 destination = root / source.relative_to(SERVER.parent)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(source.read_bytes())
-            token = 'offline-integration-token-0123456789abcdef'
-            secret = root/'token'
-            secret.write_text(token)
-            secret.chmod(0o600)
             process = subprocess.Popen([sys.executable,'-B','-u',str(root/'server.py'),
-                                        '--source','none','--bind','127.0.0.1','--port','0',
-                                        '--control-token-file',str(secret)],
+                                        '--source','none','--bind','127.0.0.1','--port','0'],
                                        stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,cwd=directory)
             lines = queue.Queue()
             threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True).start()
@@ -44,7 +39,7 @@ class DeployedDevTests(unittest.TestCase):
                     reader.open(origin+'/healthz', timeout=2)
                 self.assertEqual(missing.exception.code,503)
                 missing.exception.close()
-                with DevClient(origin, token) as robot:
+                with DevClient(origin) as robot:
                     self.assertEqual(robot.status()['mode'],'simulation')
                     first = robot.acquire()
                     robot.arm_jog('e',1)
