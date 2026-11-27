@@ -55,7 +55,7 @@ class ControlService:
 
     def __init__(self, mode='simulation', dog_host='192.168.1.120',
                  dog_port=43893, clock=time.monotonic):
-        if mode not in ('disabled', 'simulation', 'hardware'):
+        if mode not in ('disabled', 'simulation', 'readonly', 'hardware'):
             raise ValueError('Unsupported control mode')
         if mode == 'hardware':
             if not isinstance(dog_host, str):
@@ -78,6 +78,7 @@ class ControlService:
         self._closed = False
         self._estop = False
         self._error = None
+        self._safety_revision = secrets.token_urlsafe(32)
         self._lease = None
         self._lease_deadline = 0.0
         self._sequence = 0
@@ -132,6 +133,7 @@ class ControlService:
         return {
             'mode': self.mode,
             'estop': self._estop,
+            'safety_revision': self._safety_revision,
             'lease_active': self._lease is not None,
             'dog': {
                 'phase': self._phase,
@@ -186,7 +188,7 @@ class ControlService:
         """Dispatch an allowlisted operation after the HTTP layer authenticates it."""
         with self._lock:
             self._expire_locked()
-            if self._closed or self.mode == 'disabled':
+            if self._closed or self.mode in ('disabled', 'readonly'):
                 raise ControlError(503, 'Control service is unavailable')
             self._fields(body, body.keys() if isinstance(body, dict) else ())
             if action == 'control/acquire':
@@ -211,22 +213,34 @@ class ControlService:
                     self._lease_deadline = self._clock() + LEASE_SECONDS
                 else:
                     self._stop_locked()
-            elif action in ('dog/stop', 'control/estop', 'control/reset'):
-                self._fields(body, ('lease', 'seq'))
-                if action == 'control/reset':
-                    if self._stop_remaining:
-                        raise ControlError(409, 'Wait for the bounded stop attempt before resetting')
-                    self._error = None
-                    self._estop = False
-                    # Reset does not renew or recover a controller lease.
-                    if self._lease is not None:
-                        self._stop_locked()
-                    else:
-                        self._phase = 'disarmed'
-                else:
-                    if action == 'control/estop':
-                        self._estop = True
+            elif action == 'control/reset':
+                self._fields(body, ('revision',), ('revision',))
+                revision = body['revision']
+                if (not isinstance(revision, str) or not 1 <= len(revision) <= 128
+                        or any(ord(character) > 127 for character in revision)):
+                    raise ControlError(400, 'revision must be an observed safety revision')
+                if not secrets.compare_digest(revision, self._safety_revision):
+                    raise ControlError(409, 'Safety state changed; inspect status before resetting')
+                if self._stop_remaining:
+                    raise ControlError(409, 'Wait for the bounded stop attempt before resetting')
+                self._error = None
+                self._estop = False
+                # Consume the observation so delayed duplicate resets cannot
+                # affect a later session, even across service restarts.
+                self._safety_revision = secrets.token_urlsafe(32)
+                # Reset does not renew or recover a controller lease.
+                if self._lease is not None:
                     self._stop_locked()
+                else:
+                    self._phase = 'disarmed'
+            elif action in ('dog/stop', 'control/estop'):
+                self._fields(body, ('lease', 'seq'))
+                if action == 'dog/stop' and 'lease' in body:
+                    self._owner_locked(body)
+                if action == 'control/estop':
+                    self._estop = True
+                    self._safety_revision = secrets.token_urlsafe(32)
+                self._stop_locked()
             elif action == 'dog/stand':
                 self._fields(body, ('lease', 'seq'), ('lease', 'seq'))
                 sequence = self._motion_locked(body)
@@ -300,6 +314,8 @@ class ControlService:
             self._stop_locked()
 
     def _failure_locked(self):
+        if self._error is None:
+            self._safety_revision = secrets.token_urlsafe(32)
         self._error = 'Dog UDP send failed; physical stop is unverified'
         if not self._stop_remaining:
             self._stop_locked()

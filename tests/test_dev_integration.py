@@ -61,7 +61,7 @@ class DeployedDevTests(unittest.TestCase):
                     with self.assertRaises(DevClientError) as latched:
                         robot.acquire()
                     self.assertEqual(latched.exception.status,423)
-                    robot.reset()
+                    robot.reset(robot.status()['safety_revision'])
                     robot.acquire()
                     robot.stop()
                     self.assertIsNone(robot.lease)

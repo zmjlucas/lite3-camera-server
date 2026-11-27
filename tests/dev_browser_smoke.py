@@ -134,7 +134,7 @@ def main():
                'camera': True, 'dog_error': None, 'delay_status': False, 'delay_arm_failure': False}
 
     def status():
-        return {'mode': 'simulation', 'estop': False, 'lease_active': fixture['lease'] is not None,
+        return {'mode': 'simulation', 'estop': False, 'safety_revision': 'fixture-current-latch', 'lease_active': fixture['lease'] is not None,
                 'dog': {'phase': fixture['phase'], 'velocity': {'vx': 0, 'vy': 0, 'yaw': 0},
                         'limits': {'vx': 0.2, 'vy': 0.1, 'yaw': 0.3}, 'error': fixture['dog_error'], 'stop_verified': False},
                 'arm': {'motion_enabled': True, 'reason': 'simulation', 'simulated': True,
@@ -226,6 +226,9 @@ def main():
                 fixture['lease'] = None
                 fixture['phase'] = 'disarmed'
             elif action == 'control/reset':
+                if body.get('revision') != 'fixture-current-latch':
+                    self.reply(409, {'error': 'Stale safety revision'})
+                    return
                 fixture['dog_error'] = None
                 fixture['phase'] = 'disarmed'
             self.reply(200, status())

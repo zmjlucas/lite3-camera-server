@@ -51,6 +51,8 @@ Use `--jump ysc@192.168.2.1` if needed, or existing automatic macOS route select
 
 ## Hardware capabilities
 
+For deployment acceptance with **no motion output**, use `--control-mode readonly --control-token-file /absolute/private/file`. This mode provides real camera streams and explicit R5 feedback reads, but rejects every control/ownership/motion action and never creates a dog UDP socket, including on shutdown. Check `/api/status` reports `readonly` after explicitly restarting the service; a reused server keeps its old settings. Serial opening can still affect a controller's reset lines, so use the verified DTR/RTS configuration and an unoccupied device. The service needs access to the serial device group (on Ubuntu, a service-only `SupplementaryGroups=dialout` drop-in can provide it without changing the login account).
+
 Real dog output requires `--control-mode hardware --control-token-file /absolute/private/file`. The default motion target is `192.168.1.120:43893`; change `--dog-host` only to the verified motion host. The default serial device is `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`; `--arm-device` selects a confirmed serial node. The service account needs serial permissions and pySerial; the service does not run interactive sudo.
 
 R5 is attached by USB to the perception host. Normally the server owns serial locally, avoiding per-command SSH. If serial is on another Linux host, configure `--arm-host USER@HOST` with verified OpenSSH configuration/known hosts and noninteractive authentication. One fixed persistent helper handles serialized queries. Opening serial is explicit via arm state retrieval; no background scan or automatic reconnect opens it. A failed session requires explicit `arm/reconnect` before another read. DTR/RTS are cleared before opening; opening may still reset a controller, so confirm its behavior on the device. Exclusive serial locking does not prevent unrelated software that ignores locks.
@@ -65,7 +67,7 @@ The protocol sources are the existing `robo-comp/scripts/lite3_stand_walk.py`, `
 2. Explicitly prepare the dog using `dog/stand`. It sends the stock explicit stand sequence and waits about 5.6 seconds while the lease is renewed. No telemetry confirms that the dog actually stood.
 3. Send bounded velocities with increasing sequence numbers and a short TTL (at most 0.5 seconds). Renewing a lease never refreshes a velocity TTL.
 4. Stop/release, expired lease or command, communication failure and service shutdown cancel pending motion and stand stages. A stop revokes the lease, so subsequent movement requires reacquiring and preparing again.
-5. Software emergency stop latches and rejects motion. Explicit reset clears the latch; it does not reacquire control or resume movement.
+5. Software emergency stop latches and rejects motion. Explicit reset with the currently observed `safety_revision` clears the latch; it does not reacquire control or resume movement.
 
 | Field | Server limit | Meaning |
 | --- | --- | --- |
@@ -87,7 +89,7 @@ Dog sends use the stock little-endian `<III` and `<IIId` formats. An independent
 
 ## HTTP contract
 
-Camera endpoints retain anonymous trusted-LAN access. `GET /api/status` is public and returns mode, latch, lease occupancy, dog phase, limits and arm capability. It never returns credentials or the lease ID. Every control POST requires `Authorization: Bearer TOKEN`, `Content-Type: application/json`, one bounded Content-Length and an object body. Body limit is 4096 bytes. Browser requests with an Origin must match the server origin. Credentials are not accepted in URLs. Use SSH/TLS on networks where bearer tokens could be observed.
+Camera endpoints retain anonymous trusted-LAN access. `GET /api/status` is public and returns mode, latch, lease occupancy, dog phase, limits and arm capability. It never returns credentials or the lease ID. It includes an opaque `safety_revision`: pass the value observed by the operator to reset. Every emergency stop, newly latched transport fault and successful reset changes it, so a delayed reset cannot clear a newer latch. Every control POST requires `Authorization: Bearer TOKEN`, `Content-Type: application/json`, one bounded Content-Length and an object body. Body limit is 4096 bytes. Browser requests with an Origin must match the server origin. Credentials are not accepted in URLs. Use SSH/TLS on networks where bearer tokens could be observed.
 
 | POST path | JSON body |
 | --- | --- |
@@ -95,10 +97,10 @@ Camera endpoints retain anonymous trusted-LAN access. `GET /api/status` is publi
 | `/api/control/heartbeat` | `{"lease":"..."}` |
 | `/api/control/release` | `{"lease":"..."}` |
 | `/api/control/estop` | `{}`; any authenticated operator can stop |
-| `/api/control/reset` | `{}`; clears latch only |
+| `/api/control/reset` | `{"revision":"<observed safety_revision>"}`; stale revisions are rejected |
 | `/api/dog/stand` | `{"lease":"...","seq":1}` |
 | `/api/dog/velocity` | `{"lease":"...","seq":2,"vx":0.1,"vy":0,"yaw":0,"ttl":0.3}` |
-| `/api/dog/stop` | `{}` or current lease; clears ownership |
+| `/api/dog/stop` | `{}` for an observer stop, or current `lease`; a stale supplied lease is rejected |
 | `/api/arm/jog` | `{"lease":"...","seq":3,"joint":"e","delta":1,"speed":2}`; simulation only |
 | `/api/arm/state` | `{}`; explicit hardware serial query or simulated state |
 | `/api/arm/reconnect` | `{}`; explicitly clear failed read session, lazy until next read |
@@ -107,7 +109,7 @@ Success is HTTP 200; validation 400, auth 401, origin 403, missing action 404, o
 
 ## Python scripts
 
-The SDK needs only the standard library. Put `src` on your module search path or import `src.dev_client` from the checkout. It retains a private lease and allocates increasing sequence numbers, uses bounded HTTP requests, refuses redirects and does not retry motion. It does not run an automatic heartbeat thread.
+The SDK needs only the standard library. Put `src` on your module search path or import `src.dev_client` from the checkout. It retains a private lease and serializes motion requests with increasing sequence numbers. Reads, heartbeats and stop/estop use separate HTTP requests and can run concurrently; slow reads cannot block them. Requests have bounded timeouts, refuse redirects and never retry motion. Old responses/errors are scoped to their originating session; superseded acquire/motion calls raise `DevClientError`. It does not run an automatic heartbeat thread.
 
 ```python
 from pathlib import Path
@@ -129,7 +131,7 @@ with DevClient('http://127.0.0.1:8080', token) as robot:
     robot.stop()
 ```
 
-Run this against the simulation command above first. Normal context exit releases a held lease. An HTTP error clears the SDK lease instead of replaying requests. For arm-only simulated development, acquire then call `arm_jog('e', 1)` and `arm_state()`; no dog stand is needed.
+Run this against the simulation command above first. Normal context exit releases a held lease. An HTTP error clears its originating SDK lease instead of replaying requests; it cannot clear a newer session. To reset a latch, inspect `state = robot.status()` and explicitly call `robot.reset(state["safety_revision"])` after deciding to reset that observed state. For arm-only simulated development, acquire then call `arm_jog('e', 1)` and `arm_state()`; no dog stand is needed.
 
 ## Verification
 

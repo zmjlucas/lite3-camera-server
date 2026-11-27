@@ -140,10 +140,98 @@ class ControlTests(unittest.TestCase):
         self.service.dispatch('control/estop', {})
         self.assertTrue(self.service.status()['estop'])
         self.assert_error(423, 'control/acquire', {'owner': 'test'})
-        self.service.dispatch('control/reset', {})
+        revision = self.service.status().get('safety_revision')
+        self.service.dispatch('control/reset', {'revision': revision})
         self.assertFalse(self.service.status()['estop'])
         self.assertFalse(self.service.status()['lease_active'])
         self.assert_error(409, 'control/heartbeat', {'lease': lease})
+
+    def test_reset_requires_an_observed_revision(self):
+        self.service.dispatch('control/estop', {})
+        for body in ({}, {'revision': None}, {'revision': True}, {'revision': 1},
+                     {'revision': []}, {'revision': {}}, {'revision': ''},
+                     {'revision': '无效'}, {'revision': 'x' * 129}):
+            with self.subTest(body=body):
+                self.assert_error(400, 'control/reset', body)
+                self.assertTrue(self.service.status()['estop'])
+
+    def test_delayed_reset_cannot_clear_a_newer_estop_after_stop_completes(self):
+        service, sink = self.hardware()
+        service.dispatch('control/estop', {})
+        previous = service.status().get('safety_revision')
+        delayed_reset = {'revision': previous}
+        # Another operator stops again while the first reset is in flight.
+        service.dispatch('control/estop', {})
+        current = service.status().get('safety_revision')
+        self.assertNotEqual(previous, current)
+        for _ in range(control.STOP_BURSTS):
+            service._tick()
+            self.clock.advance(.051)
+        self.assertEqual(service.status()['dog']['phase'], 'disarmed')
+        self.assert_error(409, 'control/reset', delayed_reset, service)
+        self.assertTrue(service.status()['estop'])
+        self.assert_error(423, 'control/acquire', {'owner': 'test'}, service)
+        self.assertEqual(len(sink.packets), control.STOP_BURSTS * 5)
+        service.dispatch('control/reset', {'revision': current})
+        self.assertFalse(service.status()['estop'])
+        self.assertFalse(service.status()['lease_active'])
+
+    def test_reset_revision_cannot_be_replayed_against_a_new_owner(self):
+        self.service.dispatch('control/estop', {})
+        revision = self.service.status().get('safety_revision')
+        self.service.dispatch('control/reset', {'revision': revision})
+        self.assertNotEqual(revision, self.service.status().get('safety_revision'))
+        lease = self.acquire()
+        self.assert_error(409, 'control/reset', {'revision': revision})
+        self.service.dispatch('control/heartbeat', {'lease': lease})
+
+    def test_revision_from_previous_server_cannot_reset_a_restarted_service(self):
+        previous = self.service.status().get('safety_revision')
+        restarted = control.ControlService(clock=self.clock)
+        self.addCleanup(restarted.close)
+        self.assertNotEqual(previous, restarted.status().get('safety_revision'))
+        self.assert_error(409, 'control/reset', {'revision': previous}, restarted)
+
+    def test_new_transport_failure_invalidates_reset_but_repeated_failure_does_not(self):
+        service, sink = self.hardware()
+        lease = self.acquire(service)
+        service.dispatch('dog/stand', {'lease': lease, 'seq': 1})
+        previous = service.status().get('safety_revision')
+        sink.fail_codes.add(control.HEARTBEAT)
+        service._tick()
+        current = service.status().get('safety_revision')
+        self.assertNotEqual(previous, current)
+        for _ in range(control.STOP_BURSTS):
+            service._tick()
+            self.clock.advance(.051)
+        self.assertEqual(current, service.status().get('safety_revision'))
+        self.assert_error(409, 'control/reset', {'revision': previous}, service)
+        self.assertIsNotNone(service.status()['dog']['error'])
+        sink.fail_codes.clear()
+        service.dispatch('control/reset', {'revision': current})
+        self.assertIsNone(service.status()['dog']['error'])
+
+    def test_stale_scoped_stop_cannot_revoke_a_new_owner(self):
+        old = self.acquire()
+        self.service.dispatch('control/release', {'lease': old})
+        current = self.acquire()
+        self.service.dispatch('dog/stand', {'lease': current, 'seq': 1})
+        for supplied in (old, 'unknown', None, []):
+            with self.subTest(lease=supplied):
+                self.assert_error(409, 'dog/stop', {'lease': supplied})
+                self.assertTrue(self.service.status()['lease_active'])
+                self.assertEqual(self.service.status()['dog']['phase'], 'preparing')
+        self.service.dispatch('dog/stop', {'lease': current})
+        self.assertFalse(self.service.status()['lease_active'])
+
+    def test_observer_stop_and_estop_still_stop_any_owner(self):
+        self.acquire()
+        self.service.dispatch('dog/stop', {})
+        self.assertFalse(self.service.status()['lease_active'])
+        self.acquire()
+        self.service.dispatch('control/estop', {})
+        self.assertFalse(self.service.status()['lease_active'])
+        self.assertTrue(self.service.status()['estop'])
 
     def test_validation_rejects_nonfinite_boolean_and_out_of_range_motion(self):
         lease = self.ready()
@@ -227,7 +315,7 @@ class ControlTests(unittest.TestCase):
         self.assertIsNotNone(service.status()['dog']['error'])
         self.assert_error(423, 'control/acquire', {'owner': 'test'}, service)
         sink.fail_codes.clear()
-        service.dispatch('control/reset', {})
+        service.dispatch('control/reset', {'revision': service.status().get('safety_revision')})
         self.assertFalse(service.status()['lease_active'])
         self.assertIsNone(service.status()['dog']['error'])
 

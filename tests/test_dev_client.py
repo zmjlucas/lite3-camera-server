@@ -91,6 +91,115 @@ class DevClientTests(unittest.TestCase):
             self.assertFalse(thread.is_alive())
         self.assertEqual([row[1]['seq'] for row in self.endpoint.calls[1:]], list(range(1, 11)))
 
+    def start_call(self, operation):
+        done = threading.Event()
+        result = {'values': [], 'errors': []}
+        def run():
+            try:
+                result['values'].append(operation())
+            except Exception as error:
+                result['errors'].append(error)
+            finally:
+                done.set()
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        return done, result
+
+    def delay_response(self, action, failure=None):
+        entered, proceed = threading.Event(), threading.Event()
+        original = self.endpoint.open
+        def delayed(request, timeout):
+            response = original(request, timeout)
+            if request.full_url.endswith('/' + action):
+                entered.set()
+                if not proceed.wait(3):
+                    raise AssertionError('Test did not release its delayed response')
+                if failure:
+                    raise failure
+            return response
+        self.endpoint.open = delayed
+        self.addCleanup(proceed.set)
+        return entered, proceed
+
+    def test_slow_unowned_reads_do_not_block_heartbeat_or_stops(self):
+        for read_name in ('arm_state', 'arm_reconnect', 'status'):
+            for urgent_name in ('heartbeat', 'stop', 'estop'):
+                with self.subTest(read=read_name, urgent=urgent_name):
+                    self.client = DevClient('http://127.0.0.1:8080', 'test-secret')
+                    self.endpoint = Endpoint()
+                    self.client._opener = self.endpoint
+                    self.client.acquire()
+                    action = {'arm_state': 'arm/state', 'arm_reconnect': 'arm/reconnect',
+                              'status': 'status'}[read_name]
+                    entered, proceed = self.delay_response(action)
+                    read_done, read_result = self.start_call(getattr(self.client, read_name))
+                    self.assertTrue(entered.wait(1))
+                    urgent_done, urgent_result = self.start_call(getattr(self.client, urgent_name))
+                    try:
+                        self.assertTrue(urgent_done.wait(0.5), 'Read blocked ' + urgent_name)
+                        self.assertFalse(urgent_result['errors'])
+                    finally:
+                        proceed.set()
+                        self.assertTrue(read_done.wait(1))
+                        self.assertTrue(urgent_done.wait(1))
+                    self.assertFalse(read_result['errors'])
+
+    def test_delayed_unowned_failure_cannot_forget_a_reacquired_lease(self):
+        self.client.acquire()
+        entered, proceed = self.delay_response('arm/state', URLError('delayed failure'))
+        read_done, read_result = self.start_call(self.client.arm_state)
+        self.assertTrue(entered.wait(1))
+        def replace_lease():
+            self.client.stop()
+            self.client.acquire('new-session')
+        replaced, replacement = self.start_call(replace_lease)
+        try:
+            self.assertTrue(replaced.wait(0.5), 'Old read blocked stop and reacquire')
+            self.assertFalse(replacement['errors'])
+            new_lease = self.client.lease
+        finally:
+            proceed.set()
+            self.assertTrue(read_done.wait(1))
+            self.assertTrue(replaced.wait(1))
+        self.assertIsInstance(read_result['errors'][0], DevClientError)
+        self.assertEqual(self.client.lease, new_lease)
+        self.client.heartbeat()
+
+    def test_stop_supersedes_a_delayed_motion_response(self):
+        self.client.acquire()
+        entered, proceed = self.delay_response('dog/velocity')
+        motion_done, motion_result = self.start_call(self.client.velocity)
+        self.assertTrue(entered.wait(1))
+        stopped, stop_result = self.start_call(self.client.stop)
+        try:
+            self.assertTrue(stopped.wait(0.5), 'Motion response blocked stop')
+            self.assertFalse(stop_result['errors'])
+            self.assertIsNone(self.client.lease)
+        finally:
+            proceed.set()
+            self.assertTrue(motion_done.wait(1))
+            self.assertTrue(stopped.wait(1))
+        self.assertEqual(motion_result['values'], [])
+        self.assertIsInstance(motion_result['errors'][0], DevClientError)
+        self.assertIsNone(self.client.lease)
+
+    def test_stop_supersedes_a_delayed_acquire_response(self):
+        entered, proceed = self.delay_response('control/acquire')
+        acquired, acquire_result = self.start_call(self.client.acquire)
+        self.assertTrue(entered.wait(1))
+        stopped, stop_result = self.start_call(self.client.stop)
+        try:
+            self.assertTrue(stopped.wait(0.5), 'Acquire response blocked stop')
+            self.assertFalse(stop_result['errors'])
+        finally:
+            proceed.set()
+            self.assertTrue(acquired.wait(1))
+            self.assertTrue(stopped.wait(1))
+        self.assertEqual(acquire_result['values'], [])
+        self.assertIsInstance(acquire_result['errors'][0], DevClientError)
+        self.assertIsNone(self.client.lease)
+
     def test_stop_discards_lease_and_observer_stop_needs_no_acquire(self):
         self.client.acquire()
         self.client.stop()
@@ -146,10 +255,21 @@ class DevClientTests(unittest.TestCase):
         self.assertIsNone(self.client.lease)
 
     def test_release_estop_and_reset_forget_ownership(self):
-        for action in (self.client.release, self.client.estop, self.client.reset):
+        for action in (self.client.release, self.client.estop,
+                       lambda: self.client.reset('observed-safety-revision')):
             self.client.acquire()
             action()
             self.assertIsNone(self.client.lease)
+
+    def test_reset_uses_the_explicitly_observed_revision_without_fetching(self):
+        with self.assertRaises(TypeError):
+            self.client.reset()
+        self.assertEqual(self.endpoint.calls, [])
+        self.client.reset('observed-safety-revision')
+        self.assertEqual(len(self.endpoint.calls), 1)
+        request, body, _ = self.endpoint.calls[0]
+        self.assertTrue(request.full_url.endswith('/control/reset'))
+        self.assertEqual(body, {'revision': 'observed-safety-revision'})
 
     def test_read_and_reconnect_arm_are_explicit_authenticated_posts(self):
         self.client.arm_state()

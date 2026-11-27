@@ -417,7 +417,7 @@ def parser():
             command.add_argument("--height", type=bounded_int(1, 2160))
             command.add_argument("--fps", type=bounded_int(1, 60))
             command.add_argument("--quality", type=bounded_int(1, 95))
-            command.add_argument("--control-mode", choices=("disabled", "simulation", "hardware"))
+            command.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"))
             command.add_argument("--control-token-file", help="existing private token file on the remote host")
             command.add_argument("--dog-host", help="motion host IPv4")
             command.add_argument("--arm-device", help="serial device on the arm host")
@@ -431,8 +431,8 @@ def main(argv=None):
     if args.command in ("view", "deploy"):
         if args.backend == "ros" and (control_options(args) or getattr(args, "console", False)):
             cli.error("Robot control and --console require a native backend (use --backend none without cameras)")
-        if args.control_mode == "hardware" and not args.control_token_file:
-            cli.error("Hardware control requires --control-token-file on the remote host")
+        if args.control_mode in ("hardware", "readonly") and not args.control_token_file:
+            cli.error("Hardware and read-only modes require --control-token-file on the remote host")
         if args.control_token_file and (not args.control_token_file.startswith("/") or
                                        any(ord(c) < 32 for c in args.control_token_file)):
             cli.error("--control-token-file must be an absolute remote path")

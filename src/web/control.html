@@ -140,17 +140,17 @@ const phaseLabels = {disarmed: '未准备', preparing: '准备中', ready: '已�
 function notice(message) { $('notice').textContent = message; }
 function render() {
   const dog = state?.dog || {}, arm = state?.arm || {};
-  const usable = Boolean(token && connected && state && state.mode !== 'disabled' && !state.estop);
+  const usable = Boolean(token && connected && state && !['disabled', 'readonly'].includes(state.mode) && !state.estop);
   $('connection').textContent = connected ? '● 服务在线' : '○ 服务离线';
-  $('mode').textContent = ({simulation: '模拟模式', hardware: '硬件模式', disabled: '控制已禁用'})[state?.mode] || '等待状态';
+  $('mode').textContent = ({simulation: '模拟模式', hardware: '硬件模式', readonly: '硬件只读 · 禁止运动', disabled: '控制已禁用'})[state?.mode] || '等待状态';
   $('auth-state').textContent = token ? '令牌已设置' : '未设置令牌';
   $('owner-state').textContent = lease ? '本页持有控制权' : acquiring ? '正在申请…' : state?.lease_active ? '服务端控制权已占用' : '尚未获取控制权';
   $('lease-detail').textContent = lease ? '心跳已启用；松开移动按钮后释放控制权。' : '需要手动获取；断线、停止或失焦后不会自动恢复。';
   $('acquire').disabled = !usable || Boolean(lease) || acquiring || Boolean(state?.lease_active);
   $('release').disabled = !lease;
-  $('estop').disabled = !token;
+  $('estop').disabled = !token || state?.mode === 'readonly';
   $('reset').disabled = !token || !(state?.estop || dog.error);
-  $('dog-stop').disabled = !token;
+  $('dog-stop').disabled = !token || state?.mode === 'readonly';
   $('stand').disabled = !usable || !lease || motionBusy || Boolean(hold) || ['preparing', 'stopping', 'error', 'ready', 'moving'].includes(dog.phase);
   $('dog-phase').textContent = state?.estop ? '软件急停已锁定' : phaseLabels[dog.phase] || '等待状态';
   for (const button of driveButtons) button.disabled = !usable || !lease || motionBusy || !['ready', 'moving'].includes(dog.phase) || Boolean(hold && hold.button !== button);
@@ -213,7 +213,8 @@ async function stop(action = 'dog/stop', message = '已请求停止并释放控�
   const stamp = epoch;
   notice(message);
   if (!auth || (action === 'control/release' && !previous)) return;
-  const body = previous && ['dog/stop', 'control/release'].includes(action) ? {lease: previous} : {};
+  const body = action === 'control/reset' ? {revision: state?.safety_revision} :
+    previous && ['dog/stop', 'control/release'].includes(action) ? {lease: previous} : {};
   try { const data = await api(action, body, {token: auth, keepalive: true}); if (epoch === stamp) updateState(data); }
   catch (error) { if (epoch === stamp) notice('停止请求失败：' + error.message + '。本页已停止续发；请使用物理停止手段。'); }
 }

@@ -796,14 +796,14 @@ def parse_args(argv):
     parser.add_argument("--retry-camera", action="store_true",
                         help="retry failed capture every 5 seconds (used by the boot service)")
     parser.add_argument("--device", help="V4L2 RGB device path (required for --source v4l2)")
-    parser.add_argument("--control-mode", choices=("disabled", "simulation", "hardware"), default="simulation")
+    parser.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"), default="simulation")
     parser.add_argument("--control-token-file", help="private token file on this host (never a token value)")
     parser.add_argument("--dog-host", default="192.168.1.120", help="motion host IPv4 for UDP port 43893")
     parser.add_argument("--arm-device", default="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")
     parser.add_argument("--arm-host", help="optional SSH host for the read-only serial gateway")
     options = parser.parse_args(argv)
-    if options.control_mode == "hardware" and not options.control_token_file:
-        parser.error("--control-mode hardware requires --control-token-file")
+    if options.control_mode in ("hardware", "readonly") and not options.control_token_file:
+        parser.error("Hardware and read-only modes require --control-token-file")
     if options.source == "v4l2":
         if not re.fullmatch(r"/dev/(?:video[0-9]+|v4l/by-id/[A-Za-z0-9_][A-Za-z0-9_.:+-]*)", options.device or ""):
             parser.error("--source v4l2 requires --device /dev/videoN or /dev/v4l/by-id/NAME")
@@ -832,7 +832,7 @@ def main(argv=None):
         token = load_control_token(options.control_token_file)
         control = ControlService(mode=options.control_mode, dog_host=options.dog_host)
         arm_gateway = (ArmGateway(device=options.arm_device, host=options.arm_host)
-                       if options.control_mode == "hardware" else None)
+                       if options.control_mode in ("hardware", "readonly") else None)
     except (OSError, ValueError) as error:
         print("Invalid development server configuration: {}".format(error), file=sys.stderr)
         return 2
