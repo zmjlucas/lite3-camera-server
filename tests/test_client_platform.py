@@ -15,7 +15,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from src import client, server
+from src import launcher as client
+from src import server
 
 
 class ClientPlatformTests(unittest.TestCase):

@@ -1,67 +1,35 @@
 """Public SDK imports and inlined PEP 561 annotations."""
 import importlib.util
 from pathlib import Path
-import subprocess
 import sys
-import tempfile
-from typing import Optional, get_type_hints
+from typing import Optional, get_args, get_type_hints
 import unittest
 
-
-SRC = Path(__file__).resolve().parents[1] / 'src'
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 
 class SDKPackageTests(unittest.TestCase):
-    def test_checkout_imports_reexport_the_packaged_sdk(self):
-        spec = importlib.util.find_spec('src.lite3_dev_server')
+    def test_sdk_package_includes_type_marker(self):
+        spec = importlib.util.find_spec('lite3_dev_server')
         self.assertIsNotNone(spec, 'Expected an SDK package under src')
 
         self.assertTrue((Path(spec.origin).parent / 'py.typed').is_file())
 
-        result = subprocess.run([sys.executable, '-B', '-c',
-                                 'from pathlib import Path\n'
-                                 'import sys\n'
-                                 'sys.path.insert(0, str(Path.cwd().parent))\n'
-                                 'from lite3_dev_server import DevClient, DevClientError\n'
-                                 'import dev_client\n'
-                                 'from src import dev_client as namespaced\n'
-                                 'assert dev_client.DevClient is DevClient\n'
-                                 'assert dev_client.DevClientError is DevClientError\n'
-                                 'assert namespaced.DevClient is DevClient\n'
-                                 'assert namespaced.DevClientError is DevClientError\n'],
-                                cwd=str(SRC), capture_output=True, text=True, timeout=5)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_file_import_loads_the_sibling_sdk_outside_the_checkout(self):
-        code = (
-            'from importlib.util import module_from_spec, spec_from_file_location\n'
-            'import sys\n'
-            'for name in ("_lite3_dev_sdk", "dev_client", "external.sdk"):\n'
-            '    spec = spec_from_file_location(name, sys.argv[1])\n'
-            '    module = module_from_spec(spec)\n'
-            '    spec.loader.exec_module(module)\n'
-            '    assert module.DevClient.__module__.endswith("lite3_dev_server.client")\n'
-            '    assert module.DevClientError.__module__ == module.DevClient.__module__\n'
-        )
-        with tempfile.TemporaryDirectory() as directory:
-            result = subprocess.run([sys.executable, '-I', '-B', '-c', code, str(SRC / 'dev_client.py')],
-                                    cwd=directory, capture_output=True, text=True, timeout=5)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
     def test_public_methods_expose_response_and_argument_types(self):
-        spec = importlib.util.find_spec('src.lite3_dev_server')
+        spec = importlib.util.find_spec('lite3_dev_server')
         self.assertIsNotNone(spec, 'Expected an SDK package under src')
 
-        from src.lite3_dev_server import (
-            AcquireResponse, ArmJoint, ArmReconnectResponse, ArmState, ControlStatus,
-            DevClient, DevClientError, StatusResponse,
+        from lite3_dev_server import (
+            AcquireResponse, ArmJoint, ArmOperation, ArmReconnectResponse, ArmState, ControlStatus,
+            DevClient, DevClientError,
         )
 
         for name, response in {
             'acquire': AcquireResponse, 'arm_jog': ControlStatus, 'arm_state': ArmState,
             'arm_reconnect': ArmReconnectResponse, 'estop': ControlStatus, 'heartbeat': ControlStatus,
             'release': Optional[ControlStatus], 'reset': ControlStatus, 'stand': ControlStatus,
-            'status': StatusResponse, 'stop': ControlStatus, 'velocity': ControlStatus,
+            'status': ControlStatus, 'stop': ControlStatus, 'velocity': ControlStatus,
+            'arm_operation': ArmOperation, 'arm_stop': ControlStatus,
         }.items():
             with self.subTest(method=name):
                 self.assertIs(get_type_hints(getattr(DevClient, name))['return'], response)
@@ -70,7 +38,7 @@ class SDKPackageTests(unittest.TestCase):
         self.assertEqual(get_type_hints(DevClientError)['status'], Optional[int])
 
     def test_dog_action_contracts_are_exported_and_preserve_typed_results(self):
-        from src import lite3_dev_server as sdk
+        import lite3_dev_server as sdk
 
         for name in ('DogActionName', 'DogActionStatus', 'DogActionRequest', 'DogFeedback'):
             self.assertTrue(hasattr(sdk, name), name)
@@ -89,6 +57,22 @@ class SDKPackageTests(unittest.TestCase):
         self.assertIs(request['name'], sdk.DogActionName)
         self.assertIs(request['lease'], str)
         self.assertIs(request['seq'], int)
+
+    def test_protocol_and_error_contract_are_public(self):
+        from lite3_dev_server import ErrorResponse, PROTOCOL_HEADER, PROTOCOL_VERSION
+
+        self.assertEqual(PROTOCOL_HEADER, 'X-Lite3-Dev-Protocol')
+        self.assertEqual(PROTOCOL_VERSION, '1')
+        self.assertEqual(get_type_hints(ErrorResponse), {'error': str, 'code': str})
+
+    def test_full_control_status_contract_preserves_environment_and_simulation(self):
+        from lite3_dev_server import ControlMode, ControlStatus, DogStatus, Environment
+
+        self.assertEqual(get_args(Environment), ('dev', 'dist'))
+        self.assertEqual(get_args(ControlMode), ('disabled', 'readonly', 'hardware'))
+        self.assertIs(get_type_hints(ControlStatus)['environment'], Environment)
+        self.assertIs(get_type_hints(ControlStatus)['dog'], DogStatus)
+        self.assertIs(get_type_hints(DogStatus)['simulated'], bool)
 
 
 if __name__ == '__main__':

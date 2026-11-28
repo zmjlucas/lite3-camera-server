@@ -9,6 +9,9 @@ description = "Typed, standard-library Python client for the Lite3 Dev Server"
 readme = "README.md"
 requires-python = ">=3.8"
 
+[project.optional-dependencies]
+dev = ["build>=1.2,<2", "mypy==1.14.1", "setuptools>=61", "wheel"]
+
 [project.urls]
 Repository = "https://github.com/zmjlucas/lite3-dev-server"
 
@@ -18,3 +21,8 @@ packages = ["lite3_dev_server"]
 
 [tool.setuptools.package-data]
 lite3_dev_server = ["py.typed"]
+
+[tool.mypy]
+python_version = "3.8"
+mypy_path = "src"
+explicit_package_bases = true

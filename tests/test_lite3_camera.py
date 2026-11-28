@@ -9,10 +9,10 @@ import time
 import unittest
 from unittest.mock import patch
 
-from src import client
+from src import launcher as client
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "src/client.py"
+SCRIPT = ROOT / "src/launcher.py"
 RUNNER = ROOT / "tests/fixtures/client_runner.py"
 
 
@@ -115,7 +115,7 @@ class CameraCommandsTest(unittest.TestCase):
         result = self.run_cli("deploy", "robot")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertEqual([call[0] for call in calls], ["ssh"] + ["scp"] * 10 + ["ssh"])
+        self.assertEqual([call[0] for call in calls], ["ssh"] + ["scp"] * 15 + ["ssh"])
         self.assertIn("mkdir -p", calls[0][-1])
         for command in calls[1:]:
             self.assertNotIn("-r", command)
@@ -123,12 +123,17 @@ class CameraCommandsTest(unittest.TestCase):
             ("wide_angle.py", "robot:lite3-camera-server/"),
             ("dog_actions.py", "robot:lite3-camera-server/"),
             ("dog_state.py", "robot:lite3-camera-server/"),
+            ("camera_sources.py", "robot:lite3-camera-server/"),
+            ("camera.py", "robot:lite3-camera-server/"),
+            ("application.py", "robot:lite3-camera-server/"),
+            ("http_server.py", "robot:lite3-camera-server/"),
             ("arm_motion.py", "robot:lite3-camera-server/"),
             ("camera.html", "robot:lite3-camera-server/web/"),
             ("control.py", "robot:lite3-camera-server/"),
             ("arm_gateway.py", "robot:lite3-camera-server/"),
             ("arm_worker.py", "robot:lite3-camera-server/remote/"),
             ("control.html", "robot:lite3-camera-server/web/"),
+            ("dev_client.js", "robot:lite3-camera-server/web/"),
             ("server.py", "robot:lite3-camera-server/"),
         ])
         self.assertFalse(Path(calls[1][-2]).exists(), "Temporary deployment files must be removed")
@@ -165,9 +170,7 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(len(self.calls()), 1)
 
     def test_failed_runtime_dependency_upload_preserves_existing_entrypoint(self):
-        for dependency, expected_copies in (("wide_angle.py", ["wide_angle.py"]),
-                                            ("dog_state.py", ["wide_angle.py", "dog_actions.py", "dog_state.py"]),
-                                            ("arm_motion.py", ["wide_angle.py", "dog_actions.py", "dog_state.py", "arm_motion.py"])):
+        for dependency in ("wide_angle.py", "camera.py", "arm_motion.py", "dev_client.js"):
             with self.subTest(dependency=dependency):
                 uploaded = []
                 installed = []
@@ -183,7 +186,9 @@ class CameraCommandsTest(unittest.TestCase):
 
                 with patch.object(self.cli.subprocess, "call", side_effect=remote):
                     self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 23)
-                self.assertEqual(uploaded, expected_copies)
+                self.assertEqual(uploaded[-1], dependency)
+                self.assertNotIn("server.py", uploaded)
+                self.assertEqual(len(uploaded), len(set(uploaded)))
                 self.assertEqual(installed, [])
 
     def test_service_installation_failure_reaches_caller(self):
@@ -198,11 +203,7 @@ class CameraCommandsTest(unittest.TestCase):
         calls = self.calls()
         self.assertEqual(calls[0][-2], "r")
         self.assertEqual([command[-1] for command in calls if command[0] == "scp"],
-                         ["[r]:lite3-camera-server/", "[r]:lite3-camera-server/",
-                          "[r]:lite3-camera-server/", "[r]:lite3-camera-server/",
-                          "[r]:lite3-camera-server/web/", "[r]:lite3-camera-server/",
-                          "[r]:lite3-camera-server/", "[r]:lite3-camera-server/remote/",
-                          "[r]:lite3-camera-server/web/", "[r]:lite3-camera-server/"])
+                         ["[r]:" + destination for _, destination in client.SERVER_BUNDLE])
 
     def test_deploy_refuses_symlinked_assets_before_remote_commands(self):
         import contextlib
@@ -474,22 +475,30 @@ class CameraCommandsTest(unittest.TestCase):
                 proxy.shutdown()
                 worker.join(timeout=2)
 
-    def test_native_browser_waits_for_camera_protocol(self):
+    def test_native_browser_waits_for_camera_and_development_protocols(self):
         import contextlib
         import http.client
         import io
         port = self.free_port()
         url = "http://127.0.0.1:{}/".format(port)
-        # The tunnel is initially an unrelated HTTP 200 listener, then the native camera.
+        # The tunnel first exposes a camera-only listener, then the current service.
         code = ("import time\nfrom http.server import BaseHTTPRequestHandler, HTTPServer\n"
                 "ready = time.monotonic() + 0.7\n"
                 "class Handler(BaseHTTPRequestHandler):\n"
                 "    def do_GET(self):\n"
                 "        self.send_response(200)\n"
-                "        if time.monotonic() >= ready: self.send_header('X-Lite3-Camera-Protocol', '1')\n"
+                "        self.send_header('X-Lite3-Camera-Protocol', '1')\n"
+                "        self.send_header('X-Lite3-Environment', 'dist')\n"
+                "        self.send_header('X-Lite3-Simulated', 'false')\n"
+                "        self.send_header('X-Lite3-Control-Mode', 'hardware')\n"
+                "        self.send_header('X-Lite3-Arm-Diagnostics', 'false')\n"
+                "        if time.monotonic() >= ready: self.send_header('X-Lite3-Dev-Protocol', '1')\n"
                 "        self.end_headers()\n"
                 "    def log_message(self, *args): pass\n"
-                "HTTPServer(('127.0.0.1', " + str(port) + "), Handler).serve_forever()\n")
+                "server = HTTPServer(('127.0.0.1', " + str(port) + "), Handler)\n"
+                "server.timeout = 0.1\n"
+                "deadline = time.monotonic() + 5\n"
+                "while time.monotonic() < deadline: server.handle_request()\n")
         original = subprocess.Popen
         def spawn(command, *args, **kwargs):
             return original([sys.executable, "-c", code], *args, **kwargs)
@@ -499,8 +508,10 @@ class CameraCommandsTest(unittest.TestCase):
             connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
             try:
                 connection.request("GET", "/")
-                self.assertEqual(connection.getresponse().getheader("X-Lite3-Camera-Protocol"), "1",
-                                 "The browser opened an unrelated HTTP service")
+                response = connection.getresponse()
+                self.assertEqual(response.getheader("X-Lite3-Camera-Protocol"), "1")
+                self.assertEqual(response.getheader("X-Lite3-Dev-Protocol"), "1",
+                                 "The browser opened a camera-only service")
             finally:
                 connection.close()
             raise KeyboardInterrupt

@@ -12,8 +12,8 @@ import unittest
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, build_opener
 
-from src.client import SERVER, SERVER_BUNDLE
-from src.dev_client import DevClient, DevClientError
+from src.launcher import SERVER, SERVER_BUNDLE
+from src.lite3_dev_server import DevClient, DevClientError
 
 
 class DeployedDevTests(unittest.TestCase):

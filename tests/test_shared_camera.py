@@ -27,13 +27,13 @@ class SharedCameraTests(unittest.TestCase):
         self.server.write_text(
             "import sys, os\nfrom pathlib import Path\n"
             "Path({!r}).write_text(str(os.getpid()))\n"
-            "sys.path.insert(0, {!r})\nfrom src import server\n"
+            "sys.path.insert(0, {!r})\nfrom src import camera, server\n"
             "def capture(options, frames, stop):\n"
             "    with open({!r}, 'a') as log: log.write('capture\\n')\n"
             "    while not stop.is_set():\n"
             "        frames.publish(b'synthetic-frame')\n"
             "        stop.wait(0.05)\n"
-            "server.capture = capture\n"
+            "camera.capture = capture\n"
             "sys.exit(server.main())\n".format(str(self.pid_marker), str(ROOT), str(self.root / "captures")))
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
@@ -86,8 +86,8 @@ class SharedCameraTests(unittest.TestCase):
         self.assertIn("Reusing", self.finish(self.launch()))
         self.assertEqual((self.root / "captures").read_text().splitlines(), ["capture"])
 
-    def listener(self, status, protocol=None, redirect=None, dev_protocol=None, environment=None, simulated=None,
-                 control_mode=None, diagnostics=None):
+    def listener(self, status, protocol=None, redirect=None, dev_protocol="1", environment="dist", simulated="false",
+                 control_mode="disabled", diagnostics="false"):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(status)
@@ -120,10 +120,10 @@ class SharedCameraTests(unittest.TestCase):
     def test_ssh_hangup_during_startup_keeps_a_managed_server(self):
         marker = self.root / "starting"
         source = self.server.read_text().replace(
-            "server.capture = capture",
+            "camera.capture = capture",
             "import time\ndef discover():\n    Path({!r}).touch()\n"
             "    time.sleep(1.5)\n    return []\n"
-            "server.discover_sources = discover\nserver.capture = capture".format(str(marker)))
+            "camera.discover_sources = discover\ncamera.capture = capture".format(str(marker)))
         self.server.write_text(source)
         process = self.launch()
         deadline = time.monotonic() + 4
@@ -139,10 +139,10 @@ class SharedCameraTests(unittest.TestCase):
     def test_later_launcher_waits_for_slow_start_under_the_same_lock(self):
         marker = self.root / "starting"
         source = self.server.read_text().replace(
-            "server.capture = capture",
+            "camera.capture = capture",
             "import time\ndef discover():\n    Path({!r}).touch()\n"
             "    time.sleep(1.5)\n    return []\n"
-            "server.discover_sources = discover\nserver.capture = capture".format(str(marker)))
+            "camera.discover_sources = discover\ncamera.capture = capture".format(str(marker)))
         self.server.write_text(source)
         one = self.launch()
         deadline = time.monotonic() + 4
@@ -164,12 +164,12 @@ class SharedCameraTests(unittest.TestCase):
     def test_control_reuses_a_listener_with_matching_environment(self):
         self.listener(503, '1', dev_protocol='1', environment='dist', simulated='false',
                       control_mode='disabled', diagnostics='false')
-        self.assertIn('Reusing', self.finish(self.launch('--require-dev', '--env', 'dist')))
+        self.assertIn('Reusing', self.finish(self.launch('--env', 'dist')))
         self.assertFalse((self.root / 'captures').exists())
 
-    def test_control_refuses_a_legacy_server_without_environment_identity(self):
-        self.listener(503, '1', dev_protocol='1')
-        process = self.launch('--require-dev', '--env', 'dist')
+    def test_control_refuses_missing_environment_identity(self):
+        self.listener(503, '1', dev_protocol='1', environment=None)
+        process = self.launch('--env', 'dist')
         _, stderr = process.communicate(timeout=5)
         self.assertNotEqual(process.returncode, 0)
         self.assertIn('restart', stderr.lower())
@@ -187,7 +187,7 @@ class SharedCameraTests(unittest.TestCase):
     def test_control_refuses_a_different_simulation_setting(self):
         self.listener(503, '1', dev_protocol='1', environment='dev', simulated='true',
                       control_mode='disabled', diagnostics='false')
-        process = self.launch('--require-dev', '--env', 'dev')
+        process = self.launch('--env', 'dev')
         _, stderr = process.communicate(timeout=5)
         self.assertNotEqual(process.returncode, 0)
         self.assertIn('simulation', stderr.lower())
@@ -196,7 +196,7 @@ class SharedCameraTests(unittest.TestCase):
     def test_control_refuses_hardware_when_readonly_requested(self):
         self.listener(503, '1', dev_protocol='1', environment='dist', simulated='false',
                       control_mode='hardware', diagnostics='false')
-        process = self.launch('--require-dev', control_mode='readonly')
+        process = self.launch(control_mode='readonly')
         _, stderr = process.communicate(timeout=5)
         self.assertNotEqual(process.returncode, 0)
         self.assertIn('control mode', stderr.lower())
@@ -205,7 +205,7 @@ class SharedCameraTests(unittest.TestCase):
     def test_control_refuses_dog_service_when_arm_diagnostics_requested(self):
         self.listener(503, '1', dev_protocol='1', environment='dev', simulated='false',
                       control_mode='hardware', diagnostics='false')
-        process = self.launch('--require-dev', '--env', 'dev', '--arm-motion-profile', '/etc/arm.json',
+        process = self.launch('--env', 'dev', '--arm-motion-profile', '/etc/arm.json',
                               control_mode='hardware')
         _, stderr = process.communicate(timeout=5)
         self.assertNotEqual(process.returncode, 0)
@@ -215,7 +215,7 @@ class SharedCameraTests(unittest.TestCase):
     def test_control_refuses_arm_diagnostics_when_dog_control_requested(self):
         self.listener(503, '1', dev_protocol='1', environment='dev', simulated='false',
                       control_mode='hardware', diagnostics='true')
-        process = self.launch('--require-dev', '--env', 'dev', control_mode='hardware')
+        process = self.launch('--env', 'dev', control_mode='hardware')
         _, stderr = process.communicate(timeout=5)
         self.assertNotEqual(process.returncode, 0)
         self.assertIn('diagnostics', stderr.lower())
@@ -224,7 +224,7 @@ class SharedCameraTests(unittest.TestCase):
     def test_control_reuses_matching_arm_diagnostics(self):
         self.listener(503, '1', dev_protocol='1', environment='dev', simulated='false',
                       control_mode='hardware', diagnostics='true')
-        process = self.launch('--require-dev', '--env', 'dev', '--arm-motion-profile', '/etc/arm.json',
+        process = self.launch('--env', 'dev', '--arm-motion-profile', '/etc/arm.json',
                               control_mode='hardware')
         self.assertIn('Reusing', self.finish(process))
         self.assertFalse((self.root / 'captures').exists())
@@ -232,12 +232,13 @@ class SharedCameraTests(unittest.TestCase):
     def test_control_reuses_default_hardware_with_matching_listener(self):
         self.listener(503, '1', dev_protocol='1', environment='dist', simulated='false',
                       control_mode='hardware', diagnostics='false')
-        self.assertIn('Reusing', self.finish(self.launch('--require-dev', control_mode=None)))
+        self.assertIn('Reusing', self.finish(self.launch(control_mode=None)))
         self.assertFalse((self.root / 'captures').exists())
 
     def test_control_refuses_a_listener_without_control_identity(self):
-        self.listener(503, '1', dev_protocol='1', environment='dist', simulated='false')
-        process = self.launch('--require-dev')
+        self.listener(503, '1', dev_protocol='1', environment='dist', simulated='false',
+                      control_mode=None, diagnostics=None)
+        process = self.launch()
         _, stderr = process.communicate(timeout=5)
         self.assertNotEqual(process.returncode, 0)
         self.assertIn('restart', stderr.lower())
@@ -260,14 +261,22 @@ class SharedCameraTests(unittest.TestCase):
         process = self.launch()
         _, stderr = process.communicate(timeout=5)
         self.assertNotEqual(process.returncode, 0)
-        self.assertIn("incompatible", stderr)
+        self.assertIn("protocol", stderr)
 
     def test_foreign_listener_is_not_reused_or_replaced(self):
         self.listener(200)
         process = self.launch()
         _, stderr = process.communicate(timeout=5)
         self.assertNotEqual(process.returncode, 0)
-        self.assertIn("port", stderr.lower())
+        self.assertIn("protocol", stderr.lower())
+        self.assertFalse((self.root / "captures").exists())
+
+    def test_camera_only_listener_is_rejected_without_starting_another_server(self):
+        self.listener(200, "1", dev_protocol=None)
+        process = self.launch()
+        _, stderr = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn("protocol", stderr.lower())
         self.assertFalse((self.root / "captures").exists())
 
     def test_failed_start_reports_log_and_does_not_leave_pid(self):

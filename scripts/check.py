@@ -14,15 +14,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--syntax-only", action="store_true", help="skip the unit tests")
     parser.add_argument("--shell", action="store_true", help="also check remote Bash syntax (requires Bash)")
-    parser.add_argument("--legacy", action="store_true", help="only check remote Python 3.6 syntax (use Python 3.8-3.12)")
+    parser.add_argument("--device-syntax", action="store_true", help="only check device Python 3.6 syntax (use Python 3.8-3.12)")
     args = parser.parse_args()
-    if args.legacy:
+    if args.device_syntax:
         if sys.version_info >= (3, 13):
             parser.error("Use Python 3.8-3.12 to check Python 3.6 syntax")
-        sources = [ROOT / "src" / name
-                   for name in ("server.py", "control.py", "dog_actions.py", "dog_state.py",
-                                "arm_gateway.py", "wide_angle.py", "arm_motion.py")]
+        sys.path.insert(0, str(ROOT))
+        from src.launcher import SERVER_BUNDLE
+        sources = [path for path, _ in SERVER_BUNDLE if path.suffix == ".py"]
         sources.extend(sorted((ROOT / "src/remote").glob("*.py")))
+        sources = sorted(set(sources))
         grammar = (3, 6)
     else:
         sources = [path for folder in ("src", "scripts", "tests") for path in sorted((ROOT / folder).rglob("*.py"))]
@@ -38,7 +39,7 @@ def main():
             for path in sorted((ROOT / folder).glob("*.sh")):
                 subprocess.run([bash, "-n", str(path)], check=True)
         print("PASS: remote Bash syntax", flush=True)
-    if not args.legacy and not args.syntax_only:
+    if not args.device_syntax and not args.syntax_only:
         return subprocess.call([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-v"], cwd=str(ROOT))
     return 0
 

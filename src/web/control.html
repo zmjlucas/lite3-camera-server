@@ -137,8 +137,10 @@
   </div>
   <footer><span>Lite3 Dev Server</span><span>Trusted LAN access · Acquire control before motion</span></footer>
 </main>
+<script src="/static/dev_client.js"></script>
 <script>
 'use strict';
+const apiClient = new Lite3DevClient();
 const $ = id => document.getElementById(id);
 const driveButtons = [...document.querySelectorAll('[data-axis]')];
 const jointButtons = [...document.querySelectorAll('[data-joint]')];
@@ -218,7 +220,6 @@ function render() {
   if (armDiagnostics && arm.simulated) renderArm(arm);
 }
 function updateState(value) {
-  value = value?.status || value;
   if (!value?.mode) return;
   const sourceChanged = value.environment !== state?.environment || value.mode !== state?.mode ||
     value.arm?.simulated !== state?.arm?.simulated;
@@ -245,21 +246,6 @@ function renderArm(arm) {
   }
   $('arm-caption').textContent = arm.simulated ? '模拟关节目标' : arm.observed ? '刚读取的硬件反馈 · ' + new Date().toLocaleTimeString() : '等待显式读取硬件反馈';
 }
-async function api(action, body, options = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeout || 1500);
-  const headers = {Accept: 'application/json'};
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
-  try {
-    const response = await fetch('/api/' + action, {method: body === undefined ? 'GET' : 'POST', headers,
-      body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', redirect: 'error',
-      signal: controller.signal, keepalive: Boolean(options.keepalive)});
-    const data = await response.json();
-    if (!response.ok) throw new Error(data?.error || 'HTTP ' + response.status);
-    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('服务端返回格式错误');
-    return data;
-  } finally { clearTimeout(timer); }
-}
 function clearLocalControl() {
   epoch++;
   lease = null; acquiring = false; motionBusy = false;
@@ -274,17 +260,20 @@ function fail(error) {
   clearLocalControl();
   notice('请求失败，已停止本页控制：' + (error.message || String(error)) + '。检查连接后手动获取控制权。');
   // One best-effort stop only. Failed requests never restart motion or heartbeats.
-  if (previous) api('dog/stop', {lease: previous}, {keepalive: true}).catch(() => {});
+  if (previous) apiClient.stop(previous, {keepalive: true}).catch(() => {});
 }
-async function stop(action = 'dog/stop', message = '已请求停止并释放控制权；再次移动需要获取控制权并站立准备。') {
+async function stop(action = 'stop', message = '已请求停止并释放控制权；再次移动需要获取控制权并站立准备。') {
   const previous = lease;
   clearLocalControl();
   const stamp = epoch;
   notice(message);
-  if (action === 'control/release' && !previous) return;
-  const body = action === 'control/reset' ? {revision: state?.safety_revision} :
-    previous && ['dog/stop', 'arm/stop', 'control/release'].includes(action) ? {lease: previous} : {};
-  try { const data = await api(action, body, {keepalive: true}); if (epoch === stamp) updateState(data); }
+  if (action === 'release' && !previous) return;
+  try {
+    const options = {keepalive: true};
+    const data = await (action === 'reset' ? apiClient.reset(state?.safety_revision, options) :
+      action === 'estop' ? apiClient.estop(options) : apiClient[action](previous, options));
+    if (epoch === stamp) updateState(data);
+  }
   catch (error) { if (epoch === stamp) notice('停止请求失败：' + error.message + '。本页已停止续发；请使用物理停止手段。'); }
 }
 async function refreshDogAction(stamp) {
@@ -293,7 +282,7 @@ async function refreshDogAction(stamp) {
   if (pendingDogAction) { try { await pendingDogAction; } catch (_) {} }
   if (stamp !== epoch || !lease || !dogActionId) return;
   try {
-    const data = await api('status');
+    const data = await apiClient.status();
     if (stamp === epoch && lease) updateState(data);
   } catch (_) {}
 }
@@ -301,7 +290,7 @@ function startHeartbeat(stamp) {
   heartbeatTimer = setTimeout(async () => {
     if (stamp !== epoch || !lease) return;
     try {
-      const data = await api('control/heartbeat', {lease});
+      const data = await apiClient.heartbeat(lease);
       if (stamp !== epoch || !lease) return;
       updateState(data);
       if (stamp === epoch && lease) startHeartbeat(stamp);
@@ -317,17 +306,17 @@ async function acquire() {
   acquiring = true; render();
   const stamp = epoch;
   try {
-    const data = await api('control/acquire', {owner: 'browser-console'});
+    const data = await apiClient.acquire('browser-console');
     if (typeof data.lease !== 'string' || !data.lease) throw new Error('未收到有效控制权');
     if (stamp !== epoch || document.hidden) {
       // A response that arrives after blur/release must not resurrect ownership.
-      api('control/release', {lease: data.lease}, {keepalive: true}).catch(() => {});
+      apiClient.release(data.lease, {keepalive: true}).catch(() => {});
       return;
     }
     lease = data.lease; sequence = 0; acquiring = false;
-    updateState(data);
+    updateState(data.status);
     if (!canControl()) {
-      stop('control/release', hasEnvironment() ? '服务端控制状态已变更，正在释放控制权。' : unknownEnvironment);
+      stop('release', hasEnvironment() ? '服务端控制状态已变更，正在释放控制权。' : unknownEnvironment);
       return;
     }
     startHeartbeat(stamp);
@@ -345,14 +334,14 @@ async function owned(action, values = {}) {
   let request;
   motionBusy = true; render();
   try {
-    request = api(action, {...values, lease, seq: ++sequence});
-    if (action === 'dog/action') pendingDogAction = request;
+    request = apiClient[action](lease, ++sequence, values);
+    if (action === 'dogAction') pendingDogAction = request;
     const data = await request;
     if (stamp === epoch) {
-      if (action === 'dog/action') dogActionId = (data.status || data).dog?.action?.id || null;
+      if (action === 'dogAction') dogActionId = data.dog?.action?.id || null;
       updateState(data);
-      if (action === 'dog/stand' && hasEnvironment()) notice(state.dog?.simulated ? '模拟站立准备已接受，请等待「已准备」。' : '站立准备已接受，请等待「已准备」并查看机器狗反馈。');
-      if (action === 'dog/action' && lease) notice('定时动作已开始，页面持续发送心跳；切换窗口会请求停止。');
+      if (action === 'stand' && hasEnvironment()) notice(state.dog?.simulated ? '模拟站立准备已接受，请等待「已准备」。' : '站立准备已接受，请等待「已准备」并查看机器狗反馈。');
+      if (action === 'dogAction' && lease) notice('定时动作已开始，页面持续发送心跳；切换窗口会请求停止。');
     }
   } catch (error) { if (stamp === epoch) fail(error); }
   finally {
@@ -363,11 +352,11 @@ async function owned(action, values = {}) {
 async function renewVelocity(active) {
   if (hold !== active || epoch !== active.epoch || !lease) return;
   if (!canControl()) {
-    stop('dog/stop', hasEnvironment() ? '服务端控制状态已变更，已停止续发并请求停止。' : unknownEnvironment);
+    stop('stop', hasEnvironment() ? '服务端控制状态已变更，已停止续发并请求停止。' : unknownEnvironment);
     return;
   }
   try {
-    const data = await api('dog/velocity', {lease, seq: ++sequence, vx: 0, vy: 0, yaw: 0,
+    const data = await apiClient.velocity(lease, ++sequence, {
       [active.button.dataset.axis]: Number(active.button.dataset.value), ttl: 0.4});
     if (hold !== active || epoch !== active.epoch || !lease) return;
     updateState(data);
@@ -400,16 +389,16 @@ for (const button of driveButtons) {
 window.addEventListener('pointerup', event => { if (hold && hold.pointerId === event.pointerId) stop(); });
 window.addEventListener('pointercancel', () => { if (hold) stop(); });
 window.addEventListener('keyup', event => { if (hold?.key === event.key) { event.preventDefault(); stop(); } });
-function suspend() { if (lease || acquiring || hold) stop('dog/stop', '页面失焦或离开，已停止续发并请求停止。再次操作请手动获取控制权。'); }
+function suspend() { if (lease || acquiring || hold) stop('stop', '页面失焦或离开，已停止续发并请求停止。再次操作请手动获取控制权。'); }
 window.addEventListener('blur', suspend);
 window.addEventListener('pagehide', () => { suspend(); clearCamera('页面已离开'); });
 $('acquire').addEventListener('click', acquire);
-$('release').addEventListener('click', () => stop('control/release', '已请求释放控制权，所有续发已停止。'));
+$('release').addEventListener('click', () => stop('release', '已请求释放控制权，所有续发已停止。'));
 $('dog-stop').addEventListener('click', () => stop());
-$('arm-stop').addEventListener('click', () => stop('arm/stop', '已请求取消机械臂动作并释放控制权；保持结果请查看动作状态。'));
-$('estop').addEventListener('click', () => stop('control/estop', '已请求锁定软件急停；实体停止状态仍需现场确认。'));
-$('reset').addEventListener('click', () => stop('control/reset', '已请求复位软件急停。请手动获取控制权；复位不会启动运动。'));
-$('stand').addEventListener('click', () => owned('dog/stand'));
+$('arm-stop').addEventListener('click', () => stop('armStop', '已请求取消机械臂动作并释放控制权；保持结果请查看动作状态。'));
+$('estop').addEventListener('click', () => stop('estop', '已请求锁定软件急停；实体停止状态仍需现场确认。'));
+$('reset').addEventListener('click', () => stop('reset', '已请求复位软件急停。请手动获取控制权；复位不会启动运动。'));
+$('stand').addEventListener('click', () => owned('stand'));
 $('dog-action-name').addEventListener('change', () => {
   const turning = $('dog-action-name').value.startsWith('turn_');
   $('dog-action-speed-label').textContent = turning ? '速度 (rad/s)' : '速度 (m/s)';
@@ -419,23 +408,23 @@ $('dog-action-name').addEventListener('change', () => {
 $('dog-action-start').addEventListener('click', () => {
   if ($('dog-action-start').disabled) return;
   for (const id of ['dog-action-speed', 'dog-action-duration']) if (!$(id).reportValidity()) return;
-  owned('dog/action', {name: $('dog-action-name').value, speed: Number($('dog-action-speed').value),
+  owned('dogAction', {name: $('dog-action-name').value, speed: Number($('dog-action-speed').value),
     duration: Number($('dog-action-duration').value)});
 });
 for (const button of jointButtons) button.addEventListener('click', () => {
   const simulated = state?.arm?.simulated;
   const scale = !simulated && ['b', 'h'].includes(button.dataset.joint) ? .5 : 1;
-  owned('arm/jog', {joint: button.dataset.joint, delta: Number(button.dataset.delta) * scale, speed: simulated ? 2 : 1});
+  owned('armJog', {joint: button.dataset.joint, delta: Number(button.dataset.delta) * scale, speed: simulated ? 2 : 1});
 });
 async function readArm(action) {
   if (armBusy) return;
   const stamp = epoch, requestedLease = lease, revision = armRevision;
   armBusy = true; render();
   try {
-    const data = await api(action, {}, {timeout: 6000});
+    const data = await apiClient[action]();
     if (stamp !== epoch || requestedLease !== lease || revision !== armRevision) return;
-    renderArm(data.arm || data);
-    notice(action === 'arm/state' ? '机械臂状态已读取。' : '机械臂已显式重连；请手动读取反馈。');
+    renderArm(data);
+    notice(action === 'armState' ? '机械臂状态已读取。' : '机械臂已显式重连；请手动读取反馈。');
   } catch (error) {
     if (stamp !== epoch || requestedLease !== lease || revision !== armRevision) return;
     for (const joint of ['b', 's', 'e', 'w', 'h']) $('joint-' + joint).textContent = '未知';
@@ -443,12 +432,12 @@ async function readArm(action) {
   }
   finally { armBusy = false; render(); }
 }
-$('arm-state').addEventListener('click', () => readArm('arm/state'));
-$('arm-reconnect').addEventListener('click', () => readArm('arm/reconnect'));
+$('arm-state').addEventListener('click', () => readArm('armState'));
+$('arm-reconnect').addEventListener('click', () => readArm('armReconnect'));
 async function pollStatus() {
   const stamp = epoch, requestedLease = lease;
   try {
-    const data = await api('status');
+    const data = await apiClient.status();
     // A snapshot begun before acquire/release describes the previous session.
     if (stamp !== epoch || requestedLease !== lease) return;
     updateState(data);

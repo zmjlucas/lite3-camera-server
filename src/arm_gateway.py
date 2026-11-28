@@ -14,14 +14,14 @@ if TYPE_CHECKING:
     from typing import Any
     from lite3_dev_server.api import ArmGatewayReconnect, ObservedArmState
 
-try:
-    from .remote.arm_worker import (LIMITS_DEG, MAX_LINE, MOTION_BLOCK_REASON,
-                                    decode_json, finite_angle, observed_state,
-                                    validate_device)
-except ImportError:  # Direct src/server.py deployment.
+if TYPE_CHECKING or not __package__:  # Direct src/server.py deployment.
     from remote.arm_worker import (LIMITS_DEG, MAX_LINE, MOTION_BLOCK_REASON,
                                   decode_json, finite_angle, observed_state,
                                   validate_device)
+else:
+    from .remote.arm_worker import (LIMITS_DEG, MAX_LINE, MOTION_BLOCK_REASON,
+                                    decode_json, finite_angle, observed_state,
+                                    validate_device)
 
 
 class ArmGatewayError(RuntimeError):

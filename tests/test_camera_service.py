@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from src import server
+from src import camera, server
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,9 +152,9 @@ class BootCaptureTests(unittest.TestCase):
                               CAP_PROP_FRAME_WIDTH=3, CAP_PROP_FRAME_HEIGHT=4, CAP_PROP_FPS=5,
                               imencode=encode, IMWRITE_JPEG_QUALITY=1)
         discover = lambda: [entry] if opened else []
-        with patch.dict(sys.modules, {"cv2": cv2}), patch.object(server, "discover_sources", discover), \
-                patch.object(server.os.path, "realpath", side_effect=lambda path: "/dev/video6" if path == device else path):
-            controller = server.CaptureController(options)
+        with patch.dict(sys.modules, {"cv2": cv2}), patch.object(camera, "discover_sources", discover), \
+                patch.object(camera.os.path, "realpath", side_effect=lambda path: "/dev/video6" if path == device else path):
+            controller = camera.CaptureController(options)
             controller.start()
             # Use the controller's real stop event in the simulated device encoder.
             stop = controller._stop
@@ -174,8 +174,8 @@ class BootCaptureTests(unittest.TestCase):
         paths = []
         def capture(options, frames, stop):
             paths.append(options.device)
-        with patch.object(server.os.path, "realpath", side_effect=lambda path: "/dev/video6" if path == device else path):
-            controller = server.CaptureController(options, discover=lambda: [entry], capture_fn=capture)
+        with patch.object(camera.os.path, "realpath", side_effect=lambda path: "/dev/video6" if path == device else path):
+            controller = camera.CaptureController(options, discover=lambda: [entry], capture_fn=capture)
             controller.start()
             controller.producer.join(1)
             controller.shutdown()
@@ -185,7 +185,7 @@ class BootCaptureTests(unittest.TestCase):
         # Without retry the first boot-time USB error leaves HTTP permanently unhealthy.
         options = server.parse_args(["--source", "v4l2", "--device", "/dev/video4"])
         options.retry_camera = True
-        frames = server.LatestFrame("v4l2")
+        frames = camera.LatestFrame("v4l2")
         stop = threading.Event()
         attempts = []
         def delayed_camera(options, stop):
@@ -194,8 +194,8 @@ class BootCaptureTests(unittest.TestCase):
                 raise RuntimeError("Camera is still initializing")
             yield b"ready-frame"
             stop.set()
-        with patch.object(server, "v4l2_frames", delayed_camera):
-            worker = threading.Thread(target=server.capture, args=(options, frames, stop), daemon=True)
+        with patch.object(camera, "v4l2_frames", delayed_camera):
+            worker = threading.Thread(target=camera.capture, args=(options, frames, stop), daemon=True)
             worker.start()
             worker.join(7)
             stop.set()
@@ -212,9 +212,9 @@ class BootCaptureTests(unittest.TestCase):
             failed.set()
             raise RuntimeError("Camera not ready")
             yield
-        with patch.object(server, "v4l2_frames", missing_camera):
-            worker = threading.Thread(target=server.capture,
-                                      args=(options, server.LatestFrame("v4l2"), stop), daemon=True)
+        with patch.object(camera, "v4l2_frames", missing_camera):
+            worker = threading.Thread(target=camera.capture,
+                                      args=(options, camera.LatestFrame("v4l2"), stop), daemon=True)
             worker.start()
             self.assertTrue(failed.wait(1))
             stop.set()

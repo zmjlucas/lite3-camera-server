@@ -51,6 +51,9 @@ OBSERVER = r"""
     await ready();
     press();
     await until(async () => await count('dog/velocity') === 1, 'first velocity');
+    assert($('dog-action-start').disabled, 'held drive blocks timed action');
+    await owned('dogAction', {name: 'forward', speed: 0.1, duration: 1});
+    assert(await count('dog/action') === 0, 'held drive rejects competing owned actions');
     release();
     await until(async () => await count('dog/stop') >= 1, 'release stop');
     await delay(800);
@@ -166,6 +169,11 @@ OBSERVER = r"""
     await until(() => !$('dog-action-start').disabled, 'feedback enables predefined action');
     assert($('dog-feedback').textContent.includes('实测') && $('dog-feedback').textContent.includes('6 / 0 / 0'),
       'measured standing feedback must be visible separately from command phase');
+    $('dog-action-speed').value = '0.21';
+    $('dog-action-start').click();
+    await delay(100);
+    assert(await count('dog/action') === 0, 'invalid action speed must not be submitted');
+    $('dog-action-speed').value = '0.1';
     $('dog-action-duration').value = '11';
     $('dog-action-start').click();
     await delay(100);
@@ -340,6 +348,7 @@ def main():
             try:
                 self.send_response(code)
                 self.send_header('Content-Type', content_type)
+                self.send_header('X-Lite3-Dev-Protocol', '1')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -349,6 +358,9 @@ def main():
         def do_GET(self):
             if self.path == '/':
                 self.reply(200, page, 'text/html; charset=utf-8')
+            elif self.path == '/static/dev_client.js':
+                script = (Path(__file__).resolve().parents[1] / 'src/web/dev_client.js').read_bytes()
+                self.reply(200, script, 'application/javascript; charset=utf-8')
             elif self.path == '/api/status':
                 if fixture['completion_heartbeat']:
                     time.sleep(0.7)

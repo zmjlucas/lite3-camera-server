@@ -91,7 +91,7 @@ class DogActionTests(unittest.TestCase):
         lease = self.service.dispatch('control/acquire', {'owner': 'test'})['lease']
         with self.assertRaises(control.ControlError) as error:
             self.action(lease)
-        self.assertEqual(error.exception.status, 409)
+        self.assertEqual(error.exception.code, 'conflict')
         self.service.dispatch('control/release', {'lease': lease})
         sink = DatagramSink()
         with patch.object(control.socket, 'socket', return_value=sink):
@@ -100,7 +100,7 @@ class DogActionTests(unittest.TestCase):
             lease = self.ready(hardware)
             with self.assertRaises(control.ControlError) as error:
                 self.action(lease, hardware)
-            self.assertEqual(error.exception.status, 409)
+            self.assertEqual(error.exception.code, 'conflict')
             self.assertFalse(hardware.status()['dog']['actions_enabled'])
 
     def test_hardware_start_and_each_write_require_fresh_suitable_feedback(self):
@@ -151,7 +151,7 @@ class DogActionTests(unittest.TestCase):
         self.action(lease)
         with self.assertRaises(control.ControlError) as error:
             self.action(lease, seq=3)
-        self.assertEqual(error.exception.status, 409)
+        self.assertEqual(error.exception.code, 'conflict')
         with self.assertRaises(control.ControlError):
             self.service.dispatch('dog/velocity', dict(lease=lease, seq=3, vx=.1, vy=0, yaw=0, ttl=.3))
         self.service.dispatch('dog/stop', {})
@@ -167,7 +167,7 @@ class DogActionTests(unittest.TestCase):
                        dict(duration=True), dict(extra=1)):
             with self.subTest(values=values), self.assertRaises(control.ControlError) as error:
                 self.action(lease, **values)
-            self.assertEqual(error.exception.status, 400)
+            self.assertEqual(error.exception.code, 'invalid_request')
         self.assertEqual(self.action(lease)['dog']['action']['phase'], 'running')
 
     def test_completion_emits_existing_bounded_hardware_stop(self):

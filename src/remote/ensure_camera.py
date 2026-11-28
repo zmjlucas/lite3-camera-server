@@ -11,38 +11,32 @@ import sys
 import time
 
 
-def camera_available(port, starting=False, require_dev=False, environment="dist", simulate=False,
+def camera_available(port, starting=False, environment="dist", simulate=False,
                      control_mode="hardware", arm_diagnostics=False):
     # Probe exactly this listener: no environment proxy or HTTP redirects.
     connection = HTTPConnection("127.0.0.1", port, timeout=1)
     try:
         connection.request("GET", "/healthz")
         response = connection.getresponse()
-        if response.status in (200, 503) and response.getheader("X-Lite3-Camera-Protocol") == "1":
-            dev_protocol = response.getheader("X-Lite3-Dev-Protocol")
-            if require_dev and dev_protocol != "1":
-                raise RuntimeError("This listener is a camera-only server. Deploy and explicitly restart it to use robot control.")
+        if (response.status in (200, 503)
+                and response.getheader("X-Lite3-Camera-Protocol") == "1"
+                and response.getheader("X-Lite3-Dev-Protocol") == "1"):
             actual_environment = response.getheader("X-Lite3-Environment")
             actual_simulated = response.getheader("X-Lite3-Simulated")
             actual_mode = response.getheader("X-Lite3-Control-Mode")
             actual_diagnostics = response.getheader("X-Lite3-Arm-Diagnostics")
-            # Legacy camera-only listeners remain usable for ordinary camera viewing.
-            # Every control-capable listener must identify its runtime configuration.
-            if (dev_protocol is not None or actual_environment is not None or actual_simulated is not None
-                    or actual_mode is not None or actual_diagnostics is not None
-                    or require_dev or environment != "dist" or simulate or arm_diagnostics):
-                if (actual_environment not in ("dev", "dist") or actual_simulated not in ("true", "false")
-                        or actual_mode not in ("disabled", "readonly", "hardware")
-                        or actual_diagnostics not in ("true", "false")):
-                    raise RuntimeError("Cannot verify this server's environment, simulation, control mode and arm diagnostics settings. "
-                                       "Deploy and explicitly restart it before reuse.")
-                if (actual_environment != environment or actual_simulated != ("true" if simulate else "false")
-                        or actual_mode != control_mode or actual_diagnostics != ("true" if arm_diagnostics else "false")):
-                    raise RuntimeError("The running server's environment, simulation, control mode or arm diagnostics setting differs from this launch. "
-                                       "Explicitly restart it with the requested settings before reuse.")
+            if (actual_environment not in ("dev", "dist") or actual_simulated not in ("true", "false")
+                    or actual_mode not in ("disabled", "readonly", "hardware")
+                    or actual_diagnostics not in ("true", "false")):
+                raise RuntimeError("Cannot verify this server's environment, simulation, control mode and arm diagnostics settings. "
+                                   "Deploy and explicitly restart it before reuse.")
+            if (actual_environment != environment or actual_simulated != ("true" if simulate else "false")
+                    or actual_mode != control_mode or actual_diagnostics != ("true" if arm_diagnostics else "false")):
+                raise RuntimeError("The running server's environment, simulation, control mode or arm diagnostics setting differs from this launch. "
+                                   "Explicitly restart it with the requested settings before reuse.")
             return True
-        raise RuntimeError("The remote port is occupied by an incompatible server. "
-                           "Stop the old server and run deploy, or select another --remote-port.")
+        raise RuntimeError("The remote listener does not advertise the required camera and development protocols. "
+                           "Stop the server and run deploy, or select another --remote-port.")
     except (OSError, HTTPException) as error:
         if starting or getattr(error, "errno", None) == errno.ECONNREFUSED:
             return False
@@ -61,9 +55,6 @@ def report(message):
 
 def ensure_server(server_path, port, options):
     options = list(options)
-    require_dev = "--require-dev" in options
-    if require_dev:
-        options.remove("--require-dev")
     identity_parser = argparse.ArgumentParser(add_help=False)
     identity_parser.add_argument("--env", choices=("dev", "dist"), default="dist")
     identity_parser.add_argument("--simulate", action="store_true")
@@ -72,7 +63,7 @@ def ensure_server(server_path, port, options):
     identity, _ = identity_parser.parse_known_args(options)
     if identity.simulate and identity.env != "dev":
         raise RuntimeError("--simulate requires --env dev")
-    expected = dict(require_dev=require_dev, environment=identity.env, simulate=identity.simulate,
+    expected = dict(environment=identity.env, simulate=identity.simulate,
                     control_mode=identity.control_mode, arm_diagnostics=identity.arm_motion_profile is not None)
     server_path = Path(server_path)
     # A sibling launcher may hold the lock while its new listener initializes.

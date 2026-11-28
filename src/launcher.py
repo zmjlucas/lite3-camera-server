@@ -30,12 +30,17 @@ REMOTE_SCRIPTS = SERVER.parent / "remote"
 SERVER_BUNDLE = ((SERVER.parent / "wide_angle.py", "lite3-camera-server/"),
                  (SERVER.parent / "dog_actions.py", "lite3-camera-server/"),
                  (SERVER.parent / "dog_state.py", "lite3-camera-server/"),
+                 (SERVER.parent / "camera_sources.py", "lite3-camera-server/"),
+                 (SERVER.parent / "camera.py", "lite3-camera-server/"),
+                 (SERVER.parent / "application.py", "lite3-camera-server/"),
+                 (SERVER.parent / "http_server.py", "lite3-camera-server/"),
                  (SERVER.parent / "arm_motion.py", "lite3-camera-server/"),
                  (SERVER.parent / "web" / "camera.html", "lite3-camera-server/web/"),
                  (SERVER.parent / "control.py", "lite3-camera-server/"),
                  (SERVER.parent / "arm_gateway.py", "lite3-camera-server/"),
                  (SERVER.parent / "remote" / "arm_worker.py", "lite3-camera-server/remote/"),
                  (SERVER.parent / "web" / "control.html", "lite3-camera-server/web/"),
+                 (SERVER.parent / "web" / "dev_client.js", "lite3-camera-server/web/"),
                  (SERVER, "lite3-camera-server/"))
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
@@ -222,8 +227,6 @@ def environment_options(args):
 def real_script(args):
     options = (["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args)
                + environment_options(args) + control_options(args))
-    if getattr(args, "console", False) or control_options(args) or getattr(args, "env", None) is not None:
-        options.insert(0, "--require-dev")
     return remote_shell("view_camera.sh", remote_source("ensure_camera.py"),
                         args.remote_port, *options)
 
@@ -343,7 +346,7 @@ def deploy(args, jump):
     return 0
 
 
-def run_foreground(command, url, open_browser, native=False, expected_identity=None, require_dev=False):
+def run_foreground(command, url, open_browser, native=False, expected_identity=None):
     with socket.socket() as listener:
         # Windows SO_REUSEADDR permits stealing an occupied listener's address.
         listener.setsockopt(socket.SOL_SOCKET,
@@ -376,15 +379,11 @@ def run_foreground(command, url, open_browser, native=False, expected_identity=N
                         ready = response.status == 200
                         if native:
                             ready = (ready and response.geturl() == url and
-                                     response.headers.get("X-Lite3-Camera-Protocol") == "1")
+                                     response.headers.get("X-Lite3-Camera-Protocol") == "1" and
+                                     response.headers.get("X-Lite3-Dev-Protocol") == "1")
                             if expected_identity is not None:
-                                dev_protocol = response.headers.get("X-Lite3-Dev-Protocol")
-                                reported = any(response.headers.get(name) is not None for name in expected_identity)
-                                # Preserve legacy camera-only viewing; control consoles need a complete identity.
-                                if require_dev or dev_protocol is not None or reported:
-                                    ready = (ready and (not require_dev or dev_protocol == "1")
-                                             and all(response.headers.get(name) == value
-                                                     for name, value in expected_identity.items()))
+                                ready = ready and all(response.headers.get(name) == value
+                                                      for name, value in expected_identity.items())
                     if ready and process.poll() is None:
                         if not webbrowser.open(url):
                             print("Open the viewer: " + url, flush=True)
@@ -528,9 +527,8 @@ def main(argv=None):
                                  "X-Lite3-Simulated": "true" if args.simulate else "false",
                                  "X-Lite3-Control-Mode": args.control_mode or "hardware",
                                  "X-Lite3-Arm-Diagnostics": "true" if args.arm_motion_profile is not None else "false"}
-        require_dev = bool(getattr(args, "console", False) or control_options(args) or args.env is not None)
         return run_foreground(command, url, not args.no_open, native=args.backend != "ros",
-                              expected_identity=expected_identity, require_dev=require_dev)
+                              expected_identity=expected_identity)
     except KeyboardInterrupt:
         return 130
     except OSError as exc:

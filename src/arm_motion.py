@@ -223,26 +223,28 @@ class ArmMotionGateway:
     def _schedule_close(self):
         # Called under the gate. The last owner arranges shutdown. Device close
         # can block in a driver, so neither admission nor shutdown joins it indefinitely.
-        if (not self._closed or self._active or self._busy or
-                (self._session is None and self._profile is None)):
+        if not self._closed or self._active or self._busy:
             return
-        self._busy = True
-        session, self._session = self._session, None
-        profile, self._profile = self._profile, None
-        self._connected = False
+        if self._profile is not None:
+            # The profile pins a local directory descriptor. No serial driver is involved.
+            self._profile.close()
+            self._profile = None
+        session = self._session
+        if session is None:
+            return
 
         def retire():
             try:
-                if session is not None:
-                    session.close()
+                session.close()
             finally:
-                try:
-                    if profile:
-                        profile.close()
-                finally:
-                    self._release_idle()
+                self._release_idle()
 
+        # The worker's final gate acquisition follows this ownership transfer.
+        # If it cannot start, a later close still owns the session.
         threading.Thread(target=retire, name="r5-close", daemon=True).start()
+        self._busy = True
+        self._session = None
+        self._connected = False
 
     def _release_idle(self):
         with self._gate:

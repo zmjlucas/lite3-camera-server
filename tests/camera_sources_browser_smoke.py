@@ -15,7 +15,6 @@ import threading
 import time
 
 from camera_browser_smoke import find_browser
-from src.server import PAGE
 
 
 def main():
@@ -44,12 +43,17 @@ def main():
                 + b"\r\n\r\n" + jpeg + b"\r\n")
     full_part, cropped_part = part(frame), part(cropped)
     observer = (fixtures / "camera_sources_observer.html").read_text(encoding="utf-8")
-    page = PAGE.replace("__SOURCE_LABEL__", "Camera").replace("<script>", observer + "<script>", 1).encode()
+    template = (Path(__file__).resolve().parents[1] / "src/web/camera.html").read_text(encoding="utf-8")
+    page = template.replace("__SOURCE_LABEL__", "Camera").replace("<script>", observer + "<script>", 1).encode()
     sources = [
-        {"id": "rgb", "label": "/dev/video4 — D435i RGB", "device": "/dev/video4", "backend": "v4l2"},
-        {"id": "arm", "label": "/dev/video6 — Arm camera (SXW USB Camera)", "device": "/dev/video6", "backend": "v4l2"},
-        {"id": "blocked", "label": "/dev/video10 — D435i RGB", "device": "/dev/video10", "backend": "v4l2"},
-        {"id": "wide", "label": "Lite3 wide-angle camera", "device": "192.168.1.120", "backend": "rtsp"},
+        {"id": "rgb", "label": "/dev/video4 — D435i RGB", "device": "/dev/video4", "backend": "v4l2",
+         "available": True, "error": None},
+        {"id": "arm", "label": "/dev/video6 — Arm camera (SXW USB Camera)", "device": "/dev/video6", "backend": "v4l2",
+         "available": True, "error": None},
+        {"id": "blocked", "label": "/dev/video10 — D435i RGB", "device": "/dev/video10", "backend": "v4l2",
+         "available": True, "error": None},
+        {"id": "wide", "label": "Lite3 wide-angle camera", "device": "192.168.1.120", "backend": "rtsp",
+         "available": True, "error": None},
     ]
 
     class Handler(BaseHTTPRequestHandler):

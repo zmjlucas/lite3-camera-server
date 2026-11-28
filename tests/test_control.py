@@ -4,7 +4,7 @@ import struct
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from src import control
 
@@ -56,10 +56,10 @@ class ControlTests(unittest.TestCase):
     def acquire(self, service=None):
         return (service or self.service).dispatch('control/acquire', {'owner': 'test'})['lease']
 
-    def assert_error(self, status, action, body, service=None):
+    def assert_error(self, code, action, body, service=None):
         with self.assertRaises(control.ControlError) as caught:
             (service or self.service).dispatch(action, body)
-        self.assertEqual(caught.exception.status, status)
+        self.assertEqual(caught.exception.code, code)
 
     def ready(self, service=None, lease=None):
         service = service or self.service
@@ -117,13 +117,39 @@ class ControlTests(unittest.TestCase):
             finally:
                 service.close()
 
+    def test_failed_writer_start_leaves_feedback_cleanup_available(self):
+        feedback = Mock()
+        service = control.ControlService(environment='dev', simulate=True, dog_state=feedback)
+        self.addCleanup(service.close)
+        with patch.object(control.threading.Thread, 'start', side_effect=RuntimeError('start failed')):
+            with self.assertRaisesRegex(RuntimeError, 'start failed'):
+                service.start()
+        self.assertIsNone(service._thread)
+        service.close()
+        service.close()
+        feedback.start.assert_called_once_with()
+        feedback.close.assert_called_once_with()
+
+    def test_feedback_cleanup_can_retry_after_failure(self):
+        feedback = Mock()
+        feedback.close.side_effect = [RuntimeError('close failed'), None]
+        service = control.ControlService(environment='dev', simulate=True, dog_state=feedback)
+        self.addCleanup(service.close)
+        service.dispatch('control/acquire', {'owner': 'test'})
+        with self.assertRaisesRegex(RuntimeError, 'close failed'):
+            service.close()
+        self.assertFalse(service.status()['lease_active'])
+        service.close()
+        service.close()
+        self.assertEqual(feedback.close.call_count, 2)
+
     def test_lease_is_exclusive_unpredictable_and_absent_from_public_status(self):
         lease = self.acquire()
         self.assertGreaterEqual(len(lease), 32)
-        self.assert_error(409, 'control/acquire', {'owner': 'second'})
+        self.assert_error('conflict', 'control/acquire', {'owner': 'second'})
         self.assertNotIn(lease, json.dumps(self.service.status()))
-        self.assert_error(409, 'control/heartbeat', {'lease': 'wrong'})
-        self.assert_error(409, 'control/heartbeat', {'lease': '无效'})
+        self.assert_error('conflict', 'control/heartbeat', {'lease': 'wrong'})
+        self.assert_error('conflict', 'control/heartbeat', {'lease': '无效'})
         self.service.dispatch('control/release', {'lease': lease})
         self.assertNotEqual(lease, self.acquire())
 
@@ -135,17 +161,17 @@ class ControlTests(unittest.TestCase):
         status = self.service.status()
         self.assertFalse(status['lease_active'])
         self.assertEqual(status['dog']['phase'], 'disarmed')
-        self.assert_error(409, 'dog/velocity', {'lease': lease, 'seq': 2, 'vx': .1, 'vy': 0, 'yaw': 0, 'ttl': .5})
+        self.assert_error('conflict', 'dog/velocity', {'lease': lease, 'seq': 2, 'vx': .1, 'vy': 0, 'yaw': 0, 'ttl': .5})
 
     def test_velocity_requires_preparation_and_sequences_reject_replay(self):
         lease = self.acquire()
         velocity = {'lease': lease, 'seq': 2, 'vx': .1, 'vy': 0, 'yaw': 0, 'ttl': .5}
-        self.assert_error(409, 'dog/velocity', velocity)
+        self.assert_error('conflict', 'dog/velocity', velocity)
         self.ready(lease=lease)
         self.service.dispatch('dog/velocity', velocity)
         self.assertEqual(self.service.status()['dog']['velocity']['vx'], .1)
-        self.assert_error(409, 'dog/velocity', velocity)
-        self.assert_error(409, 'dog/stand', {'lease': lease, 'seq': 1})
+        self.assert_error('conflict', 'dog/velocity', velocity)
+        self.assert_error('conflict', 'dog/stand', {'lease': lease, 'seq': 1})
 
     def test_heartbeat_does_not_extend_velocity_deadline(self):
         lease = self.ready()
@@ -162,20 +188,34 @@ class ControlTests(unittest.TestCase):
     def test_observer_stop_revokes_lease_and_rejects_delayed_high_sequence_motion(self):
         lease = self.ready()
         self.service.dispatch('dog/stop', {})
-        self.assert_error(409, 'dog/stand', {'lease': lease, 'seq': 500})
-        self.assert_error(409, 'arm/jog', {'lease': lease, 'seq': 501, 'joint': 'b', 'delta': 1, 'speed': 2})
+        self.assert_error('conflict', 'dog/stand', {'lease': lease, 'seq': 500})
+        self.assert_error('conflict', 'arm/jog', {'lease': lease, 'seq': 501, 'joint': 'b', 'delta': 1, 'speed': 2})
+        self.assertFalse(self.service.status()['lease_active'])
+
+    def test_stop_rejects_unused_fields_without_revoking_control(self):
+        lease = self.acquire()
+        for action, body in (
+                ('dog/stop', {'lease': lease, 'seq': 1}),
+                ('arm/stop', {'seq': 1}),
+                ('control/estop', {'seq': 1}),
+                ('control/estop', {'lease': lease})):
+            with self.subTest(action=action, body=body):
+                self.assert_error('invalid_request', action, body)
+                self.assertTrue(self.service.status()['lease_active'])
+                self.assertFalse(self.service.status()['estop'])
+        self.service.dispatch('arm/stop', {'lease': lease})
         self.assertFalse(self.service.status()['lease_active'])
 
     def test_estop_is_latched_and_reset_does_not_restore_lease(self):
         lease = self.acquire()
         self.service.dispatch('control/estop', {})
         self.assertTrue(self.service.status()['estop'])
-        self.assert_error(423, 'control/acquire', {'owner': 'test'})
+        self.assert_error('locked', 'control/acquire', {'owner': 'test'})
         revision = self.service.status().get('safety_revision')
         self.service.dispatch('control/reset', {'revision': revision})
         self.assertFalse(self.service.status()['estop'])
         self.assertFalse(self.service.status()['lease_active'])
-        self.assert_error(409, 'control/heartbeat', {'lease': lease})
+        self.assert_error('conflict', 'control/heartbeat', {'lease': lease})
 
     def test_reset_requires_an_observed_revision(self):
         self.service.dispatch('control/estop', {})
@@ -183,7 +223,7 @@ class ControlTests(unittest.TestCase):
                      {'revision': []}, {'revision': {}}, {'revision': ''},
                      {'revision': '无效'}, {'revision': 'x' * 129}):
             with self.subTest(body=body):
-                self.assert_error(400, 'control/reset', body)
+                self.assert_error('invalid_request', 'control/reset', body)
                 self.assertTrue(self.service.status()['estop'])
 
     def test_delayed_reset_cannot_clear_a_newer_estop_after_stop_completes(self):
@@ -199,9 +239,9 @@ class ControlTests(unittest.TestCase):
             service._tick()
             self.clock.advance(.051)
         self.assertEqual(service.status()['dog']['phase'], 'disarmed')
-        self.assert_error(409, 'control/reset', delayed_reset, service)
+        self.assert_error('conflict', 'control/reset', delayed_reset, service)
         self.assertTrue(service.status()['estop'])
-        self.assert_error(423, 'control/acquire', {'owner': 'test'}, service)
+        self.assert_error('locked', 'control/acquire', {'owner': 'test'}, service)
         self.assertEqual(len(sink.packets), control.STOP_BURSTS * 6)
         service.dispatch('control/reset', {'revision': current})
         self.assertFalse(service.status()['estop'])
@@ -213,7 +253,7 @@ class ControlTests(unittest.TestCase):
         self.service.dispatch('control/reset', {'revision': revision})
         self.assertNotEqual(revision, self.service.status().get('safety_revision'))
         lease = self.acquire()
-        self.assert_error(409, 'control/reset', {'revision': revision})
+        self.assert_error('conflict', 'control/reset', {'revision': revision})
         self.service.dispatch('control/heartbeat', {'lease': lease})
 
     def test_revision_from_previous_server_cannot_reset_a_restarted_service(self):
@@ -221,7 +261,7 @@ class ControlTests(unittest.TestCase):
         restarted = control.ControlService(clock=self.clock, environment='dev', simulate=True)
         self.addCleanup(restarted.close)
         self.assertNotEqual(previous, restarted.status().get('safety_revision'))
-        self.assert_error(409, 'control/reset', {'revision': previous}, restarted)
+        self.assert_error('conflict', 'control/reset', {'revision': previous}, restarted)
 
     def test_new_transport_failure_invalidates_reset_but_repeated_failure_does_not(self):
         service, sink = self.hardware()
@@ -236,7 +276,7 @@ class ControlTests(unittest.TestCase):
             service._tick()
             self.clock.advance(.051)
         self.assertEqual(current, service.status().get('safety_revision'))
-        self.assert_error(409, 'control/reset', {'revision': previous}, service)
+        self.assert_error('conflict', 'control/reset', {'revision': previous}, service)
         self.assertIsNotNone(service.status()['dog']['error'])
         sink.fail_codes.clear()
         service.dispatch('control/reset', {'revision': current})
@@ -249,7 +289,7 @@ class ControlTests(unittest.TestCase):
         self.service.dispatch('dog/stand', {'lease': current, 'seq': 1})
         for supplied in (old, 'unknown', None, []):
             with self.subTest(lease=supplied):
-                self.assert_error(409, 'dog/stop', {'lease': supplied})
+                self.assert_error('conflict', 'dog/stop', {'lease': supplied})
                 self.assertTrue(self.service.status()['lease_active'])
                 self.assertEqual(self.service.status()['dog']['phase'], 'preparing')
         self.service.dispatch('dog/stop', {'lease': current})
@@ -273,7 +313,7 @@ class ControlTests(unittest.TestCase):
             body = dict(valid)
             body[key] = value
             with self.subTest(key=key, value=value):
-                self.assert_error(400, 'dog/velocity', body)
+                self.assert_error('invalid_request', 'dog/velocity', body)
         self.service.dispatch('dog/velocity', valid)
 
     def test_simulated_arm_limits_and_sequence_protect_targets(self):
@@ -281,20 +321,20 @@ class ControlTests(unittest.TestCase):
         body = {'lease': lease, 'seq': 1, 'joint': 'b', 'delta': 2, 'speed': 5}
         self.service.dispatch('arm/jog', body)
         self.assertEqual(self.service.status()['arm']['position_deg']['b'], 2)
-        self.assert_error(409, 'arm/jog', body)
+        self.assert_error('conflict', 'arm/jog', body)
         for key, value in [('joint', 'unknown'), ('delta', 2.1), ('delta', True),
                            ('speed', 5.1), ('speed', 0), ('delta', float('nan'))]:
             invalid = dict(body, seq=2)
             invalid[key] = value
-            self.assert_error(400, 'arm/jog', invalid)
+            self.assert_error('invalid_request', 'arm/jog', invalid)
         for seq in range(2, 91):
             self.service.dispatch('arm/jog', dict(body, seq=seq))
         self.assertEqual(self.service.status()['arm']['position_deg']['b'], 180)
-        self.assert_error(400, 'arm/jog', dict(body, seq=91))
+        self.assert_error('invalid_request', 'arm/jog', dict(body, seq=91))
 
     def test_hardware_arm_is_blocked_without_opening_any_transport(self):
         service, sink = self.hardware()
-        self.assert_error(423, 'arm/jog', {'joint': 'b', 'delta': 1, 'speed': 1}, service)
+        self.assert_error('locked', 'arm/jog', {'joint': 'b', 'delta': 1, 'speed': 1}, service)
         self.assertEqual(sink.packets, [])
         self.assertFalse(service.status()['arm']['motion_enabled'])
         self.assertEqual(service.status()['arm']['reason'],
@@ -333,8 +373,8 @@ class ControlTests(unittest.TestCase):
 
         service.dispatch('control/release', {'lease': lease})
         self.assertFalse(service.status()['lease_active'])
-        self.assert_error(409, 'control/acquire', {'owner': 'next'}, service)
-        self.assert_error(409, 'dog/stand', {'lease': lease, 'seq': 2}, service)
+        self.assert_error('conflict', 'control/acquire', {'owner': 'next'}, service)
+        self.assert_error('conflict', 'dog/stand', {'lease': lease, 'seq': 2}, service)
         for _ in range(10):
             service._tick()
             self.clock.advance(.051)
@@ -376,7 +416,8 @@ class ControlTests(unittest.TestCase):
                     sink.fail_codes.clear()
                 else:
                     body = ({'revision': service.status()['safety_revision']}
-                            if action == 'control/reset' else {'lease': lease})
+                            if action == 'control/reset' else
+                            {} if action == 'control/estop' else {'lease': lease})
                     service.dispatch(action, body)
                 sink.packets[:] = []
                 service._tick()
@@ -414,7 +455,7 @@ class ControlTests(unittest.TestCase):
                 self.assertNotIn(0x21010300, codes)
                 self.assertEqual(service.status()['dog']['phase'], 'error')
                 self.assertIsNotNone(service.status()['dog']['error'])
-                self.assert_error(423, 'control/acquire', {'owner': 'test'}, service)
+                self.assert_error('locked', 'control/acquire', {'owner': 'test'}, service)
                 sink.fail_codes.clear()
                 service.dispatch('control/reset', {'revision': service.status().get('safety_revision')})
                 self.assertFalse(service.status()['lease_active'])
@@ -461,7 +502,7 @@ class ControlTests(unittest.TestCase):
         self.assertIn(0x21010D05, [p[0] for p in sink.packets])
         self.assertIn((0x21010C0A, 0, 0, ('127.0.0.1', 43893)), sink.packets)
         self.assertFalse(service.status()['lease_active'])
-        self.assert_error(503, 'control/acquire', {'owner': 'test'}, service)
+        self.assert_error('unavailable', 'control/acquire', {'owner': 'test'}, service)
 
     def test_failed_socket_configuration_never_uses_an_unbounded_socket(self):
         service, sink = self.hardware()
@@ -515,11 +556,11 @@ class ControlTests(unittest.TestCase):
             service.close()
 
     def test_bad_actions_modes_and_udp_targets_are_rejected(self):
-        self.assert_error(404, 'dog/raw', {})
-        self.assert_error(400, 'control/acquire', [])
+        self.assert_error('not_found', 'dog/raw', {})
+        self.assert_error('invalid_request', 'control/acquire', [])
         disabled = control.ControlService(mode='disabled', clock=self.clock)
         self.addCleanup(disabled.close)
-        self.assert_error(503, 'control/acquire', {'owner': 'test'}, disabled)
+        self.assert_error('unavailable', 'control/acquire', {'owner': 'test'}, disabled)
         for options in ({'mode': 'invalid'}, {'mode': 'hardware', 'dog_host': 'robot.invalid'},
                         {'mode': 'hardware', 'dog_host': 2130706433},
                         {'mode': 'hardware', 'dog_port': True}, {'mode': 'hardware', 'dog_port': 65536}):

@@ -11,7 +11,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from src import server, wide_angle
+from src import camera, camera_sources, server, wide_angle
+from src.http_server import CameraRequestHandler
+from src.application import ControlApplication
+from src.control import ControlService
 from fixtures.http_connection import MemoryConnection
 
 
@@ -22,10 +25,10 @@ def sources():
     return [
         {"id": "front", "label": "/dev/video4 — D435i RGB", "device": "/dev/video4",
          "backend": "v4l2", "kind": "d435i", "serial": "fixture-usb-not-sdk",
-         "usb_path": "/sys/devices/fixture/usb2/2-7", "pixel_format": "YUYV"},
+         "usb_path": "/sys/devices/fixture/usb2/2-7", "pixel_format": "YUYV", "available": True, "error": None},
         {"id": "arm", "label": "/dev/video8 — Arm camera (SXW USB Camera)", "device": "/dev/video8",
          "backend": "v4l2", "kind": "sxw", "serial": "",
-         "usb_path": "/sys/devices/fixture/usb2/2-9", "pixel_format": "MJPG"},
+         "usb_path": "/sys/devices/fixture/usb2/2-9", "pixel_format": "MJPG", "available": True, "error": None},
     ]
 
 
@@ -49,7 +52,7 @@ class DiscoveryTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def discover(self, probe):
-        return server.discover_sources(self.sysfs, probe=probe, proc_root=self.proc)
+        return camera_sources.discover_sources(self.sysfs, probe=probe, proc_root=self.proc)
 
     def owner(self, pid, device, name=b"realsense-viewer\n"):
         process = self.proc / str(pid)
@@ -193,11 +196,11 @@ class DiscoveryTests(unittest.TestCase):
                 self.fail("Discovery attempted a capture/configuration ioctl")
             return 0
         with patch.object(fcntl, "ioctl", ioctl):
-            self.assertEqual(server.v4l2_formats(str(node)), {"YUYV", "MJPG"})
+            self.assertEqual(camera_sources.v4l2_formats(str(node)), {"YUYV", "MJPG"})
             with patch.object(os, "access", return_value=False), self.assertRaises(PermissionError):
-                server.v4l2_formats(str(node))
+                camera_sources.v4l2_formats(str(node))
             caps["node"] = 0x04800000  # Metadata node; parent union still advertises RGB.
-            self.assertEqual(server.v4l2_formats(str(node)), set())
+            self.assertEqual(camera_sources.v4l2_formats(str(node)), set())
 
 
 class CaptureControllerTests(unittest.TestCase):
@@ -215,7 +218,7 @@ class CaptureControllerTests(unittest.TestCase):
             self.started.set()
             stop.wait()
             self.events.append(("release", options.device))
-        controller = server.CaptureController(server.parse_args(arguments), discover=sources,
+        controller = camera.CaptureController(server.parse_args(arguments), discover=sources,
                                               capture_fn=capture_fn or capture, stop_timeout=0.05)
         self.addCleanup(controller.shutdown)
         controller.start()
@@ -429,11 +432,11 @@ class RealSenseIdentityTests(unittest.TestCase):
         return sdk, enabled, started, stopped
 
     def capture_start(self, options, sdk, frames=None):
-        frames = frames or server.LatestFrame("realsense")
+        frames = frames or camera.LatestFrame("realsense")
         stop = threading.Event()
         stop.set()  # Exercise real startup/identity/cleanup without frame acquisition.
         with patch.dict(sys.modules, {"pyrealsense2": sdk, "numpy": SimpleNamespace(), "cv2": SimpleNamespace()}):
-            list(server.realsense_frames(options, frames, stop))
+            list(camera.realsense_frames(options, frames, stop))
         return frames
 
     def test_usb_source_is_resolved_to_sdk_serial_across_different_video_interfaces(self):
@@ -477,7 +480,7 @@ class RealSenseIdentityTests(unittest.TestCase):
                 failures.append(error)
             ready.set()
             stop.wait()
-        controller = server.CaptureController(options, discover=sources, capture_fn=capture)
+        controller = camera.CaptureController(options, discover=sources, capture_fn=capture)
         self.addCleanup(controller.shutdown)
         controller.start()
         self.assertTrue(ready.wait(1))
@@ -490,11 +493,12 @@ class RealSenseIdentityTests(unittest.TestCase):
 class SourceHTTPTests(unittest.TestCase):
 
     def setUp(self):
+        self.application = ControlApplication(ControlService(mode="disabled"))
         self.start_controller()
 
     def start_controller(self, *extra):
         options = server.parse_args(["--source", "v4l2", "--device", "/dev/video4", *extra])
-        self.controller = server.CaptureController(options, discover=sources,
+        self.controller = camera.CaptureController(options, discover=sources,
                                                    capture_fn=lambda options, frames, stop: stop.wait())
         self.addCleanup(self.controller.shutdown)
         self.controller.start()
@@ -508,8 +512,9 @@ class SourceHTTPTests(unittest.TestCase):
         raw = "{} {} HTTP/1.1\r\n{}\r\nConnection: close\r\n\r\n".format(
             method, path, "\r\n".join("{}: {}".format(*header) for header in headers))
         connection = MemoryConnection(raw.encode() + body)
-        http_server = SimpleNamespace(frames=self.controller.frames, controller=self.controller)
-        server.CameraRequestHandler(connection, ("127.0.0.1", 12345), http_server)
+        http_server = SimpleNamespace(frames=self.controller.frames, controller=self.controller,
+                                      application=self.application)
+        CameraRequestHandler(connection, ("127.0.0.1", 12345), http_server)
         head, payload = bytes(connection.output).split(b"\r\n\r\n", 1)
         self.response_headers = head
         return int(head.split()[1]), payload
@@ -580,18 +585,18 @@ class SourceHTTPTests(unittest.TestCase):
         old.wait_for_frame = lambda sequence, generation: (None, sequence)
         connection = MemoryConnection(("GET /stream.mjpg HTTP/1.1\r\nHost: localhost\r\n"
                                        "\r\n").encode())
-        replacement = server.LatestFrame("v4l2")
+        replacement = camera.LatestFrame("v4l2")
         replacement.publish(b"different-camera-jpeg")
         replacements = iter([(b"different-camera-jpeg", 2), (None, 2)])
         replacement.wait_for_frame = lambda sequence, generation: next(replacements, (None, sequence))
-        http_server = SimpleNamespace(frames=old, controller=self.controller)
+        http_server = SimpleNamespace(frames=old, controller=self.controller, application=self.application)
         original_send = connection.sendall
         def send(data):
             original_send(data)
             if b"old-camera-jpeg" in data:
                 http_server.frames = replacement
         connection.sendall = send
-        server.CameraRequestHandler(connection, ("127.0.0.1", 12345), http_server)
+        CameraRequestHandler(connection, ("127.0.0.1", 12345), http_server)
         response = bytes(connection.output)
         self.assertIn(b"X-Camera-Source-Id: front\r\n", response)
         self.assertNotIn(b"different-camera-jpeg", response)

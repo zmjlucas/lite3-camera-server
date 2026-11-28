@@ -35,23 +35,25 @@ The client runs natively on Windows 10/11 and macOS. The perception host still r
 ```bash
 git clone https://github.com/zmjlucas/lite3-dev-server.git
 cd lite3-dev-server
-python3 src/client.py --help
+python3 src/launcher.py --help
 ```
 
 Run the Python entry points in `src/` directly. You do not need `pip install`. See the [camera guide](docs/CAMERA_STREAM.md) for all procedures.
+
+`src/launcher.py` is the SSH deployment and viewing CLI. Python applications use the separately installable `lite3_dev_server.DevClient` HTTP SDK.
 
 On Windows, use PowerShell and replace `python3` in the examples with `py -3` (or `python` if that is your Python 3 command):
 
 ```powershell
 git clone https://github.com/zmjlucas/lite3-dev-server.git
 cd lite3-dev-server
-py -3 src/client.py --help
+py -3 src/launcher.py --help
 Get-Command ssh, scp
-py -3 src/client.py doctor ysc@192.168.1.103
-py -3 src/client.py view ysc@192.168.1.103
+py -3 src/launcher.py doctor ysc@192.168.1.103
+py -3 src/launcher.py view ysc@192.168.1.103
 # For RealSense or V4L2, deploy before starting that backend:
-py -3 src/client.py deploy ysc@192.168.1.103
-py -3 src/client.py view ysc@192.168.1.103 --backend realsense
+py -3 src/launcher.py deploy ysc@192.168.1.103
+py -3 src/launcher.py view ysc@192.168.1.103 --backend realsense
 ```
 
 If `ssh` or `scp` is missing, install **OpenSSH Client** through Windows Optional Features, then reopen PowerShell. See [Microsoft's OpenSSH installation guide](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse). The local computer needs only the client component.
@@ -62,10 +64,10 @@ Connect to the default perception host at `ysc@192.168.1.103`. Before the first 
 
 ```bash
 # Check the host, dependencies, camera services, and ROS environment.
-python3 src/client.py doctor ysc@192.168.1.103
+python3 src/launcher.py doctor ysc@192.168.1.103
 
 # Use an existing ROS image topic and a compatible web_video_server.
-python3 src/client.py view ysc@192.168.1.103
+python3 src/launcher.py view ysc@192.168.1.103
 ```
 
 | Mode | Requirements on the perception host | Command |
@@ -84,7 +86,7 @@ Automatic selection applies only on macOS when the target is an explicit IPv4 ad
 
 The service starts at every boot without an SSH login, using the deployment account and its Python interpreter. Its defaults are RealSense, port 8080, 640 x 480, 15 fps, and quality 70. For V4L2, deploy with `--backend v4l2 --device /dev/v4l/by-id/NAME`, replacing `NAME` with the confirmed RGB camera link. `deploy` also accepts `--remote-port`, `--width`, `--height`, `--fps`, `--quality`, `--wide-angle-host`, and RealSense `--depth`/`--serial` to save boot settings. New settings take effect at the next boot or an explicit service restart. See [boot service management](docs/CAMERA_STREAM.md#boot-service) for migration, logs, and disabling autostart.
 
-On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/client.py view ysc@192.168.1.103 --jump ysc@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
+On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/launcher.py view ysc@192.168.1.103 --jump ysc@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
 
 The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://192.168.1.103:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. All camera and control endpoints are available to clients on the trusted LAN. The local tunnel still binds to `127.0.0.1`.
 
@@ -138,6 +140,16 @@ py -3 -B tests/camera_browser_smoke.py --browser 'C:\Program Files\Google\Chrome
 
 CI is configured to run offline tests on Linux, macOS, and Windows, with browser playback checks on all three. Native Windows tests include deployment file handles and junction refusal. Remote Bash and POSIX signal integration tests run on Linux/macOS and are skipped on Windows; the Windows suite still exercises launcher commands, anonymous HTTP access, interrupt cleanup, and HTTP streaming.
 
+For SDK release checks, use a development virtual environment (Python 3.11 recommended):
+
+```bash
+python -m pip install '.[dev]'
+python -B scripts/check_distribution.py
+node tests/dev_client_test.js  # Node 22+ for browser client contract checks
+```
+
+The distribution check runs strict SDK typing and typed service checks, builds a wheel, installs it into a temporary environment, checks an external typed consumer and exercises HTTP control against the deployed simulation bundle. Hardware packages are excluded from the SDK. CI runs these checks in its installed-SDK job; ordinary SDK installations retain standard-library-only runtime dependencies.
+
 ## Camera limitations
 
 - RealSense `--depth` does not give calibrated distance measurements.
@@ -147,14 +159,25 @@ CI is configured to run offline tests on Linux, macOS, and Windows, with browser
 ## Repository layout
 
 ```text
-src/             SSH launcher, dev server, motion gateway and Python SDK
+src/server.py    Server configuration, startup and shutdown
+src/http_server.py  HTTP parsing, response/error mapping, streaming and static assets
+src/application.py  Control and arm observation orchestration
+src/camera.py    Frame lifecycle, capture backends and camera controller
+src/camera_sources.py  Camera discovery and labels
+src/control.py   Control ownership, watchdog and UDP writer
+src/arm_gateway.py  Read-only serial gateway
+src/arm_motion.py   Commissioned arm operations
+src/launcher.py  SSH deployment, diagnosis and viewing CLI
+src/lite3_dev_server/  Installable HTTP SDK, types and response validation
 src/remote/      Remote diagnostic and startup helpers
-src/web/         Camera viewer and development console
+src/web/         Camera viewer, control UI and browser HTTP client
 docs/            Development API and camera usage guides
 tests/           Unit tests and the optional Chrome test
 .github/         CI, dependency updates, and contribution templates
 ```
 
 Reserve `scripts/` for repository maintenance scripts. Runtime helpers belong in `src/remote/`. Offline camera inputs and browser fixtures belong in `tests/fixtures/` and are not deployed.
+
+HTTP requests reach `ControlApplication`, which coordinates `ControlService` and arm gateways. Serial reads reconcile capabilities with the current control state after I/O; the independently scheduled watchdog continues to own command expiry. `launcher.SERVER_BUNDLE` lists deployed modules and assets explicitly, with the server entry point uploaded last. Device modules keep Python 3.6 syntax and avoid runtime imports of the Python 3.8 SDK.
 
 The project uses the MIT license. See [LICENSE](LICENSE).
