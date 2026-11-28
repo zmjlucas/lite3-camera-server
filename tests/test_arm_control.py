@@ -26,7 +26,9 @@ class ArmOwner:
     def status(self):
         return {'motion_enabled': not self.closed, 'active_operation': copy.deepcopy(self.active),
                 'last_operation': copy.deepcopy(self.last), 'reason': 'commissioned diagnostic',
-                'connected': True, 'reconnect_required': False}
+                'connected': True, 'reconnect_required': False,
+                'commissioning': {'state': 'ready', 'profile_loaded': True, 'nonce_consumed': True},
+                'cached_feedback': None}
 
     def jog(self, joint, delta, speed, lease_deadline):
         if self.active:
@@ -118,6 +120,16 @@ class ArmControlTests(unittest.TestCase):
         state = self.service.status()
         self.assertFalse(state['lease_active'])
         self.assertEqual(state['arm']['operation']['phase'], 'stopping')
+
+    def test_passive_status_still_expires_lease_and_cancels_operation(self):
+        self.jog(self.acquire())
+        self.clock.now = 102.0
+        state = self.service.status()
+        self.assertFalse(state['lease_active'])
+        self.assertEqual(state['arm']['operation']['reason'], 'expired')
+        self.assertIn('connected', state['arm'])
+        self.assertTrue(state['arm']['connected'])
+        self.assertIsNone(state['arm']['cached_feedback'])
 
     def test_stop_release_estop_block_new_owner_until_previous_operation_finishes(self):
         for action in ('arm/stop', 'dog/stop', 'control/release', 'control/estop'):

@@ -8,10 +8,12 @@ from socketserver import TCPServer, ThreadingMixIn
 
 if __package__:
     from .application import ControlApplication
+    from .build_info import server_build_info
     from .camera_sources import SOURCE_LABELS
     from .control import ControlError
 else:
     from application import ControlApplication
+    from build_info import server_build_info
     from camera_sources import SOURCE_LABELS
     from control import ControlError
 
@@ -32,8 +34,10 @@ class CameraHTTPServer(ThreadingMixIn, HTTPServer):
     timeout = 0.2
 
     def __init__(self, port, frames, controller=None, bind=DEFAULT_BIND,
-                 *, control, arm_gateway=None):
+                 *, control, arm_gateway=None, runtime_info=None):
         self.application = ControlApplication(control, arm_gateway)
+        self.build_info = server_build_info(WEB_DIR.parent)
+        self.runtime_info = runtime_info
         self._frames = frames
         self.controller = controller
         super().__init__((bind, port), CameraRequestHandler)
@@ -68,10 +72,31 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             # A tab close or reload can interrupt a write.
             pass
 
+    def do_OPTIONS(self):
+        # Legacy servers reject OPTIONS in BaseHTTPRequestHandler without entering
+        # their stateful response headers. Doctor can safely probe either version.
+        try:
+            if not self._same_origin():
+                return
+            if self.path.partition('?')[0] == '/api/diagnostics':
+                self._diagnostics()
+            else:
+                self.send_error(404)
+        except (ConnectionError, socket.timeout):
+            pass
+
+    def _diagnostics(self):
+        state = self.server.application.snapshot()
+        self._json(200, {'schema': 1, 'runtime': self.server.runtime_info,
+                         'control': state, 'camera': self.server.frames.snapshot()[0]})
+
     def _get(self):
         if not self._same_origin():
             return
         path = self.path.partition("?")[0]
+        if path == "/api/diagnostics":
+            self._diagnostics()
+            return
         if path == "/api/status":
             self._json(200, self.server.application.status())
             return
@@ -166,8 +191,9 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
     def _control_post(self):
         action = self.path.partition("?")[0][5:]
         allowed = {"control/acquire", "control/heartbeat", "control/release", "control/estop",
-                   "control/reset", "dog/stand", "dog/velocity", "dog/action", "dog/action/status", "dog/stop", "arm/jog",
-                   "arm/state", "arm/reconnect", "arm/operation", "arm/stop"}
+                   "control/reset", "dog/stand", "dog/velocity", "dog/action", "dog/action/status",
+                   "dog/stop", "arm/jog", "arm/state", "arm/reconnect", "arm/action", "arm/operation",
+                   "arm/stop"}
         if action not in allowed:
             self._json(404, {"error": "Unknown control operation"})
             return
@@ -217,6 +243,12 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("X-Lite3-Camera-Protocol", "1")
         self.send_header("X-Lite3-Dev-Protocol", "1")
+        build = self.server.build_info
+        self.send_header("X-Lite3-Release", build.version)
+        self.send_header("X-Lite3-Build", build.build_id)
+        self.send_header("X-Lite3-Source-Commit", build.source_commit or "unknown")
+        self.send_header("X-Lite3-Source-Dirty", "unknown" if build.source_dirty is None
+                         else "true" if build.source_dirty else "false")
         control = self.server.application.control
         self.send_header("X-Lite3-Environment", control.environment)
         self.send_header("X-Lite3-Simulated", "true" if control.simulate else "false")

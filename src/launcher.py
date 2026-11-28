@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Deploy and access the Lite3 development server through SSH."""
 import argparse
+import base64
+from http.client import HTTPConnection, HTTPException
 import ipaddress
 import json
 import os
@@ -13,35 +15,27 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from urllib.parse import urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 import webbrowser
+import zlib
 
 if __package__:
+    from .build_info import BUNDLE_FILES, bundle_path, write_deployment_manifest
     from .wide_angle import validate_host as validate_wide_angle_host
 else:
+    from build_info import BUNDLE_FILES, bundle_path, write_deployment_manifest
     from wide_angle import validate_host as validate_wide_angle_host
 
 
 SERVER = Path(__file__).resolve().with_name("server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
 # Upload new dependencies before changing existing files, then replace the entry point last.
-SERVER_BUNDLE = ((SERVER.parent / "wide_angle.py", "lite3-dev-server/"),
-                 (SERVER.parent / "dog_actions.py", "lite3-dev-server/"),
-                 (SERVER.parent / "dog_state.py", "lite3-dev-server/"),
-                 (SERVER.parent / "camera_sources.py", "lite3-dev-server/"),
-                 (SERVER.parent / "camera.py", "lite3-dev-server/"),
-                 (SERVER.parent / "application.py", "lite3-dev-server/"),
-                 (SERVER.parent / "http_server.py", "lite3-dev-server/"),
-                 (SERVER.parent / "arm_motion.py", "lite3-dev-server/"),
-                 (SERVER.parent / "web" / "camera.html", "lite3-dev-server/web/"),
-                 (SERVER.parent / "control.py", "lite3-dev-server/"),
-                 (SERVER.parent / "arm_gateway.py", "lite3-dev-server/"),
-                 (SERVER.parent / "remote" / "arm_worker.py", "lite3-dev-server/remote/"),
-                 (SERVER.parent / "web" / "control.html", "lite3-dev-server/web/"),
-                 (SERVER.parent / "web" / "dev_client.js", "lite3-dev-server/web/"),
-                 (SERVER, "lite3-dev-server/"))
+SERVER_BUNDLE = tuple((bundle_path(SERVER.parent, name),
+                       (Path("lite3-dev-server") / Path(name).parent).as_posix() + "/")
+                      for name in BUNDLE_FILES)
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
 ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")
@@ -67,6 +61,12 @@ def bounded_int(low, high):
             raise argparse.ArgumentTypeError("must be between {} and {}".format(low, high))
         return number
     return parse
+
+
+def build_identifier(value):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}", value):
+        raise argparse.ArgumentTypeError("use a build identifier of 1-128 letters, digits, '.', '_', ':', '+' or '-'")
+    return value
 
 
 def quoted_command(arguments):
@@ -182,17 +182,48 @@ def ssh_command(host, command, jump=None):
     return ["ssh"] + ssh_options(jump) + [host, command]
 
 
-def show_command(command):
+def existing_session_options():
+    # Keep ownership of the forward when SSH config enables sharing or backgrounding.
+    options = ["-N", "-T", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ControlPersist=no"]
+    try:
+        version = subprocess.run(["ssh", "-V"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, timeout=2)
+        match = re.search(r"OpenSSH(?:_for_Windows)?_(\d+)\.(\d+)", version.stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        match = None  # Dry runs remain usable before installing OpenSSH.
+    # Older clients have no config setting for backgrounding. Preserve the user's IgnoreUnknown rules.
+    if match is None or (int(match[1]), int(match[2])) >= (8, 7):
+        options.extend(["-o", "ForkAfterAuthentication=no"])
+    return options
+
+
+def show_command(command, file=None):
     if sys.platform == "win32":
         # PowerShell 5.1 and 7 differ in native quoting. Show exact argv without promising replay.
-        print("Command argv (JSON, inspection only): " + json.dumps(command), flush=True)
+        print("Command argv (JSON, inspection only): " + json.dumps(command), file=file, flush=True)
     else:
-        print(" ".join(shlex.quote(arg) for arg in command), flush=True)
+        print(" ".join(shlex.quote(arg) for arg in command), file=file, flush=True)
 
 
 def ros_script(args):
     return remote_shell("view_ros.sh", args.remote_port, args.ros_setup or "",
                         remote_source("check_camera_port.py"))
+
+
+def doctor_script(args):
+    payload = {'modules': {name: (SERVER.parent / (name + '.py')).read_text(encoding='utf-8')
+                           for name in ('build_info', 'runtime_info', 'wide_angle', 'camera_sources')},
+               'options': {name: getattr(args, name, None) for name in (
+                   'remote_port', 'install_dir', 'service_user', 'arm_device', 'dog_host', 'dog_state_port')}}
+    sources = [remote_source('camera_doctor.py'), remote_source('diagnose_ros.sh'),
+               remote_source('probe_python_module.py'), json.dumps(payload)]
+    packed = base64.b64encode(zlib.compress(json.dumps(sources).encode('utf-8'))).decode('ascii')
+    # Keep Windows CreateProcess command lines below 32,767 characters. The
+    # standard-library bootstrap runs the same trusted sources entirely in memory.
+    bootstrap = ("import base64,json,sys,zlib; "
+                 "sources=json.loads(zlib.decompress(base64.b64decode(sys.argv[1]))); "
+                 "sys.argv=['-c']+sources[1:]; exec(compile(sources[0], '<doctor>', 'exec'))")
+    return remote_shell('run_doctor.sh', bootstrap, packed)
 
 
 def camera_options(args):
@@ -319,13 +350,20 @@ def deploy(args, jump):
     installer = remote_source("install_service.py")
     with tempfile.TemporaryDirectory(prefix="lite3-dev-deploy-") as directory:
         sources = []
+        captured = []
         for path, destination in SERVER_BUNDLE:
             content = read_deploy_source(path)
+            name = (Path(destination).relative_to('lite3-dev-server') / path.name).as_posix()
+            captured.append((name, content))
             staged = Path(directory) / path.name
             staged.write_bytes(content)
             if os.name != "nt":
                 staged.chmod(0o600)
             sources.append((path if args.dry_run else staged, destination))
+        manifest = Path(directory) / '_build.json'
+        build = write_deployment_manifest(SERVER.parent, manifest, captured)
+        # Install provenance immediately before replacing the entry point.
+        sources.insert(len(sources) - 1, (manifest, 'lite3-dev-server/'))
         commands = [ssh_command(args.target, remote_shell("prepare_deploy.sh"), jump)]
         # Win32 scp interprets a bare single-letter alias plus ':' as a drive letter.
         scp_target = "[{}]".format(args.target) if len(args.target) == 1 else args.target
@@ -343,10 +381,78 @@ def deploy(args, jump):
                 code = subprocess.call(command)
                 if code:
                     return code
+        print("{} build: {}".format("Planned" if args.dry_run else "Deployed", build.build_id), flush=True)
     return 0
 
 
-def run_foreground(command, url, open_browser, native=False, expected_identity=None):
+def service(args, jump):
+    options = [args.service_action, "--port", str(args.remote_port), "--lines", str(args.lines),
+               "--timeout", str(args.timeout)]
+    if args.expect_build:
+        options.extend(["--expect-build", args.expect_build])
+    command = ["ssh"] + ssh_options(jump) + ["-tt", args.target,
+               remote_shell("manage_service.sh", remote_source("manage_service.py"), *options)]
+    if args.dry_run:
+        show_command(command)
+        return 0
+    return subprocess.call(command)
+
+
+def wait_for_existing_server(process, url, timeout):
+    """Verify the forwarded listener without proxies, redirects or remote commands."""
+    def interrupt_probe(sock):
+        # A per-read socket timeout alone permits a slow response to exceed the deadline.
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    port = urlsplit(url).port
+    deadline = time.monotonic() + timeout
+    last_error = "listener unavailable"
+    while time.monotonic() < deadline:
+        code = process.poll()
+        if code is not None:
+            raise OSError("SSH tunnel exited before the existing dev server was verified (status {}).".format(code))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        connection = HTTPConnection("127.0.0.1", port, timeout=remaining)
+        timer = None
+        try:
+            connection.connect()
+            timer = threading.Timer(max(0, deadline - time.monotonic()), interrupt_probe, [connection.sock])
+            timer.daemon = True
+            timer.start()
+            connection.request("GET", "/healthz")
+            with connection.getresponse() as response:
+                if time.monotonic() >= deadline:
+                    last_error = "HTTP response exceeded the readiness deadline"
+                    break
+                if (response.status not in (200, 503)
+                        or response.getheader("X-Lite3-Camera-Protocol") != "1"
+                        or response.getheader("X-Lite3-Dev-Protocol") != "1"):
+                    raise RuntimeError("The forwarded listener does not advertise compatible camera and development "
+                                       "protocols at /healthz (HTTP {}). Check the target and --remote-port.".format(response.status))
+                if process.poll() is None:
+                    return
+        except (OSError, HTTPException) as error:
+            last_error = str(error)
+        finally:
+            if timer is not None:
+                timer.cancel()
+                timer.join()
+            connection.close()
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.15, remaining))
+    raise OSError("Existing dev server did not become ready within {} seconds: {}. "
+                  "Check SSH, the running service and --remote-port; adjust --wait-timeout if needed.".format(
+                      timeout, last_error))
+
+
+def run_foreground(command, url, open_browser, native=False, expected_identity=None,
+                   existing_only=False, url_only=False, wait_timeout=15):
     with socket.socket() as listener:
         # Windows SO_REUSEADDR permits stealing an occupied listener's address.
         listener.setsockopt(socket.SOL_SOCKET,
@@ -356,21 +462,33 @@ def run_foreground(command, url, open_browser, native=False, expected_identity=N
             listener.listen(1)
         except OSError as exc:
             raise OSError("Cannot use the local dev server port. Select another port with --local-port: " + str(exc)) from exc
-    print("Viewer: " + url + "\nKeep this terminal open. To disconnect, press Ctrl+C.", flush=True)
+    if not existing_only:
+        print("Viewer: " + url + "\nKeep this terminal open. To disconnect, press Ctrl+C.", flush=True)
     previous_handlers = {}
 
     def stop_session(signum, frame):
         raise KeyboardInterrupt
 
-    process = subprocess.Popen(command)
+    # A forwarding-only SSH session has no useful stdout. Keep stdout available for --url-only.
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL) if existing_only else subprocess.Popen(command)
     try:
         for name in ("SIGTERM", "SIGHUP", "SIGBREAK"):
             signum = getattr(signal, name, None)
             if signum is not None:
                 previous_handlers[signum] = signal.signal(signum, stop_session)
-        # Readiness checks use the loopback tunnel and bypass HTTP proxies.
-        opener = build_opener(ProxyHandler({}))
-        opened = not open_browser
+        if existing_only:
+            print("Checking the existing dev server through SSH (timeout: {} seconds)...".format(wait_timeout),
+                  file=sys.stderr, flush=True)
+            wait_for_existing_server(process, url, wait_timeout)
+            print(url if url_only else "Viewer: " + url, flush=True)
+            print("Keep this terminal open. To disconnect, press Ctrl+C.", file=sys.stderr, flush=True)
+            if open_browser and not url_only and not webbrowser.open(url):
+                print("Open the viewer: " + url, file=sys.stderr, flush=True)
+            opened = True
+        else:
+            # Readiness checks use the loopback tunnel and bypass HTTP proxies.
+            opener = build_opener(ProxyHandler({}))
+            opened = not open_browser
         start = time.monotonic()
         while process.poll() is None:
             if not opened:
@@ -418,8 +536,19 @@ def parser():
     commands = result.add_subparsers(dest="command", required=True)
     for name, help_text in (("doctor", "check the host environment through SSH without changes"),
                             ("deploy", "copy the development server and enable its system boot service"),
+                            ("service", "inspect status/logs or explicitly restart the systemd service"),
                             ("view", "start or reuse the remote dev server and open an SSH tunnel")):
         command = commands.add_parser(name, help=help_text)
+        if name == "service":
+            command.add_argument("service_action", choices=("status", "logs", "restart"))
+            command.add_argument("--remote-port", type=bounded_int(1, 65535), default=8080,
+                                 help="HTTP port saved during deployment (default: 8080)")
+            command.add_argument("--lines", type=bounded_int(1, 10000), default=50,
+                                 help="recent journal entries (default: 50)")
+            command.add_argument("--timeout", type=bounded_int(1, 300), default=30,
+                                 help="restart readiness deadline in seconds (default: 30)")
+            command.add_argument("--expect-build", type=build_identifier,
+                                 help="require this HTTP build identifier after restart")
         command.add_argument("target", type=target, help="perception host SSH target: ysc@192.168.1.103")
         routing = command.add_mutually_exclusive_group()
         routing.add_argument("--jump", type=target,
@@ -427,17 +556,32 @@ def parser():
         routing.add_argument("--direct", action="store_true",
                              help="use the existing SSH configuration without automatic route selection")
         command.add_argument("--dry-run", action="store_true",
-                             help="print commands without a connection. The launcher can read local routes.")
+                             help="print commands without a connection. The launcher can read local routes and the SSH version.")
+        if name == 'doctor':
+            command.add_argument('--remote-port', type=bounded_int(1, 65535), default=8080,
+                                 help='running service HTTP port to inspect (default: 8080)')
+            command.add_argument('--install-dir', help='installed bundle directory on the perception host')
+            command.add_argument('--service-user', help='service user/name or UID for permission inspection')
+            command.add_argument('--arm-device', help='serial path to inspect without opening it')
+            command.add_argument('--dog-host', help='expected feedback source IPv4 for the report')
+            command.add_argument('--dog-state-port', type=bounded_int(1, 65535),
+                                 help='UDP port to inspect without binding it')
         if name == "view":
             command.add_argument("--local-port", type=bounded_int(1, 65535), default=18080)
+            command.add_argument("--existing-only", action="store_true",
+                                 help="forward to an existing dev server and verify its HTTP protocols")
+            command.add_argument("--url-only", action="store_true",
+                                 help="print only the verified URL to stdout and keep the tunnel open (requires --existing-only)")
+            command.add_argument("--wait-timeout", type=bounded_int(1, 300), metavar="SECONDS",
+                                 help="SSH and HTTP readiness timeout for --existing-only (default: 15 seconds)")
             command.add_argument("--console", action="store_true", help="open the development control console")
             command.add_argument("--no-open", action="store_true", help="do not open a browser automatically")
             command.add_argument("--ros-setup", help="absolute path to the ROS or workspace setup.bash on the perception host")
             command.add_argument("--topic", help="ROS image topic to show (default: show the topic list)")
         if name in ("view", "deploy"):
             command.add_argument("--backend", choices=("ros", "realsense", "v4l2", "none") if name == "view" else ("realsense", "v4l2", "none"),
-                                 default="ros" if name == "view" else "realsense",
-                                 help="camera backend (deploy: boot service backend, default realsense)")
+                                 default=None if name == "view" else "realsense",
+                                 help="camera backend (view: default ros; deploy: boot service backend, default realsense)")
             command.add_argument("--remote-port", type=bounded_int(1, 65535), default=8080)
             command.add_argument("--depth", action="store_true", help="show a RealSense depth preview with false colors")
             command.add_argument("--serial", help="RealSense serial number")
@@ -466,7 +610,25 @@ def parser():
 def main(argv=None):
     cli = parser()
     args = cli.parse_args(argv)
-    if args.command in ("view", "deploy"):
+    if args.command == "service" and args.expect_build is not None and args.service_action != "restart":
+        cli.error("--expect-build requires service restart")
+    existing_only = args.command == "view" and args.existing_only
+    if args.command == "view":
+        if existing_only:
+            launch_options = ("backend", "ros_setup", "topic", "depth", "serial", "device", "wide_angle_host",
+                              "width", "height", "fps", "quality", "env", "simulate", "control_mode",
+                              "dog_host", "dog_state_port", "arm_device", "arm_host", "arm_motion_profile")
+            supplied = ["--" + name.replace("_", "-") for name in launch_options
+                        if getattr(args, name) is not None and getattr(args, name) is not False]
+            if supplied:
+                cli.error("--existing-only accepts connection options; remove server launch options: " + ", ".join(supplied))
+        else:
+            if args.url_only:
+                cli.error("--url-only requires --existing-only")
+            if args.wait_timeout is not None:
+                cli.error("--wait-timeout requires --existing-only")
+            args.backend = args.backend or "ros"
+    if args.command in ("view", "deploy") and not existing_only:
         if args.wide_angle_host is not None:
             try:
                 validate_wide_angle_host(args.wide_angle_host)
@@ -499,8 +661,7 @@ def main(argv=None):
     try:
         jump = resolve_jump(args)
         if args.command == "doctor":
-            diagnostic = remote_shell("run_doctor.sh", remote_source("camera_doctor.py"),
-                                      remote_source("diagnose_ros.sh"), remote_source("probe_python_module.py"))
+            diagnostic = doctor_script(args)
             command = ssh_command(args.target, diagnostic, jump)
             if args.dry_run:
                 show_command(command)
@@ -508,19 +669,30 @@ def main(argv=None):
             return subprocess.call(command)
         if args.command == "deploy":
             return deploy(args, jump)
+        if args.command == "service":
+            return service(args, jump)
         url = "http://127.0.0.1:{}/".format(args.local_port)
         if getattr(args, "console", False):
             url += "control"
         if args.backend == "ros" and args.topic:
             url += "stream_viewer?" + urlencode({"topic": args.topic, "type": "mjpeg", "width": 640, "height": 480, "quality": 70}, safe="/")
-        remote = ros_script(args) if args.backend == "ros" else real_script(args)
-        command = ["ssh"] + ssh_options(jump) + ["-tt", "-o", "ExitOnForwardFailure=yes", "-L",
+        session = existing_session_options() if existing_only else ["-tt"]
+        command = ["ssh"] + ssh_options(jump) + session + ["-o", "ExitOnForwardFailure=yes", "-L",
                    "127.0.0.1:{}:127.0.0.1:{}".format(args.local_port, args.remote_port),
-                   args.target, remote]
+                   args.target]
+        if not existing_only:
+            command.append(ros_script(args) if args.backend == "ros" else real_script(args))
         if args.dry_run:
-            show_command(command)
-            print("Viewer: " + url)
+            if args.url_only:
+                show_command(command, file=sys.stderr)
+                print(url)
+            else:
+                show_command(command)
+                print("Viewer: " + url)
             return 0
+        if existing_only:
+            return run_foreground(command, url, not (args.no_open or args.url_only), existing_only=True,
+                                  url_only=args.url_only, wait_timeout=args.wait_timeout or 15)
         expected_identity = None
         if args.backend != "ros":
             expected_identity = {"X-Lite3-Environment": args.env or "dist",
@@ -531,8 +703,8 @@ def main(argv=None):
                               expected_identity=expected_identity)
     except KeyboardInterrupt:
         return 130
-    except OSError as exc:
-        print("Camera command failed: " + str(exc), file=sys.stderr)
+    except (OSError, RuntimeError) as exc:
+        print("Launcher command failed: " + str(exc), file=sys.stderr)
         return 1
 
 

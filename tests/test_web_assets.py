@@ -20,7 +20,9 @@ class WebAssetTests(unittest.TestCase):
         if origin is not None:
             headers += 'Origin: ' + origin + '\r\n'
         connection = MemoryConnection(('GET ' + path + ' HTTP/1.1\r\n' + headers + '\r\n').encode())
-        server = SimpleNamespace(frames=LatestFrame('none'), application=self.application)
+        from src.lite3_dev_server._build_info import UNKNOWN_BUILD
+        server = SimpleNamespace(frames=LatestFrame('none'), application=self.application,
+                                 build_info=UNKNOWN_BUILD)
         CameraRequestHandler(connection, ('127.0.0.1', 1), server)
         headers, body = bytes(connection.output).split(b'\r\n\r\n', 1)
         return int(headers.split()[1]), headers, body

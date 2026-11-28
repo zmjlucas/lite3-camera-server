@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from src import launcher as client
 
+RUN_LOCAL_COMMAND = subprocess.run
+
 TARGET = "ysc@192.168.1.103"
 GATEWAY = "192.168.2.1"
 
@@ -70,6 +72,10 @@ class CameraRoutingTest(unittest.TestCase):
         self.assertFalse(kwargs.get("shell", False))
         self.assertGreater(kwargs["timeout"], 0)
         self.assertLessEqual(kwargs["timeout"], 3)
+        if command == ["ssh", "-V"]:
+            return subprocess.CompletedProcess(command, 0, "OpenSSH_9.8p1", "")
+        if command[0] == "git":
+            return RUN_LOCAL_COMMAND(command, **kwargs)
         if command == ["networksetup", "-listallhardwareports"]:
             self.hardware_queries.append(command)
             if isinstance(self.hardware_ports, Exception):
@@ -101,9 +107,10 @@ class CameraRoutingTest(unittest.TestCase):
 
     def test_wifi_plus_usb_automatically_uses_robot_jump_for_all_commands(self):
         for command, options, executables in (
-                ("doctor", [], ["ssh"]), ("deploy", [], ["ssh"] + ["scp"] * len(client.SERVER_BUNDLE) + ["ssh"]),
+                ("doctor", [], ["ssh"]), ("deploy", [], ["ssh"] + ["scp"] * (len(client.SERVER_BUNDLE) + 1) + ["ssh"]),
                 ("view", ["--backend", "ros"], ["ssh"]),
                 ("view", ["--backend", "realsense"], ["ssh"]),
+                ("view", ["--existing-only"], ["ssh"]),
                 ("view", ["--backend", "v4l2", "--device", "/dev/video4"], ["ssh"])):
             with self.subTest(command=command, options=options):
                 self.remote_commands.clear()

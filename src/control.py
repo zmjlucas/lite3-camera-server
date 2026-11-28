@@ -14,9 +14,11 @@ import time
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING or not __package__:
-    from dog_actions import DogActions, action_velocity, feedback_status
+    from arm_actions import MAX_DURATION as ARM_MAX_DURATION, SimulatedArmActions
+    from dog_actions import DogActions, action_capabilities, action_velocity, feedback_status
 else:
-    from .dog_actions import DogActions, action_velocity, feedback_status
+    from .arm_actions import MAX_DURATION as ARM_MAX_DURATION, SimulatedArmActions
+    from .dog_actions import DogActions, action_capabilities, action_velocity, feedback_status
 
 if TYPE_CHECKING:
     from typing import Any, Dict, Literal, Optional, Tuple, Union
@@ -103,6 +105,7 @@ class ControlService:
         self._dog_state = dog_state
         self._dog_state_to_close = dog_state
         self._actions = DogActions(clock)
+        self._arm_actions = SimulatedArmActions(clock)
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._thread = None
@@ -186,6 +189,11 @@ class ControlService:
             self._expire_locked()
             return self._status_locked()
 
+    def snapshot(self) -> 'ControlStatus':
+        """Inspect cached state without advancing actions or expiring ownership."""
+        with self._lock:
+            return self._status_locked()
+
     def _status_locked(self) -> 'ControlStatus':
         simulated = self.simulate
         feedback = feedback_status(simulated, self._phase, self._dog_state)
@@ -199,6 +207,7 @@ class ControlService:
                 'phase': self._phase,
                 'velocity': dict(self._velocity),
                 'limits': dict(LIMITS),
+                'capabilities': action_capabilities(LIMITS),
                 'error': self._error,
                 'stop_verified': False,
                 'simulated': simulated,
@@ -217,13 +226,26 @@ class ControlService:
                            if simulated else ARM_BLOCK_REASON),
                 'position_deg': dict(self._positions) if simulated else None,
                 'simulated': simulated,
+                'connected': False,
+                'reconnect_required': False,
+                'commissioning': {'state': ('closed' if self._closed else
+                                             'simulated' if simulated else 'unavailable'),
+                                  'profile_loaded': False, 'nonce_consumed': False},
+                'cached_feedback': None,
             },
         }
+        simulated_operation = self._arm_actions.status()
+        if simulated_operation is not None:
+            result['arm']['operation'] = simulated_operation
         if self._arm_gateway is not None:
             arm = self._arm_gateway.status()
             result['arm'].update({
                 'motion_enabled': bool(arm['motion_enabled'] and not self._closed and not self._estop),
                 'reason': arm['reason'],
+                'connected': arm['connected'],
+                'reconnect_required': arm['reconnect_required'],
+                'commissioning': arm['commissioning'],
+                'cached_feedback': arm['cached_feedback'],
                 'operation': arm['active_operation'] or arm['last_operation'],
                 'capabilities': {'joints': ['b', 'e', 'h'], 'max_delta_deg': {'b': .5, 'e': 2., 'h': .5},
                                  'max_speed_deg_s': 1., 'max_travel_deg': 3.,
@@ -284,6 +306,11 @@ class ControlService:
                 self._fields(body, ('id',), ('id',))
                 if not isinstance(body['id'], str) or not 1 <= len(body['id']) <= 128:
                     raise ControlError('invalid_request', 'id must identify an arm operation')
+                if self.simulate:
+                    operation = self._arm_actions.status()
+                    if operation is None or operation['operation_id'] != body['id']:
+                        raise ControlError('not_found', 'Unknown or superseded arm operation')
+                    return operation
                 if self._arm_gateway is None:
                     raise ControlError('not_found', 'No hardware arm operation is available')
                 try:
@@ -398,6 +425,24 @@ class ControlService:
                 self._velocity = values
                 self._velocity_deadline = self._clock() + ttl
                 self._phase = 'moving'
+            elif action == 'arm/action':
+                if not self.simulate or self.environment != 'dev':
+                    raise ControlError('locked', 'Arm target actions require dev simulation')
+                self._fields(body, ('lease', 'seq', 'targets', 'duration'),
+                             ('lease', 'seq', 'targets', 'duration'))
+                sequence = self._motion_locked(body)
+                targets = body['targets']
+                if not isinstance(targets, dict) or not targets or set(targets) - set(JOINT_LIMITS):
+                    raise ControlError('invalid_request', 'targets must contain supported arm joints')
+                checked = dict((joint, self._number(targets, joint, -JOINT_LIMITS[joint], JOINT_LIMITS[joint]))
+                               for joint in targets)
+                duration = self._number(body, 'duration', 0.0, ARM_MAX_DURATION)
+                if duration <= 0:
+                    raise ControlError('invalid_request', 'duration must be greater than zero')
+                if self._arm_actions.running:
+                    raise ControlError('conflict', 'Stop the current arm action before submitting another')
+                self._arm_actions.start(self._positions, checked, duration)
+                self._sequence = sequence
             elif action == 'arm/jog':
                 # Capability check precedes lease handling and any possible IO.
                 if not self.simulate and self._arm_gateway is None:
@@ -405,6 +450,8 @@ class ControlService:
                 self._fields(body, ('lease', 'seq', 'joint', 'delta', 'speed'),
                              ('lease', 'seq', 'joint', 'delta', 'speed'))
                 sequence = self._motion_locked(body)
+                if self._arm_actions.running:
+                    raise ControlError('conflict', 'Stop the current arm action before jogging')
                 name = body['joint']
                 if not isinstance(name, str) or name not in JOINT_LIMITS:
                     raise ControlError('invalid_request', 'Unsupported arm joint')
@@ -434,6 +481,7 @@ class ControlService:
 
     def _stop_locked(self, reason='stop', action_phase='cancelled'):
         self._actions.finish(action_phase, reason)
+        self._arm_actions.cancel(reason)
         self._generation += 1
         self._lease = None
         self._lease_deadline = 0.0
@@ -450,9 +498,10 @@ class ControlService:
             self._phase = 'error' if self._error else 'disarmed'
         self._wake.set()
 
-    def _expire_locked(self):
+    def _expire_locked(self, now=None):
         self._actions.prune()
-        now = self._clock()
+        if now is None:
+            now = self._clock()
         if ((self._lease is not None and now >= self._lease_deadline)
                 or (self._velocity_deadline is not None and now >= self._velocity_deadline)):
             self._stop_locked('expired')
@@ -500,8 +549,9 @@ class ControlService:
     def _tick(self):
         """One scheduled writer iteration, with fresh guards before every packet."""
         with self._lock:
-            self._expire_locked()
             now = self._clock()
+            self._expire_locked(now)
+            self._arm_actions.advance(self._positions, now)
             generation = self._generation
             stopping = self._stop_remaining > 0
             if stopping:

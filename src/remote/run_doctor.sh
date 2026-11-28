@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
-# Arguments: doctor Python source, ROS diagnostic source, module probe source.
-exec python3 -c "$@"
+# Arguments: Python bootstrap source, compressed trusted diagnostic payload.
+exec python3 -B -c "$@"

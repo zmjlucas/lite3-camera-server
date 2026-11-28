@@ -167,6 +167,36 @@ class DevClientTests(unittest.TestCase):
         self.assertEqual(body, {'owner': 'offline script'})
         self.assertEqual(self.client.lease, 'opaque-lease')
 
+    def test_passive_arm_fields_are_validated_when_present_and_legacy_fields_work(self):
+        self.endpoint.response = control_status(simulated=False)
+        self.client.status()
+        fields = {
+            'connected': True, 'reconnect_required': False,
+            'commissioning': {'state': 'pending_preflight', 'profile_loaded': True, 'nonce_consumed': True},
+            'cached_feedback': {'position_deg': dict(b=1, s=2, e=3, w=4),
+                                'gripper_position_deg': None, 'observed': True,
+                                'source': 'local_serial', 'sample_monotonic': 123.4,
+                                'age_s': 1.0, 'fresh': False},
+        }
+        self.endpoint.response['arm'].update(fields)
+        self.assertEqual(self.client.status()['arm']['cached_feedback'], fields['cached_feedback'])
+        for key, invalid in (
+                ('connected', 1), ('reconnect_required', 'false'),
+                ('commissioning', dict(fields['commissioning'], state='armed')),
+                ('commissioning', dict(fields['commissioning'], nonce_consumed=1)),
+                ('cached_feedback', dict(fields['cached_feedback'], source='simulated')),
+                ('cached_feedback', dict(fields['cached_feedback'], observed=False)),
+                ('cached_feedback', dict(fields['cached_feedback'], age_s=-1)),
+                ('cached_feedback', dict(fields['cached_feedback'], sample_monotonic=True)),
+                ('cached_feedback', dict(fields['cached_feedback'], gripper_position_deg=0)),
+                ('cached_feedback', dict(fields['cached_feedback'], position_deg={'b': 1})),
+                ('cached_feedback', dict(fields['cached_feedback'], fresh='false'))):
+            with self.subTest(key=key, invalid=invalid):
+                self.endpoint.response['arm'] = dict(fields, **control_status(simulated=False)['arm'])
+                self.endpoint.response['arm'][key] = invalid
+                with self.assertRaises(DevClientError):
+                    self.client.status()
+
     def test_motion_requires_explicit_acquire(self):
         for method in (self.client.stand, self.client.heartbeat,
                        lambda: self.client.velocity(vx=0.1),
@@ -678,6 +708,7 @@ class DevClientTests(unittest.TestCase):
         with self.assertRaisesRegex(DevClientError, 'lease expired') as error:
             self.client.velocity(vx=0.1)
         self.assertEqual(error.exception.status, 409)
+        self.assertEqual(getattr(error.exception, 'code', None), 'lease_required')
         self.assertIsNone(self.client.lease)
         self.assertEqual(len(self.endpoint.calls), 2)
         with self.assertRaises(DevClientError):
@@ -686,8 +717,9 @@ class DevClientTests(unittest.TestCase):
 
     def test_unreadable_error_envelope_preserves_http_status(self):
         oversized_json = b'{"error":"ignored"}' + b' ' * 65536
-        for body in (DEEP_JSON, oversized_json, b'{"error":false}',
-                     b'{"error":"ignored","code":false}', b'{"error":"first","error":"second"}'):
+        for body in (DEEP_JSON, oversized_json, b'{"error":false,"code":"conflict"}',
+                     b'{"error":"ignored","code":false}', b'{"error":"first","error":"second"}',
+                     b'{"error":"ignored","code":"first","code":"second"}'):
             with self.subTest(length=len(body)):
                 self.client.acquire()
                 self.endpoint.failure = HTTPError('http://127.0.0.1/api/control/heartbeat', 409,
@@ -696,6 +728,7 @@ class DevClientTests(unittest.TestCase):
                     with self.assertRaisesRegex(DevClientError, 'HTTP 409') as error:
                         self.client.heartbeat()
                     self.assertEqual(error.exception.status, 409)
+                    self.assertIsNone(error.exception.code)
                     self.assertIsNone(self.client.lease)
                 finally:
                     self.endpoint.failure = None
@@ -708,12 +741,13 @@ class DevClientTests(unittest.TestCase):
                 headers = None if versions is None else protocol_headers(versions)
                 self.endpoint.failure = HTTPError('http://127.0.0.1/api/dog/velocity', 503,
                                                   'unavailable', headers,
-                                                  io.BytesIO(b'{"error":"foreign error format"}'))
+                                                  io.BytesIO(b'{"error":"foreign error format","code":"unavailable"}'))
                 requests = len(self.endpoint.calls)
                 try:
                     with self.assertRaisesRegex(DevClientError, 'protocol') as error:
                         self.client.velocity(vx=0.1)
                     self.assertEqual(error.exception.status, 503)
+                    self.assertIsNone(error.exception.code)
                     self.assertIsNone(self.client.lease)
                     self.assertEqual(len(self.endpoint.calls), requests + 1)
                 finally:
@@ -726,6 +760,7 @@ class DevClientTests(unittest.TestCase):
         with self.assertRaisesRegex(DevClientError, 'Transport failed') as error:
             self.client.arm_state()
         self.assertEqual(error.exception.status, 503)
+        self.assertIsNone(error.exception.code)
 
     def test_network_error_clears_lease_and_is_not_retried(self):
         self.client.acquire()

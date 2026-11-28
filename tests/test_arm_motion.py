@@ -1,5 +1,6 @@
 """Offline, byte-level R5 tests. Synthetic fixtures belong to these tests only."""
 import json
+from concurrent.futures import ThreadPoolExecutor
 import math
 import os
 import tempfile
@@ -140,6 +141,83 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(self.board.requests, [b'{"T":105}\n'])
         self.assertEqual(self.board.motions, [])
 
+    def test_passive_status_preserves_nonce_and_ages_independent_cached_feedback(self):
+        now = [100.0]
+        g = self.gateway(clock=lambda: now[0])
+        for _ in range(3):
+            status = g.status()
+            self.assertIn("commissioning", status)
+            self.assertEqual(status["commissioning"], {
+                "state": "pending_preflight", "profile_loaded": True, "nonce_consumed": False})
+            self.assertIsNone(status["cached_feedback"])
+            self.assertFalse(status["connected"])
+        self.assertEqual(list(self.path.parent.glob(".r5-used-*")), [])
+        self.assertEqual(self.opens, [])
+        live = g.read_state()
+        self.assertEqual(len(list(self.path.parent.glob(".r5-used-*"))), 1)
+        self.assertEqual(g.status()["commissioning"], {
+            "state": "pending_preflight", "profile_loaded": True, "nonce_consumed": True})
+        live["position_deg"]["b"] = -100
+        cached = g.status()["cached_feedback"]
+        self.assertAlmostEqual(cached["position_deg"]["b"], 10.1)
+        self.assertEqual(cached["source"], "local_serial")
+        self.assertEqual(cached["sample_monotonic"], 100.0)
+        self.assertTrue(cached["observed"])
+        self.assertIsNone(cached["gripper_position_deg"])
+        self.assertTrue(cached["fresh"])
+        cached["position_deg"]["b"] = -100
+        now[0] = 103.0
+        stale = g.status()["cached_feedback"]
+        self.assertEqual(stale["age_s"], 3.0)
+        self.assertFalse(stale["fresh"])
+        self.assertAlmostEqual(stale["position_deg"]["b"], 10.1)
+        self.assertEqual(self.board.requests, [b'{"T":105}\n'])
+
+    def test_fault_and_reconnect_preserve_historical_feedback_and_disable_commissioning(self):
+        g = self.gateway()
+        g.read_state()
+        sampled = g.status().get("cached_feedback")
+        self.assertIsNotNone(sampled)
+        self.board.respond = lambda board, sample: b""
+        with self.assertRaises(ArmGatewayError):
+            g.read_state()
+        status = g.status()
+        self.assertFalse(status["connected"])
+        self.assertTrue(status["reconnect_required"])
+        self.assertEqual(status["commissioning"]["state"], "recommission_required")
+        self.assertEqual(status["cached_feedback"]["sample_monotonic"], sampled["sample_monotonic"])
+        self.assertFalse(status["cached_feedback"]["fresh"])
+        reads = len(self.board.requests)
+        g.reconnect()
+        status = g.status()
+        self.assertFalse(status["reconnect_required"])
+        self.assertFalse(status["connected"])
+        self.assertFalse(status["cached_feedback"]["fresh"])
+        self.assertEqual(len(self.board.requests), reads)
+        self.board.respond = None
+        g.read_state()
+        self.assertTrue(g.status()["connected"])
+        self.assertEqual(g.status()["commissioning"]["state"], "recommission_required")
+        self.assertFalse(g.status()["motion_enabled"])
+
+    def test_nonce_status_reflects_a_competing_claim_and_marker_sync_failure(self):
+        g = self.gateway()
+        other = self.gateway()
+        other.read_state()
+        with self.assertRaises(ArmGatewayError):
+            g.read_state()
+        self.assertEqual(g.status()["commissioning"], {
+            "state": "recommission_required", "profile_loaded": True, "nonce_consumed": True})
+        self.profile["nonce"] = "sync-failure"
+        self.save()
+        g = self.gateway()
+        with mock.patch("src.arm_motion.os.fsync", side_effect=OSError("cannot sync marker")):
+            with self.assertRaises(ArmGatewayError):
+                g.read_state()
+        self.assertTrue(g.status()["commissioning"]["nonce_consumed"])
+        self.assertEqual(len(list(self.path.parent.glob(".r5-used-*"))), 2)
+        self.assertEqual(self.board.requests, [b'{"T":105}\n'])
+
     def test_profile_security_and_identity_fail_before_serial(self):
         for key, bad in (("machine_id", "other"), ("boot_id", "other"),
                          ("version", True), ("device", "/dev/other"),
@@ -183,6 +261,8 @@ class MotionTests(unittest.TestCase):
         g = self.gateway()
         result = self.finish(g, self.jog(g, delta=-.6))
         self.assertEqual(result["phase"], "completed", result)
+        self.assertEqual(g.status()["commissioning"]["state"], "ready")
+        self.assertEqual(g.status()["cached_feedback"]["position_deg"], result["observed_end"]["position_deg"])
         self.assertTrue(result["observed_stationary"])
         self.assertFalse(result["stop_verified"])
         self.assertIsNone(result["gripper_position_deg"])
@@ -350,6 +430,8 @@ class MotionTests(unittest.TestCase):
         g.close()
         restarted = self.gateway()
         self.assertFalse(restarted.status()["motion_enabled"])
+        self.assertEqual(restarted.status()["commissioning"], {
+            "state": "recommission_required", "profile_loaded": True, "nonce_consumed": True})
         self.assertTrue(restarted.read_state()["observed"])
         with self.assertRaises(ArmGatewayError):
             self.jog(restarted)
@@ -424,6 +506,40 @@ class MotionTests(unittest.TestCase):
             finally:
                 release.set()
                 worker.join(1)
+
+    def test_reconnect_failure_and_shutdown_invalidate_cache_before_slow_close(self):
+        for action in ('reconnect', 'read_failure', 'close'):
+            with self.subTest(action=action):
+                self.profile['nonce'] = 'slow-close-' + action
+                self.save()
+                self.board.respond = None
+                g = self.gateway(clock=lambda: 100.0)
+                g.read_state()
+                entered, release = threading.Event(), threading.Event()
+                def slow_close():
+                    entered.set()
+                    release.wait(2)
+                if action == 'read_failure':
+                    self.board.respond = lambda board, sample: b''
+                    operation = g.read_state
+                else:
+                    operation = getattr(g, action)
+                with mock.patch.object(self.board, 'close', side_effect=slow_close):
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        result = pool.submit(operation)
+                        try:
+                            self.assertTrue(entered.wait(1))
+                            status = g.status()
+                            self.assertFalse(status['connected'])
+                            self.assertFalse(status['cached_feedback']['fresh'])
+                            self.assertEqual(status['cached_feedback']['age_s'], 0.0)
+                        finally:
+                            release.set()
+                        if action == 'read_failure':
+                            with self.assertRaises(ArmGatewayError):
+                                result.result(2)
+                        else:
+                            result.result(2)
 
     def test_expiry_and_shutdown_issue_at_most_one_independently_bounded_hold(self):
         for cause in ("expiry", "shutdown"):
@@ -569,6 +685,8 @@ class MotionTests(unittest.TestCase):
                 self.assertFalse(state["motion_enabled"])
                 self.assertIn(reason, state["reason"])
                 self.assertFalse(g.status()["reconnect_required"])
+                self.assertEqual(g.status()["commissioning"]["state"], "recommission_required")
+                self.assertAlmostEqual(g.status()["cached_feedback"]["position_deg"]["b"], observed)
                 self.board.observed["b"] = 10.1
                 recovered = g.read_state()
                 self.assertAlmostEqual(recovered["position_deg"]["b"], 10.1)

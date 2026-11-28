@@ -33,7 +33,22 @@ Deployment refuses symbolic links in source paths and, on Windows, all reparse p
 python3 src/launcher.py doctor ysc@192.168.1.103
 ```
 
-The `doctor` command reads system details, Python dependencies, ROS environments, camera service status, and video device information. It does not open a camera. To inspect the route and commands, add `--dry-run` to `doctor`, `deploy`, or `view`. This option reads local routes and prints the selected path and commands. It does not log in to or probe the robot.
+The `doctor` command summarizes the installed bundle, running service, RGB devices, UDP feedback and serial readiness, alongside system details and ROS environments. It works before deployment. Checks use filesystem metadata, visible process descriptors, query-only V4L2 discovery and the running service's passive `OPTIONS /api/diagnostics` snapshot. Legacy servers reject this method without entering their control status handlers. Existing camera capture, control ownership, serial sessions and commissioning records are preserved. Doctor leaves service lifecycle and device settings unchanged.
+
+The report identifies the installed bundle by SHA-256 and compares it with the bundle fingerprint captured at server startup. `matches_running: false` indicates changed files on disk; schedule an explicit restart when ready to load them. An older server without passive diagnostics leaves the running version and feedback `unverified`. Each missing tool or inaccessible source of evidence is reported independently.
+
+```bash
+python3 src/launcher.py doctor ysc@192.168.1.103 --remote-port 8080
+# Optional paths and account for checking a planned installation:
+python3 src/launcher.py doctor ysc@192.168.1.103 --service-user ysc \
+  --arm-device /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 --dog-state-port 43897
+```
+
+`--remote-port` selects the existing HTTP listener. `--install-dir` selects a bundle directory (default: `~/lite3-dev-server`). Actual runtime identity and device configuration are used when available; `--service-user`, `--arm-device`, `--dog-host` and `--dog-state-port` provide inspection overrides. UDP feedback retains its actual receiver host/port; requested socket inspections are labeled separately. Defaults are labeled when runtime configuration cannot be obtained. Device permission checks evaluate Unix mode bits and parent traversal for the service account, including its supplementary groups. ACLs and systemd device policies remain unverified. Dependency imports use the doctor's Python interpreter and SSH account; the service interpreter is reported separately, with its environment unverified. An empty ownership list covers only visible processes and cannot establish exclusive availability. RGB ownership by the running service is expected during capture; sibling interfaces and USB device handles are included.
+
+UDP conclusions distinguish `port_conflict`, `bind_failed`, `feedback_missing`, `feedback_stale`, `feedback_fresh` and `invalid_feedback`. A listed UDP socket establishes listener presence; observed packet freshness comes from the running receiver. Simulation, readonly/disabled mode and commissioned arm-only sessions mark hardware dog reception `not_applicable`. The report includes upload destination, source IP, packet-layout and firewall checks. Doctor never binds a UDP port, sends robot commands, opens serial or reads/claims a commissioning profile. Remote arm configurations leave local serial checks `not_applicable`.
+
+To inspect the route and commands, add `--dry-run` to `doctor`, `deploy`, or `view`. This option reads local routes and prints the selected path and commands. It does not log in to or probe the robot.
 
 Windows dry-run output shows exact command arguments as JSON for inspection; it is not a PowerShell script to paste and execute. Run the launcher without `--dry-run` to let Python pass the arguments directly to OpenSSH, including embedded quotes and newlines.
 
@@ -164,6 +179,64 @@ The SXW arm camera uses V4L2 with MJPG input. A V4L2 session uses YUYV for D435i
 
 If a selection fails, read the source error and check the connection, permissions, camera usage, and requested resolution/frame rate. Use **Retry camera** to restart the selected camera after a capture failure, or refresh the list and select another camera. Explicit `--device` paths remain supported for starting V4L2; the web selection API accepts only IDs from the detected catalog, not arbitrary device paths.
 
+### Python camera SDK
+
+Install the SDK from this checkout with `python -m pip install .` (Python 3.8+). `CameraClient` uses the existing camera HTTP endpoints and standard-library networking. It connects directly to the configured HTTP(S) origin, with redirects and environment proxies disabled. You can use the LAN address below or an existing tunnel at `http://127.0.0.1:18080`.
+
+```python
+from pathlib import Path
+from lite3_dev_server import CameraClient, CameraFrameUnavailable
+
+camera = CameraClient("http://192.168.1.103:8080")
+health = camera.health()
+print(health["status"], health["frame_age_s"], health["error"])
+
+try:
+    jpeg = camera.snapshot()
+except CameraFrameUnavailable as error:
+    print(error.health["status"], error.health["error"])
+else:
+    Path("snapshot.jpg").write_bytes(jpeg)
+```
+
+`health()` returns `CameraHealth` even when the service responds with HTTP 503. Its `status` is `starting` while awaiting the first frame, `live` for a usable frame, `stale` after frame expiry, or `error` for a capture failure. It also reports `source`, nullable `source_id`, nullable `frame_age_s`, nullable `error`, and `generation`. Frame age measures elapsed time at the server; it does not establish end-to-end image latency.
+
+When `snapshot()` or `stream()` initially receives that 503 health response, it raises `CameraFrameUnavailable`. The exception carries the full typed `health` and `status == 503`. Other request, protocol, parsing and transport failures raise `CameraClientError`, with an HTTP `status` when available. The SDK validates known JSON fields and preserves additive fields.
+
+```python
+try:
+    with camera.stream() as frames:
+        for jpeg in frames:
+            # Pass these bytes to your application's decoder or image processor.
+            Path("latest.jpg").write_bytes(jpeg)
+            break
+except CameraFrameUnavailable as error:
+    print(error.health["status"], error.health["error"])
+```
+
+`CameraStream` yields each JPEG as `bytes`. Exiting `with` releases the response connection, including early breaks and application exceptions. Explicit `close()` is also available. A server multipart terminator ends iteration and closes the stream; capture failure, frame expiry, and source switching can each cause this. Inspect `health()` afterward and open another stream when your application is ready. Truncated/malformed streams raise `CameraClientError` and close the response. The SDK leaves retry timing to the application.
+
+`timeout` defaults to 5 seconds and accepts finite values above zero through 10 seconds. It bounds individual blocking socket operations, including stream reads. `max_frame_bytes` defaults to 16 MiB and limits both snapshots and each MJPEG frame. JSON replies and per-frame headers are also bounded. The SDK returns the original JPEG bytes and requires no image-decoding dependency.
+
+Source selection is a separate, explicit request:
+
+```python
+from lite3_dev_server import CameraClientError
+
+catalog = camera.sources()  # CameraSourceCatalog, containing CameraSource entries
+for source in catalog["sources"]:
+    print(source["id"], source["label"], source["available"], source["error"])
+
+def select_camera(source_id: str) -> None:
+    try:
+        selected = camera.select_source(source_id)  # Use an ID from this catalog.
+        print(selected["selected"])
+    except CameraClientError as error:
+        print(error.status, str(error))  # Includes the server's unavailable-device reason.
+```
+
+**Calling `select_source()` changes the shared capture for every viewer connected to that service.** Capture starts asynchronously; inspect health or handle `CameraFrameUnavailable` while the selected camera starts. Catalog availability is a point-in-time observation, and the server checks it again when selecting. Reading sources, health, snapshots or streams never selects a source or acquires a robot-control lease.
+
 ### Enable the Lite3 wide-angle camera
 
 Add the motion host's IPv4 address with `--wide-angle-host` to make its vendor camera stream selectable in a RealSense or V4L2 session. The decoder runs on the Linux perception host and needs OpenCV with the FFmpeg backend and RTSP capture timeout support. Keep the vendor publisher running on the motion host. The perception host reads its TCP RTSP stream on port 8554 at `/test`.
@@ -185,11 +258,32 @@ Alternatively, run `view` on each client. It forwards that computer's `127.0.0.1
 
 Press Ctrl+C (or Ctrl+Break on Windows) to close just that client's tunnel. Other clients keep watching, and the native server remains running even with no viewers. Force-ending the launcher in Task Manager bypasses tunnel cleanup. ROS mode retains its foreground lifecycle: Ctrl+C also stops the ROS preview process it launched.
 
+### Connect to an existing service
+
+Use `view --existing-only` for a service whose lifecycle is managed separately, such as `lite3-dev-server.service`:
+
+```bash
+# Open the control console through the existing automatic SSH route.
+python3 src/launcher.py view ysc@192.168.1.103 --existing-only --console
+
+# Select a jump host and ports; stdout contains the URL for an SDK client.
+python3 src/launcher.py view ysc@192.168.1.103 --existing-only --url-only \
+  --jump ysc@192.168.2.1 --local-port 18081 --remote-port 8081
+```
+
+`--direct` uses the existing SSH configuration; `--jump` and automatic macOS routing work as usual. The launcher runs `ssh -N -T` with a loopback forward and verifies `/healthz` through it. Routing and authentication follow the SSH configuration; this mode uses a dedicated foreground connection so cleanup releases the forward. All remote service files, settings and processes remain under their existing management. The connection requires HTTP 200 or 503 with both `X-Lite3-Camera-Protocol: 1` and `X-Lite3-Dev-Protocol: 1`. A camera outage can return 503 while the console and control API remain usable. Redirects and incompatible protocol responses fail the check.
+
+Connection setup and readiness have a 15-second timeout. Use `--wait-timeout 30` for a longer SSH login or service restart (valid range: 1–300 seconds). While the remote listener is unavailable, the launcher retries the HTTP check. Expiry or an SSH failure exits with a nonzero status and cleans up the local tunnel. A protocol mismatch fails immediately. Run the command again after resolving the reported problem.
+
+This mode accepts connection options and rejects server launch options, including `--backend`, `--env`, `--simulate`, `--control-mode`, camera capture options and R5 settings. The running service's configuration determines the available controls. `--no-open` verifies readiness and prints the viewer URL. `--url-only` requires `--existing-only`, suppresses browser opening and prints one URL to stdout after verification; diagnostics go to stderr. The process stays running to maintain the tunnel, so read or copy the URL while it runs instead of waiting for command substitution to finish. `--console` selects `/control`; omit it when producing a base URL for `DevClient`.
+
+`--dry-run` prints the SSH command and URL without connecting or verifying the listener. With `--url-only --dry-run`, the inspection command goes to stderr and the prospective URL goes to stdout. Ctrl+C closes only the local tunnel; the existing service continues running.
+
 ### Boot service
 
 Each `deploy` installs `/etc/systemd/system/lite3-dev-server.service`, reloads systemd, and enables it for every boot. Installation needs a running systemd host and root or sudo access. The SSH terminal allows a sudo password prompt. The service runs as the deployment account, with its home directory, camera permissions, and the Python interpreter found during deployment. Dependencies must be installed for that interpreter and account; the service does not source interactive shell startup files.
 
-The installation directory is `~/lite3-dev-server/`. When upgrading an older installation, `deploy` enables `lite3-dev-server.service`, then disables autostart for the legacy `lite3-camera-server.service` if it is installed. The legacy unit file, old `~/lite3-camera-server/` directory and running processes remain in place. Starting the new service stops the legacy service first, releasing its camera and port. If a detached server was started from the old directory, inspect its PID file under `~/lite3-camera-server/.runtime/` and stop that process before starting the new service.
+The installation directory is `~/lite3-dev-server/`. When upgrading an older installation, `deploy` enables `lite3-dev-server.service`, then disables autostart for the legacy `lite3-camera-server.service` if it is installed. The legacy unit file, old `~/lite3-camera-server/` directory and running processes remain in place. The generated unit declares a systemd conflict with the legacy service. The launcher's restart command reports an active legacy service and waits for the operator to stop it explicitly. If a detached server was started from the old directory, inspect its PID file under `~/lite3-camera-server/.runtime/` and stop that process before starting the new service.
 
 Review any systemd drop-in overrides for the legacy service and reapply the settings you need under `lite3-dev-server.service` before starting it. Drop-ins are tied to the unit name and stay with the legacy unit during deployment.
 
@@ -201,19 +295,27 @@ For a stable V4L2 boot device, use the camera's confirmed RGB `/dev/v4l/by-id/NA
 # On the client; replace NAME with the host's actual RGB device link.
 python3 src/launcher.py deploy ysc@192.168.1.103 --backend v4l2 --device /dev/v4l/by-id/NAME
 
-# On the perception host:
-systemctl is-enabled lite3-dev-server.service
-systemctl status lite3-dev-server.service
-journalctl -u lite3-dev-server.service -b -f
+# On the client:
+python3 src/launcher.py service status ysc@192.168.1.103
+python3 src/launcher.py service logs ysc@192.168.1.103 --lines 100
+python3 src/launcher.py service restart ysc@192.168.1.103
 ```
 
-To use the service immediately, first stop any detached or foreground dev server using the instructions below, then run `sudo systemctl restart lite3-dev-server.service`. Do not run both processes against the same camera or port. Subsequent service restarts use the same command. A service restart interrupts all viewers; existing pages reconnect at the same URL.
+`service status` shows loaded/enabled/active state, the main PID, unit path, drop-ins and startup command for both unit names. It also reports TCP listeners and their process commands, plus the HTTP build and environment. `service logs` prints the latest 50 journal entries from the current boot across both units; change this with `--lines`. The host needs `systemctl`, `journalctl`, `ss` (iproute2), and `ps`. The commands use the existing SSH routing, `--jump`, `--direct`, and `--dry-run`. Sudo uses the SSH terminal to read the journal and inspect all socket owners. On Windows, replace `python3` with `py -3`.
 
-Wait for the service's HTTP listener before launching a new `view` during a restart. If `view` starts its detached fallback first, stop that detached process so the service can claim the port on its next retry.
+To use the service immediately, run `service restart`. It first checks for an active legacy unit and port conflicts, then requests a restart and waits up to 30 seconds for a fresh systemd process to own the port and serve `/api/status`. Set `--timeout SECONDS` to change the deadline. A service restart interrupts viewers and control sessions; existing pages reconnect at the same URL. For a non-default deployment port, supply the matching `--remote-port` to status and restart.
+
+When a conflict is reported, inspect its PID, command and unit before deciding how to release it. Stop a legacy unit on the host with `sudo systemctl stop lite3-camera-server.service`. Use the detached-process instructions below for a server started by `view`. Run `service restart` again after resolving the conflict. The launcher leaves conflicting processes in place. A failed restart prints the systemd state, listener details and recent journal to help locate startup, permission or binding errors. The service's existing systemd retry policy continues after a verification timeout.
+
+`deploy` prints `Deployed build: sha256:...`, computed from the uploaded runtime files and source provenance. To require that version, pass the full identifier to `service restart --expect-build sha256:...`. The server captures its `X-Lite3-Build` header at startup, so a running process retains its identity after a new deployment. Boot settings and device dependencies are separate from the code identifier and remain visible through status. An explicitly requested build that differs or is absent returns failure; older services without a build header can still be verified by omitting this option. Restart uses `/api/status`, so `--backend none` and temporary camera failures work even when `/healthz` returns 503.
+
+Direct host commands remain available: `systemctl status lite3-dev-server.service`, `journalctl -u lite3-dev-server.service -b -f`, and `sudo systemctl restart lite3-dev-server.service`.
+
+Use `view --existing-only` to connect during a service restart. It waits for the listener within `--wait-timeout` and leaves startup to systemd. Ordinary native `view` retains its detached fallback: wait for the service's HTTP listener before using that mode during a restart. If a detached process claims the port first, stop it so the service can bind on its next retry.
 
 The service retries camera initialization every five seconds so a USB camera that becomes available after boot can recover. It also reopens V4L2 or wide-angle capture after a read failure. RealSense frame-read errors retain the existing SDK pipeline and retry frame reads. HTTP can remain available with `/healthz` returning 503 while capture is unavailable. A crashed server process is restarted by systemd. Use `systemctl is-active` to check the process and `/healthz` and the live image to check frame delivery.
 
-Use `sudo systemctl stop lite3-dev-server.service` to stop it until the next boot, or `sudo systemctl disable --now lite3-dev-server.service` to stop it and disable autostart. Running `deploy` enables it again. A later `view` can still start a detached server if the service is stopped. Service logs are in the journal; service processes do not use the launcher's `.runtime/*.pid` files.
+Use `sudo systemctl stop lite3-dev-server.service` to stop it until the next boot, or `sudo systemctl disable --now lite3-dev-server.service` to stop it and disable autostart. Running `deploy` enables it again. A later ordinary native `view` can still start a detached server if the service is stopped; `view --existing-only` waits and fails when the listener remains unavailable. Service logs are in the journal; service processes do not use the launcher's `.runtime/*.pid` files.
 
 ### Detached and foreground servers
 

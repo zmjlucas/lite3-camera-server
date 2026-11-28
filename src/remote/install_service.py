@@ -76,10 +76,11 @@ def install_service(home, options):
         subprocess.run(privilege + ["systemctl", "disable", LEGACY_SERVICE], check=True)
         print("Disabled {} autostart. Starting {} will stop the legacy service.".format(
             LEGACY_SERVICE, SERVICE), flush=True)
-    print("Enabled {} for every boot. Current server processes were left running.\n"
-          "To apply the boot settings now, stop any manually started dev server, then run:\n"
-          "  sudo systemctl restart {}\n"
-          "Check service logs with: journalctl -u {} -b".format(SERVICE, SERVICE, SERVICE), flush=True)
+    print("Enabled {} for every boot.\n"
+          "Use the same launcher with 'service status <SSH-target>' to inspect the service.\n"
+          "Run 'service restart <SSH-target>' to apply the deployment now. Use the deployed --remote-port.\n"
+          "The launcher reports conflicting processes for you to resolve.\n"
+          "Run 'service logs <SSH-target>' to view recent logs.".format(SERVICE), flush=True)
 
 
 def main():

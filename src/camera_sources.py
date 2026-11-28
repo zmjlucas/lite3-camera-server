@@ -146,6 +146,7 @@ def discover_sources(sysfs_root=Path("/sys/class/video4linux"), probe=None, proc
             found.append({"id": source_id, "label": device + " — " + label, "device": device,
                           "backend": "v4l2", "kind": kind, "serial": serial,
                           "usb_path": str(usb), "pixel_format": pixel_format,
+                          "related_devices": related,
                           "available": error is None, "error": error})
         except (OSError, ImportError):
             # An inaccessible/disconnected node must not hide other supported cameras.

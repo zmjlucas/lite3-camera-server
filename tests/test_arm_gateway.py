@@ -121,6 +121,55 @@ class GatewayTests(unittest.TestCase):
                              ["read_state", "read_state"])
             self.assertEqual([r["id"] for r in self.processes[0].requests], [1, 2])
 
+    def test_readonly_status_is_passive_and_keeps_cache_after_reconnect(self):
+        now = [100.0]
+        with mock.patch.object(arm_gateway.subprocess, "Popen", side_effect=self.factory()):
+            gateway = self.gateway(host="robot", clock=lambda: now[0])
+            self.assertEqual(gateway.status()["commissioning"], {
+                "state": "readonly", "profile_loaded": False, "nonce_consumed": False})
+            self.assertIsNone(gateway.status()["cached_feedback"])
+            self.assertEqual(self.processes, [])
+            live = gateway.read_state()
+            live["position_deg"]["b"] = 0
+            snapshot = gateway.status()
+            self.assertTrue(snapshot["connected"])
+            self.assertEqual(snapshot["cached_feedback"]["source"], "ssh_serial")
+            self.assertEqual(snapshot["cached_feedback"]["position_deg"]["b"], 90)
+            snapshot["cached_feedback"]["position_deg"]["b"] = 0
+            now[0] += 2
+            self.assertEqual(gateway.status()["cached_feedback"]["age_s"], 2)
+            self.assertFalse(gateway.status()["cached_feedback"]["fresh"])
+            gateway.reconnect()
+            self.assertFalse(gateway.status()["connected"])
+            self.assertFalse(gateway.status()["reconnect_required"])
+            self.assertEqual(gateway.status()["cached_feedback"]["position_deg"]["b"], 90)
+            self.assertEqual(len(self.processes), 1)
+            self.assertEqual(len(self.processes[0].requests), 1)
+
+    def test_status_returns_while_read_waits_and_reports_failure_latch(self):
+        entered, release = threading.Event(), threading.Event()
+        def reply(request):
+            entered.set()
+            release.wait(1)
+            return {"id": request["id"], "ok": False}
+        with mock.patch.object(arm_gateway.subprocess, "Popen", side_effect=self.factory(reply)):
+            gateway = self.gateway()
+            def read():
+                with self.assertRaises(arm_gateway.ArmGatewayError):
+                    gateway.read_state()
+            worker = threading.Thread(target=read)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(1))
+                started = time.monotonic()
+                self.assertIsNone(gateway.status()["cached_feedback"])
+                self.assertLess(time.monotonic() - started, .2)
+            finally:
+                release.set()
+                worker.join(2)
+            self.assertTrue(gateway.status()["reconnect_required"])
+            self.assertFalse(gateway.status()["connected"])
+
     def test_failure_requires_explicit_reconnect_without_automatic_open(self):
         def fail(request):
             return {"id": request["id"], "ok": False, "error": "serial unavailable"}

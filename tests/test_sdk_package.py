@@ -30,12 +30,25 @@ class SDKPackageTests(unittest.TestCase):
             'release': Optional[ControlStatus], 'reset': ControlStatus, 'stand': ControlStatus,
             'status': ControlStatus, 'stop': ControlStatus, 'velocity': ControlStatus,
             'arm_operation': ArmOperation, 'arm_stop': ControlStatus,
+            'arm_action': ControlStatus, 'wait_arm_operation': ArmOperation,
         }.items():
             with self.subTest(method=name):
                 self.assertIs(get_type_hints(getattr(DevClient, name))['return'], response)
         self.assertIs(get_type_hints(DevClient.arm_jog)['joint'], ArmJoint)
         self.assertIs(get_type_hints(DevClient.reset)['revision'], str)
         self.assertEqual(get_type_hints(DevClientError)['status'], Optional[int])
+        self.assertEqual(get_type_hints(DevClientError)['code'], Optional[str])
+
+    def test_preflight_and_offline_rules_are_public_typed_interfaces(self):
+        import lite3_dev_server as sdk
+
+        for name in ('TargetTransport', 'MotionOperation', 'PreflightReason', 'PreflightResult',
+                     'PreflightError', 'DogActionCapability', 'DogCapabilities', 'check_preflight',
+                     'validate_dog_action', 'validate_velocity', 'validate_arm_jog'):
+            self.assertIn(name, sdk.__all__)
+        self.assertIs(get_type_hints(sdk.DevClient.preflight)['return'], sdk.PreflightResult)
+        self.assertIs(get_type_hints(sdk.check_preflight)['target'], sdk.TargetTransport)
+        self.assertEqual(get_type_hints(sdk.DevClient.__init__)['target'], Optional[sdk.TargetTransport])
 
     def test_dog_action_contracts_are_exported_and_preserve_typed_results(self):
         import lite3_dev_server as sdk

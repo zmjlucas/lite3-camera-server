@@ -11,10 +11,12 @@ if __package__:
     from . import wide_angle
     from .camera import CaptureController, LatestFrame
     from .http_server import DEFAULT_BIND, CameraHTTPServer
+    from .runtime_info import runtime_identity
 else:
     import wide_angle
     from camera import CaptureController, LatestFrame
     from http_server import DEFAULT_BIND, CameraHTTPServer
+    from runtime_info import runtime_identity
 
 STARTUP_SOURCES = ("realsense", "v4l2", "none")
 
@@ -118,6 +120,7 @@ def development_services(options):
 
 def main(argv=None):
     options = parse_args(argv)
+    identity = runtime_identity(options)
     try:
         control, arm_gateway = development_services(options)
     except (OSError, ValueError) as error:
@@ -147,7 +150,8 @@ def main(argv=None):
 
                 try:
                     server = CameraHTTPServer(options.port, frames, controller, bind=options.bind,
-                                              control=control, arm_gateway=arm_gateway)
+                                              control=control, arm_gateway=arm_gateway,
+                                              runtime_info=identity)
                 except OSError as error:
                     print("Cannot listen on {}:{}: {}".format(options.bind, options.port, error), file=sys.stderr)
                     return 1

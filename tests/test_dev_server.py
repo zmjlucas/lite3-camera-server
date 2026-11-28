@@ -10,6 +10,7 @@ from src import arm_gateway, control, server
 from src.application import ControlApplication
 from src.camera import LatestFrame
 from src.http_server import CameraRequestHandler
+from src.lite3_dev_server._build_info import UNKNOWN_BUILD
 from src.remote.arm_worker import observed_state
 from fixtures.http_connection import MemoryConnection
 
@@ -29,7 +30,12 @@ class DevHTTPTests(unittest.TestCase):
         self.control = Control()
         self.addCleanup(self.control.close)
         self.measured = observed_state({'b': 1., 's': 2., 'e': 3., 'w': 4.})
-        self.gateway = SimpleNamespace(read_state=lambda: dict(self.measured))
+        self.gateway = arm_gateway.ArmGateway()
+        self.addCleanup(self.gateway.close)
+        read = patch.object(self.gateway, 'read_state', side_effect=lambda: dict(self.measured))
+        read.start()
+        self.addCleanup(read.stop)
+
     def request(self, method, path, body=b'{}', headers=(), content_type='application/json'):
         fields = [('Host', 'localhost:8080'), ('Content-Type', content_type),
                   ('Content-Length', str(len(body)))]
@@ -37,7 +43,8 @@ class DevHTTPTests(unittest.TestCase):
         raw = '{} {} HTTP/1.1\r\n{}\r\n\r\n'.format(method, path, '\r\n'.join('{}: {}'.format(*x) for x in fields))
         conn = MemoryConnection(raw.encode() + body)
         frames = LatestFrame('realsense')
-        host = SimpleNamespace(frames=frames, application=ControlApplication(self.control, self.gateway))
+        host = SimpleNamespace(frames=frames, application=ControlApplication(self.control, self.gateway),
+                               build_info=UNKNOWN_BUILD)
         CameraRequestHandler(conn, ('127.0.0.1', 1), host)
         head, value = bytes(conn.output).split(b'\r\n\r\n', 1)
         self.response_head = head
@@ -51,6 +58,7 @@ class DevHTTPTests(unittest.TestCase):
         from test_control import Clock
         clock = Clock()
         self.control = control.ControlService(clock=clock, environment='dev', simulate=True)
+        self.gateway = None
         self.addCleanup(self.control.close)
         _, body = self.request('POST', '/api/control/acquire', b'{"owner":"actions"}')
         lease = json.loads(body)['lease']
@@ -235,6 +243,7 @@ class DevHTTPTests(unittest.TestCase):
         from src.lite3_dev_server import AcquireResponse, ArmStatus, ControlStatus, DogStatus
 
         self.control = control.ControlService(mode='disabled')
+        self.gateway = None
         self.addCleanup(self.control.close)
         _, body = self.request('GET', '/api/status')
         self.assertEqual(json.loads(body).keys(), ControlStatus.__annotations__.keys())
@@ -248,7 +257,9 @@ class DevHTTPTests(unittest.TestCase):
         self.assertIsInstance(reply['lease'], str)
         self.assertEqual(reply['status'].keys(), ControlStatus.__annotations__.keys())
         self.assertEqual(reply['status']['dog'].keys(), DogStatus.__annotations__.keys())
-        self.assertEqual(reply['status']['arm'].keys(), {'motion_enabled', 'reason', 'position_deg', 'simulated'})
+        self.assertEqual(reply['status']['arm'].keys(), {
+            'motion_enabled', 'reason', 'position_deg', 'simulated',
+            'connected', 'reconnect_required', 'commissioning', 'cached_feedback'})
         self.assertLessEqual(reply['status']['arm'].keys(), ArmStatus.__annotations__.keys())
 
     def test_arm_state_and_reconnect_keep_distinct_gateway_shapes(self):
@@ -262,16 +273,21 @@ class DevHTTPTests(unittest.TestCase):
                 code, body = self.request('POST', '/api/arm/' + action)
                 summary = json.loads(body)
                 self.assertEqual(code, 200)
-                self.assertEqual(summary.keys(), {'motion_enabled', 'reason', 'position_deg', 'simulated', 'observed'})
+                self.assertEqual(summary.keys(), {
+                    'motion_enabled', 'reason', 'position_deg', 'simulated', 'observed',
+                    'connected', 'reconnect_required', 'commissioning', 'cached_feedback'})
                 self.assertLessEqual(summary.keys(), UnobservedArmState.__annotations__.keys())
                 self.assertIs(summary['observed'], False)
                 self.assertEqual(set(summary['position_deg']), {'b', 's', 'e', 'w', 'h'})
 
         angles = {'b': 10.0, 's': -5.0, 'e': 2.0, 'w': 0.0}
+        self.control = control.ControlService(mode='readonly')
+        self.addCleanup(self.control.close)
         gateway = arm_gateway.ArmGateway()
         self.addCleanup(gateway.close)
-        self.gateway = SimpleNamespace(read_state=lambda: observed_state(angles), reconnect=gateway.reconnect)
-        code, body = self.request('POST', '/api/arm/state')
+        self.gateway = gateway
+        with patch.object(gateway, 'read_state', side_effect=lambda: observed_state(angles)):
+            code, body = self.request('POST', '/api/arm/state')
         measured = json.loads(body)
         self.assertEqual(code, 200)
         self.assertEqual(measured.keys(), {'position_deg', 'gripper_position_deg', 'observed', 'motion_enabled', 'reason'})
@@ -300,8 +316,8 @@ class DevHTTPTests(unittest.TestCase):
             self.control.dispatch('control/estop', {})
             return dict(observed_state({'b': 0., 's': 0., 'e': 0., 'w': 0.}),
                         motion_enabled=True, reason=None)
-        self.gateway = SimpleNamespace(read_state=read_then_estop)
-        code, body = self.request('POST', '/api/arm/state')
+        with patch.object(self.gateway, 'read_state', side_effect=read_then_estop):
+            code, body = self.request('POST', '/api/arm/state')
         state = json.loads(body)
         self.assertEqual(code, 200)
         self.assertFalse(state['motion_enabled'])

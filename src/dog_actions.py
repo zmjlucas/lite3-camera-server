@@ -15,6 +15,17 @@ MAX_TERMINAL_ACTIONS = 128
 TERMINAL_RETENTION_SECONDS = 300.0
 
 
+def action_capabilities(limits):
+    return {
+        'actions': {
+            name: dict(axis=axis, sign=sign, max_speed=limits[axis],
+                       speed_unit='m/s' if axis == 'vx' else 'rad/s')
+            for name, (axis, sign) in ACTION_AXES.items()
+        },
+        'max_duration': MAX_DURATION,
+    }
+
+
 def action_velocity(name, speed, duration, limits):
     if not isinstance(name, str) or name not in ACTION_AXES:
         raise ValueError('Unsupported dog action')

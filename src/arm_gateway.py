@@ -11,8 +11,10 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import Any
-    from lite3_dev_server.api import ArmGatewayReconnect, ObservedArmState
+    from typing import Any, Literal, Optional
+    from lite3_dev_server.api import (
+        ArmCachedFeedback, ArmGatewayReconnect, ArmObservationStatus, ArmSample, ObservedArmState,
+    )
 
 if TYPE_CHECKING or not __package__:  # Direct src/server.py deployment.
     from remote.arm_worker import (LIMITS_DEG, MAX_LINE, MOTION_BLOCK_REASON,
@@ -26,6 +28,18 @@ else:
 
 class ArmGatewayError(RuntimeError):
     """An arm operation failed; no hardware movement is implemented."""
+
+
+def cached_feedback(sample: 'Optional[ArmSample]', source: 'Literal["local_serial", "ssh_serial"]',
+                    now: float, connected: bool) -> 'Optional[ArmCachedFeedback]':
+    """Copy the last observation using the gateway host's query-start clock."""
+    if sample is None:
+        return None
+    age = max(0.0, now - sample["sample_monotonic"])
+    return {"position_deg": dict(sample["position_deg"]),
+            "sample_monotonic": sample["sample_monotonic"], "source": source,
+            "age_s": age, "fresh": connected and age <= 0.25,
+            "observed": True, "gripper_position_deg": None}
 
 
 def _validate_host(host):
@@ -44,17 +58,33 @@ class ArmGateway:
     should acquire it. A queued read shares its time budget with lock acquisition.
     """
 
-    def __init__(self, device="/dev/ttyUSB0", host=None, timeout=3.0):
+    def __init__(self, device="/dev/ttyUSB0", host=None, timeout=3.0, clock=time.monotonic):
         self.device = validate_device(device)
         self.host = _validate_host(host)
         self.timeout = finite_angle(timeout, 30.0)
         if self.timeout <= 0:
             raise ValueError("Arm gateway timeout must be positive.")
         self._lock = threading.Lock()
+        # Status never waits for the I/O lock or for a worker to exit.
+        self._state_lock = threading.Lock()
+        self._clock = clock
+        self._sample: 'Optional[ArmSample]' = None
+        self._connected = False
         self._process = None
         self._failed = False
         self._closed = False
         self._request_id = 0
+
+    def status(self) -> 'ArmObservationStatus':
+        with self._state_lock:
+            connected = self._connected and not self._failed and not self._closed
+            return {
+                "connected": connected, "reconnect_required": self._failed,
+                "commissioning": {"state": "closed" if self._closed else "readonly",
+                                  "profile_loaded": False, "nonce_consumed": False},
+                "cached_feedback": cached_feedback(
+                    self._sample, "ssh_serial" if self.host else "local_serial", self._clock(), connected),
+            }
 
     def _command(self):
         worker = os.path.join(os.path.dirname(os.path.abspath(__file__)), "remote", "arm_worker.py")
@@ -144,17 +174,25 @@ class ArmGateway:
             if self._failed:
                 raise ArmGatewayError("Arm gateway failed; explicit reconnect required.")
             try:
+                started = self._clock()
                 if self._process is None:
                     self._start()
-                return self._exchange(deadline)
+                state = self._exchange(deadline)
+                with self._state_lock:
+                    self._sample = {"position_deg": dict(state["position_deg"]), "sample_monotonic": started}
+                    self._connected = True
+                return state
             except Exception:
-                self._failed = True
+                with self._state_lock:
+                    self._failed = True
                 self._stop_process()
                 raise ArmGatewayError("Arm read failed; explicit reconnect required.") from None
         finally:
             self._lock.release()
 
     def _stop_process(self):
+        with self._state_lock:
+            self._connected = False
         process, self._process = self._process, None
         if process is None:
             return
@@ -182,11 +220,13 @@ class ArmGateway:
             if self._closed:
                 raise ArmGatewayError("Arm gateway is closed.")
             self._stop_process()
-            self._failed = False
+            with self._state_lock:
+                self._failed = False
             return {"connected": False, "reconnect_required": False,
                     "motion_enabled": False, "reason": MOTION_BLOCK_REASON}
 
     def close(self):
         with self._lock:
-            self._closed = True
+            with self._state_lock:
+                self._closed = True
             self._stop_process()

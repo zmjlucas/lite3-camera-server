@@ -4,8 +4,9 @@ from typing import Callable, List, Mapping, Optional, cast, get_args
 
 from .api import (
     AcquireResponse, ArmFeedbackJoint, ArmJoint, ArmOperation, ArmReconnectResponse,
-    ArmState, ControlMode, ControlStatus, DogActionName, DogActionStatus, DogPhase, Environment, ErrorResponse,
-    VelocityAxis, VelocityLimit,
+    ArmState, CameraBackend, CameraHealth, CameraHealthStatus, CameraSourceCatalog,
+    ControlMode, ControlStatus, DogActionName, DogActionStatus, DogCapabilities, DogPhase,
+    Environment, ErrorResponse, VelocityAxis, VelocityLimit,
 )
 
 
@@ -94,11 +95,74 @@ def _integer(value: object, path: str) -> None:
         raise ValueError('{} must be an integer'.format(path))
 
 
+def _positive(value: object, path: str) -> None:
+    _number(value, path)
+    if cast(float, value) <= 0:
+        raise ValueError('{} must be positive'.format(path))
+
+
+def _sign(expected: int) -> _Check:
+    def check(value: object, path: str) -> None:
+        _integer(value, path)
+        if value != expected:
+            raise ValueError('{} has an unsupported direction'.format(path))
+    return check
+
+
+_DOG_CAPABILITIES = _shape({
+    'actions': _shape({}, {
+        name: _shape({'axis': _choice(axis), 'sign': _sign(sign),
+                      'max_speed': _positive, 'speed_unit': _choice(unit)})
+        for name, axis, sign, unit in (
+            ('forward', 'vx', 1, 'm/s'), ('backward', 'vx', -1, 'm/s'),
+            ('turn_left', 'yaw', -1, 'rad/s'), ('turn_right', 'yaw', 1, 'rad/s'),
+        )
+    }),
+    'max_duration': _positive,
+})
+
+
+def _nonnegative_number(value: object, path: str) -> None:
+    _number(value, path)
+    if cast(float, value) < 0:
+        raise ValueError('{} must be nonnegative'.format(path))
+
+
+def _nonnegative_integer(value: object, path: str) -> None:
+    _integer(value, path)
+    if cast(int, value) < 0:
+        raise ValueError('{} must be nonnegative'.format(path))
+
+
+_CAMERA_SOURCE = _shape({
+    'id': _lease, 'label': _string, 'device': _string,
+    'backend': _choice(*get_args(CameraBackend)), 'available': _boolean,
+    'error': _nullable(_string),
+})
+_CAMERA_CATALOG = _shape({'sources': _list(_CAMERA_SOURCE), 'selected': _nullable(_string)})
+_CAMERA_HEALTH = _shape({
+    'source': _choice(*get_args(CameraBackend)), 'source_id': _nullable(_string),
+    'status': _choice(*get_args(CameraHealthStatus)),
+    'frame_age_s': _nullable(_nonnegative_number), 'error': _nullable(_string),
+    'generation': _nonnegative_integer,
+})
+
+
 _ARM_DIAGNOSTIC_AXES = ('b', 'e', 'h')
 _ARM_POSITION = _shape(dict.fromkeys(get_args(ArmJoint), _number))
 _ARM_FEEDBACK = _shape(dict.fromkeys(get_args(ArmFeedbackJoint), _number))
 _ARM_SAMPLE = _shape({'position_deg': _ARM_FEEDBACK, 'sample_monotonic': _number})
-_ARM_OPERATION = _shape({
+_ARM_CACHED_FEEDBACK = _shape({
+    'position_deg': _ARM_FEEDBACK, 'sample_monotonic': _number,
+    'source': _choice('local_serial', 'ssh_serial'), 'age_s': _nonnegative_number,
+    'fresh': _boolean, 'observed': _literal(True), 'gripper_position_deg': _literal(None),
+})
+_ARM_COMMISSIONING = _shape({
+    'state': _choice('unavailable', 'simulated', 'readonly', 'pending_preflight',
+                     'ready', 'recommission_required', 'closed'),
+    'profile_loaded': _boolean, 'nonce_consumed': _boolean,
+})
+_ARM_DIAGNOSTIC_OPERATION = _shape({
     'operation_id': _string,
     'phase': _choice('preflight', 'moving', 'stopping', 'completed', 'cancelled',
                      'fault', 'commanded_unverified'),
@@ -114,6 +178,28 @@ _ARM_OPERATION = _shape({
     'stop_verified': _literal(False),
     'gripper_position_deg': _literal(None),
 })
+_SIMULATED_ARM_OPERATION = _shape({
+    'operation_id': _string,
+    'kind': _choice('simulated_targets'),
+    'simulated': _literal(True),
+    'phase': _choice('moving', 'completed', 'cancelled', 'fault'),
+    'reason': _nullable(_string),
+    'duration': _number,
+    'elapsed_s': _number,
+    'progress': _number,
+    'start_position_deg': _ARM_POSITION,
+    'target_position_deg': _ARM_POSITION,
+    'position_deg': _ARM_POSITION,
+    'stop_verified': _literal(False),
+})
+
+
+def _arm_operation(value: object, path: str) -> None:
+    fields = _object(value, path)
+    check = _SIMULATED_ARM_OPERATION if 'kind' in fields else _ARM_DIAGNOSTIC_OPERATION
+    check(value, path)
+
+
 _ARM_CAPABILITIES = _shape({
     'joints': _list(_choice(*_ARM_DIAGNOSTIC_AXES)),
     'max_delta_deg': _shape(dict.fromkeys(_ARM_DIAGNOSTIC_AXES, _number)),
@@ -130,7 +216,11 @@ _ARM_FIELDS: _Fields = {
     'simulated': _boolean,
 }
 _ARM_OPTIONAL: _Fields = {
-    'operation': _nullable(_ARM_OPERATION),
+    'connected': _boolean,
+    'reconnect_required': _boolean,
+    'commissioning': _ARM_COMMISSIONING,
+    'cached_feedback': _nullable(_ARM_CACHED_FEEDBACK),
+    'operation': _nullable(_arm_operation),
     'capabilities': _ARM_CAPABILITIES,
 }
 _DOG_FEEDBACK = _shape({
@@ -165,7 +255,7 @@ _DOG_STATUS = _shape({
     'feedback': _DOG_FEEDBACK,
     'action': _nullable(_DOG_ACTION),
     'actions_enabled': _boolean,
-})
+}, {'capabilities': _DOG_CAPABILITIES})
 _CONTROL_FIELDS: _Fields = {
     'environment': _choice(*get_args(Environment)),
     'estop': _boolean,
@@ -198,6 +288,11 @@ def control_status(value: object) -> ControlStatus:
     return cast(ControlStatus, value)
 
 
+def dog_capabilities(value: object) -> DogCapabilities:
+    _DOG_CAPABILITIES(value, 'capabilities')
+    return cast(DogCapabilities, value)
+
+
 def acquire(value: object) -> AcquireResponse:
     _ACQUIRE(value, 'response')
     return cast(AcquireResponse, value)
@@ -218,7 +313,7 @@ def arm_reconnect(value: object) -> ArmReconnectResponse:
 
 
 def arm_operation(value: object) -> ArmOperation:
-    _ARM_OPERATION(value, 'response')
+    _arm_operation(value, 'response')
     return cast(ArmOperation, value)
 
 
@@ -230,3 +325,13 @@ def dog_action_status(value: object) -> DogActionStatus:
 def error_response(value: object) -> ErrorResponse:
     _ERROR(value, 'response')
     return cast(ErrorResponse, value)
+
+
+def camera_sources(value: object) -> CameraSourceCatalog:
+    _CAMERA_CATALOG(value, 'response')
+    return cast(CameraSourceCatalog, value)
+
+
+def camera_health(value: object) -> CameraHealth:
+    _CAMERA_HEALTH(value, 'response')
+    return cast(CameraHealth, value)

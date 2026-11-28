@@ -1,5 +1,5 @@
 """Coordinate control operations and arm observations independently of HTTP."""
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING or not __package__:
     from control import ControlError
@@ -26,13 +26,35 @@ class ControlApplication:
         self.arm_gateway = arm_gateway
 
     def status(self) -> 'ControlStatus':
-        return self.control.status()
+        return self._with_arm_observation(self.control.status())
+
+    def _with_arm_observation(self, status: 'ControlStatus') -> 'ControlStatus':
+        # Commissioned snapshots are already taken by the motion owner. The
+        # read-only gateway belongs to this application and supplies observations only.
+        if self.arm_gateway is not None and not self.control.arm_diagnostics:
+            observation = self.arm_gateway.status()
+            status["arm"].update({
+                "connected": observation["connected"],
+                "reconnect_required": observation["reconnect_required"],
+                "commissioning": observation["commissioning"],
+                "cached_feedback": observation["cached_feedback"],
+            })
+        return status
+
+    def snapshot(self) -> 'ControlStatus':
+        return self._with_arm_observation(self.control.snapshot())
 
     def dispatch(self, action: str, body: 'Any') -> 'ControlResult':
         if not isinstance(body, dict):
             raise ControlError("invalid_request", "Expected a JSON object")
         if action not in ("arm/state", "arm/reconnect"):
-            return self.control.dispatch(action, body)
+            result = self.control.dispatch(action, body)
+            if "status" in result:
+                acquired = cast('AcquireResponse', result)
+                self._with_arm_observation(acquired["status"])
+            elif "arm" in result:
+                self._with_arm_observation(cast('ControlStatus', result))
+            return result
         if body:
             raise ControlError("invalid_request", "This operation takes an empty object")
 
@@ -41,26 +63,18 @@ class ControlApplication:
             if status["mode"] == "disabled":
                 raise ControlError("conflict", "Control is disabled")
             arm = status["arm"]
-            state: 'UnobservedArmState' = {
-                "observed": False, "motion_enabled": arm["motion_enabled"], "reason": arm["reason"],
-                "position_deg": arm["position_deg"], "simulated": arm["simulated"],
-            }
-            if "operation" in arm:
-                state["operation"] = arm["operation"]
-            if "capabilities" in arm:
-                state["capabilities"] = arm["capabilities"]
-            return state
+            return cast('UnobservedArmState', dict(arm, observed=False))
 
         gateway = self.arm_gateway
-        result: 'Union[ObservedArmState, ArmGatewayReconnect]'
+        observation: 'Union[ObservedArmState, ArmGatewayReconnect]'
         try:
-            result = gateway.read_state() if action == "arm/state" else gateway.reconnect()
+            observation = gateway.read_state() if action == "arm/state" else gateway.reconnect()
         except (OSError, RuntimeError) as error:
             raise ControlError("unavailable", str(error)) from error
         # A stop can arrive during serial I/O. Take a fresh control snapshot afterwards.
         current = self.control.status()
         if not current["arm"]["motion_enabled"]:
-            result["motion_enabled"] = False
+            observation["motion_enabled"] = False
         if current["estop"]:
-            result["reason"] = "Software emergency stop is latched."
-        return result
+            observation["reason"] = "Software emergency stop is latched."
+        return observation

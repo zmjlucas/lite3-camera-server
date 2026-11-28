@@ -30,6 +30,7 @@ class ArmIntegrationTests(unittest.TestCase):
         path = Path(temp.name) / 'commission.json'
         path.write_text(json.dumps(record))
         path.chmod(0o600)
+        self.profile_path = path
         self.board = Controller(targets, observed)
         self.addCleanup(self.board.cleanup)
         def factory(device):
@@ -53,18 +54,33 @@ class ArmIntegrationTests(unittest.TestCase):
         self.client = DevClient('http://127.0.0.1:{}'.format(self.server.server_port), timeout=.5)
         self.addCleanup(self.client.close)
 
+    def test_status_is_passive_before_and_after_first_live_sample(self):
+        for _ in range(3):
+            arm = self.client.status()['arm']
+            self.assertIn('connected', arm)
+            self.assertFalse(arm['connected'])
+            self.assertFalse(arm['reconnect_required'])
+            self.assertEqual(arm['commissioning']['state'], 'pending_preflight')
+            self.assertFalse(arm['commissioning']['nonce_consumed'])
+            self.assertIsNone(arm['cached_feedback'])
+            self.assertIsNone(arm['position_deg'])
+        self.assertEqual(list(self.profile_path.parent.glob('.r5-used-*')), [])
+        self.assertEqual(self.board.requests, [])
+        observed = self.client.arm_state()
+        arm = self.client.status()['arm']
+        self.assertTrue(arm['connected'])
+        self.assertTrue(arm['commissioning']['nonce_consumed'])
+        self.assertEqual(arm['cached_feedback']['position_deg'], observed['position_deg'])
+        self.assertEqual(arm['cached_feedback']['source'], 'local_serial')
+        self.assertIsNone(arm['position_deg'])
+        self.assertEqual(self.board.requests, [b'{"T":105}\n'])
+        self.assertEqual(len(list(self.profile_path.parent.glob('.r5-used-*'))), 1)
+
     def test_two_degree_jog_renews_lease_and_preserves_other_targets(self):
         self.client.acquire('offline-integration')
         accepted = self.client.arm_jog('e', 2., speed=1.)
         op_id = accepted['arm']['operation']['operation_id']
-        deadline = time.monotonic() + 8
-        while True:
-            operation = self.client.arm_operation(op_id)
-            if operation['phase'] not in ('preflight', 'moving', 'stopping'):
-                break
-            self.assertLess(time.monotonic(), deadline, operation)
-            self.client.heartbeat()
-            time.sleep(.15)
+        operation = self.client.wait_arm_operation(op_id, timeout=8)
         self.assertEqual(operation['phase'], 'completed', operation)
         self.assertTrue(operation['observed_stationary'])
         self.assertFalse(operation['stop_verified'])
@@ -102,14 +118,7 @@ class ArmIntegrationTests(unittest.TestCase):
         for joint, phase in (('b', 'completed'), ('h', 'commanded_unverified')):
             reply = self.client.arm_jog(joint, .5, speed=1.)
             op_id = reply['arm']['operation']['operation_id']
-            deadline = time.monotonic() + 5
-            while True:
-                operation = self.client.arm_operation(op_id)
-                if operation['phase'] not in ('preflight', 'moving', 'stopping'):
-                    break
-                self.assertLess(time.monotonic(), deadline, operation)
-                self.client.heartbeat()
-                time.sleep(.15)
+            operation = self.client.wait_arm_operation(op_id, timeout=5)
             self.assertEqual(operation['phase'], phase, operation)
             self.assertTrue(operation['observed_stationary'])
             self.assertIsNone(operation['gripper_position_deg'])
@@ -123,6 +132,48 @@ class ArmIntegrationTests(unittest.TestCase):
         self.assertAlmostEqual(observed['position_deg']['b'], 10.6)
         self.assertIsNone(observed['gripper_position_deg'])
         self.assertIsNone(self.control._socket)
+
+
+class SimulatedArmIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.control = ControlService(environment='dev', simulate=True)
+        self.addCleanup(self.control.close)
+        self.server = CameraHTTPServer(0, LatestFrame('none'), bind='127.0.0.1', control=self.control)
+        self.addCleanup(self.server.server_close)
+        worker = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
+        worker.start()
+        self.addCleanup(worker.join, 2)
+        self.addCleanup(self.server.shutdown)
+        self.control.start()
+        self.client = DevClient('http://127.0.0.1:{}'.format(self.server.server_port), timeout=.5)
+        self.addCleanup(self.client.close)
+
+    def test_http_action_runs_beyond_initial_lease_and_preserves_other_axes(self):
+        self.client.acquire()
+        self.client.arm_jog('w', 2)
+        accepted = self.client.arm_action({'b': 6, 'e': -3}, duration=2.2)
+        operation_id = accepted['arm']['operation']['operation_id']
+        self.assertEqual(accepted['arm']['operation']['phase'], 'moving')
+        result = self.client.wait_arm_operation(operation_id, timeout=5)
+        self.assertEqual(result['phase'], 'completed')
+        self.assertEqual(self.client.arm_state()['position_deg'], dict(b=6., s=0., e=-3., w=2., h=0.))
+        self.assertIsNone(self.control._socket)
+        self.assertFalse(result['stop_verified'])
+
+    def test_http_conflict_and_observer_cancellation(self):
+        from src.lite3_dev_server import DevClientError
+
+        self.client.acquire()
+        operation_id = self.client.arm_action({'b': 6, 'h': -3}, duration=2)['arm']['operation']['operation_id']
+        with self.assertRaises(DevClientError) as raised:
+            self.client.arm_jog('e', 1)
+        self.assertEqual(raised.exception.status, 409)
+        observer = DevClient(self.client.url)
+        stopped = observer.arm_stop()
+        result = self.client.wait_arm_operation(operation_id)
+        self.assertEqual(result['phase'], 'cancelled')
+        self.assertEqual(result['position_deg'], stopped['arm']['position_deg'])
+        self.assertFalse(stopped['lease_active'])
 
 
 if __name__ == '__main__':

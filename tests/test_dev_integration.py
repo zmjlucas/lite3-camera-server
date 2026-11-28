@@ -9,19 +9,22 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
 
-from src.launcher import SERVER, SERVER_BUNDLE
+from src.launcher import SERVER_BUNDLE
 from src.lite3_dev_server import DevClient, DevClientError
+from src.remote import camera_doctor
 
 
 class DeployedDevTests(unittest.TestCase):
     def test_deployed_entrypoint_sdk_watchdog_and_latch_without_camera(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for source, _ in SERVER_BUNDLE:
-                destination = root / source.relative_to(SERVER.parent)
+            for source, folder in SERVER_BUNDLE:
+                destination = root / Path(folder).relative_to('lite3-dev-server') / source.name
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(source.read_bytes())
             process = subprocess.Popen([sys.executable,'-B','-u',str(root/'server.py'),
@@ -34,6 +37,15 @@ class DeployedDevTests(unittest.TestCase):
                 origin = lines.get(timeout=5).strip().rstrip('/')
                 self.assertTrue(origin.startswith('http://127.0.0.1:'), origin)
                 reader = build_opener(ProxyHandler({}))
+                # The standalone doctor consumes a passive snapshot from the deployed bundle.
+                with patch.object(camera_doctor, 'run', return_value={'state': 'unverified', 'output': ''}), \
+                        patch.object(camera_doctor.camera_sources, 'discover_sources', return_value=[]):
+                    report = camera_doctor.collect_report({'remote_port': urlsplit(origin).port,
+                                                           'install_dir': str(root)})
+                self.assertEqual(report['running']['state'], 'observed')
+                self.assertTrue(report['installed']['matches_running'])
+                self.assertEqual(report['udp']['state'], 'not_applicable')
+                self.assertEqual(report['serial']['state'], 'not_applicable')
                 with reader.open(origin+'/control', timeout=2) as response:
                     self.assertIn(b'Lite3 Dev Server', response.read())
                     self.assertEqual(response.headers['X-Lite3-Environment'], 'dev')

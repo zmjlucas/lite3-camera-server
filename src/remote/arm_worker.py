@@ -74,6 +74,11 @@ class SerialSession:
         self._failed = False
         self._closed = False
 
+    @property
+    def connected(self):
+        """Local transport state, including failure cleanup still in progress."""
+        return self._port is not None and not self._failed and not self._closed
+
     def _open(self):
         # Importing this module and constructing the gateway need no pySerial.
         import serial

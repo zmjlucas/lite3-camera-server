@@ -52,6 +52,7 @@ def main():
 
     # Read the installed bundle and run it with site packages hidden, as on a device.
     from lite3_dev_server_tools.launcher import SERVER, SERVER_BUNDLE
+    from lite3_dev_server_tools.build_info import write_deployment_manifest
     from lite3_dev_server_tools.testing import simulated_server
     with simulated_server() as url, DevClient(url) as robot:
         assert robot.status()['dog']['simulated']
@@ -60,10 +61,14 @@ def main():
         assert robot.arm_state()['position_deg']['e'] == 1
     with tempfile.TemporaryDirectory(prefix='lite3-installed-deploy-') as directory:
         deployed = Path(directory)
-        for source, _ in SERVER_BUNDLE:
-            destination = deployed / source.relative_to(SERVER.parent)
+        captured = []
+        for source, folder in SERVER_BUNDLE:
+            name = (Path(folder).relative_to('lite3-dev-server') / source.name).as_posix()
+            destination = deployed / name
+            captured.append((name, source.read_bytes()))
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(source), str(destination))
+        write_deployment_manifest(SERVER.parent, deployed / '_build.json', captured)
         subprocess.run([sys.executable, '-I', '-B',
                         str(Path(__file__).with_name('installed_sdk_smoke.py')),
                         str(deployed / 'server.py')], check=True, timeout=30)

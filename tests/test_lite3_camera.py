@@ -76,7 +76,7 @@ class CameraCommandsTest(unittest.TestCase):
 
     def test_optional_jump_reaches_all_remote_commands(self):
         cases = (("doctor", [], ["ssh"]),
-                 ("deploy", [], ["ssh"] + ["scp"] * len(client.SERVER_BUNDLE) + ["ssh"]),
+                 ("deploy", [], ["ssh"] + ["scp"] * (len(client.SERVER_BUNDLE) + 1) + ["ssh"]),
                  ("view", ["--backend", "ros", "--no-open"], ["ssh"]),
                  ("view", ["--backend", "realsense", "--no-open"], ["ssh"]),
                  ("view", ["--backend", "v4l2", "--device", "/dev/video4", "--no-open"], ["ssh"]))
@@ -115,12 +115,16 @@ class CameraCommandsTest(unittest.TestCase):
         result = self.run_cli("deploy", "robot")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertEqual([call[0] for call in calls], ["ssh"] + ["scp"] * 15 + ["ssh"])
+        self.assertEqual([call[0] for call in calls], ["ssh"] + ["scp"] * (len(client.SERVER_BUNDLE) + 1) + ["ssh"])
         self.assertIn("mkdir -p", calls[0][-1])
         for command in calls[1:]:
             self.assertNotIn("-r", command)
         self.assertEqual([(Path(call[-2]).name, call[-1]) for call in calls[1:-1]], [
+            ("_build_info.py", "robot:lite3-dev-server/"),
+            ("build_info.py", "robot:lite3-dev-server/"),
+            ("runtime_info.py", "robot:lite3-dev-server/"),
             ("wide_angle.py", "robot:lite3-dev-server/"),
+            ("arm_actions.py", "robot:lite3-dev-server/"),
             ("dog_actions.py", "robot:lite3-dev-server/"),
             ("dog_state.py", "robot:lite3-dev-server/"),
             ("camera_sources.py", "robot:lite3-dev-server/"),
@@ -134,6 +138,7 @@ class CameraCommandsTest(unittest.TestCase):
             ("arm_worker.py", "robot:lite3-dev-server/remote/"),
             ("control.html", "robot:lite3-dev-server/web/"),
             ("dev_client.js", "robot:lite3-dev-server/web/"),
+            ("_build.json", "robot:lite3-dev-server/"),
             ("server.py", "robot:lite3-dev-server/"),
         ])
         self.assertFalse(Path(calls[1][-2]).exists(), "Temporary deployment files must be removed")
@@ -170,7 +175,7 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(len(self.calls()), 1)
 
     def test_failed_runtime_dependency_upload_preserves_existing_entrypoint(self):
-        for dependency in ("wide_angle.py", "camera.py", "arm_motion.py", "dev_client.js"):
+        for dependency in ("wide_angle.py", "camera.py", "arm_motion.py", "dev_client.js", "_build_info.py", "_build.json"):
             with self.subTest(dependency=dependency):
                 uploaded = []
                 installed = []
@@ -192,7 +197,7 @@ class CameraCommandsTest(unittest.TestCase):
                 self.assertEqual(installed, [])
 
     def test_service_installation_failure_reaches_caller(self):
-        copy_and_prepare = 1 + len(client.SERVER_BUNDLE)
+        copy_and_prepare = 2 + len(client.SERVER_BUNDLE)
         with patch.object(self.cli.subprocess, "call", side_effect=[0] * copy_and_prepare + [23]) as remote:
             self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 23)
         self.assertEqual(remote.call_count, copy_and_prepare + 1)
@@ -202,8 +207,9 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
         self.assertEqual(calls[0][-2], "r")
-        self.assertEqual([command[-1] for command in calls if command[0] == "scp"],
-                         ["[r]:" + destination for _, destination in client.SERVER_BUNDLE])
+        destinations = ["[r]:" + destination for _, destination in client.SERVER_BUNDLE]
+        destinations.insert(-1, "[r]:lite3-dev-server/")
+        self.assertEqual([command[-1] for command in calls if command[0] == "scp"], destinations)
 
     def test_deploy_refuses_symlinked_assets_before_remote_commands(self):
         import contextlib
@@ -246,8 +252,9 @@ class CameraCommandsTest(unittest.TestCase):
         with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env), \
                 patch.object(self.cli.subprocess, "call", replace_after_prepare):
             self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 0)
-        self.assertEqual([json.loads(line) for line in copies.read_text().splitlines()],
-                         ["original-server", "original-page"])
+        uploaded = [json.loads(line) for line in copies.read_text().splitlines()]
+        self.assertEqual([uploaded[0], uploaded[2]], ["original-server", "original-page"])
+        self.assertRegex(json.loads(uploaded[1])["build_id"], "^sha256:[0-9a-f]{64}$")
 
     def test_deploy_uploads_only_allowlisted_files_beside_ignored_content(self):
         from unittest.mock import patch
@@ -263,7 +270,7 @@ class CameraCommandsTest(unittest.TestCase):
         with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env):
             self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 0)
         copies = [cmd for cmd in self.calls() if cmd[0] == "scp"]
-        self.assertEqual([Path(cmd[-2]).name for cmd in copies], ["server.py", "camera.html"])
+        self.assertEqual([Path(cmd[-2]).name for cmd in copies], ["server.py", "_build.json", "camera.html"])
         self.assertTrue(all("-r" not in cmd for cmd in copies))
 
     def test_doctor_uses_login_environment_without_deploy(self):

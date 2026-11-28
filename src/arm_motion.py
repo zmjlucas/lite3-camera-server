@@ -10,10 +10,10 @@ import threading
 import time
 
 try:
-    from .arm_gateway import ArmGatewayError
+    from .arm_gateway import ArmGatewayError, cached_feedback
     from .remote.arm_worker import LIMITS_DEG, SerialSession, decode_json, finite_angle, validate_device
 except ImportError:  # Direct src/server.py deployment.
-    from arm_gateway import ArmGatewayError
+    from arm_gateway import ArmGatewayError, cached_feedback
     from remote.arm_worker import LIMITS_DEG, SerialSession, decode_json, finite_angle, validate_device
 
 
@@ -56,11 +56,16 @@ class _Profile:
         try:
             if not _trusted(os.fstat(self.directory)):
                 raise ValueError("Unsafe arm commissioning directory.")
-            fd = os.open(os.path.basename(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            name = os.path.basename(path)
+            entry = os.stat(name, dir_fd=self.directory, follow_symlinks=False)
+            if not stat.S_ISREG(entry.st_mode) or not _trusted(entry):
+                raise ValueError("Unsafe arm commissioning record.")
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                          dir_fd=self.directory)
             with os.fdopen(fd, "rb") as stream:
                 info = os.fstat(fd)
-                if not stat.S_ISREG(info.st_mode) or not _trusted(info):
+                if (not stat.S_ISREG(info.st_mode) or not _trusted(info) or
+                        (info.st_dev, info.st_ino) != (entry.st_dev, entry.st_ino)):
                     raise ValueError("Unsafe arm commissioning record.")
                 data = stream.read(16385)
             if len(data) > 16384:
@@ -102,8 +107,12 @@ class _Profile:
         try:
             fd = os.open(self.marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=self.directory)
+            self.used = True
             os.close(fd)
             os.fsync(self.directory)
+        except FileExistsError:
+            self.used = True
+            raise _Fault("Arm commissioning record already used or could not be claimed.") from None
         except OSError:
             raise _Fault("Arm commissioning record already used or could not be claimed.") from None
         self.claimed = True
@@ -173,13 +182,39 @@ class ArmMotionGateway:
         self._connected = False
         self._session = None
         self._active = self._last = None
+        self._last_sample = None
+        self._profile_loaded = self._profile is not None
+        self._nonce_consumed = bool(self._profile and self._profile.used)
+        self._preflight_passed = False
 
     def status(self):
         with self._gate:
+            session = self._session
+            connected = (self._connected and not self._read_failed and not self._closed
+                         and session is not None and session.connected)
+            if self._closed:
+                commissioning = "closed"
+            elif not self._profile_loaded:
+                commissioning = "readonly"
+            elif self._reason is not None:
+                commissioning = "recommission_required"
+            else:
+                commissioning = "ready" if self._preflight_passed else "pending_preflight"
             return {"motion_enabled": not self._closed and self._reason is None,
-                    "reason": self._reason, "connected": self._connected,
+                    "reason": self._reason, "connected": connected,
                     "reconnect_required": self._read_failed,
+                    "commissioning": {"state": commissioning, "profile_loaded": self._profile_loaded,
+                                      "nonce_consumed": self._nonce_consumed},
+                    "cached_feedback": cached_feedback(self._last_sample, "local_serial", self._clock(),
+                                                       connected),
                     "active_operation": _snapshot(self._active), "last_operation": _snapshot(self._last)}
+
+    def _claim_profile(self):
+        try:
+            self._profile.claim()
+        finally:
+            with self._gate:
+                self._nonce_consumed = self._profile.used or self._profile.claimed
 
     def operation(self, operation_id):
         with self._gate:
@@ -209,16 +244,18 @@ class ArmMotionGateway:
                 state["gripper_position_deg"] is not None):
             raise _Fault("Invalid arm feedback.")
         position = _angles(state["position_deg"], LIMITS_DEG)
+        sample = {"position_deg": position, "sample_monotonic": started}
         with self._gate:
             self._connected = True
-        return state, {"position_deg": position, "sample_monotonic": started}
+            self._last_sample = sample
+        return state, sample
 
     def _disconnect(self):
+        with self._gate:
+            self._connected = False
         if self._session is not None:
             self._session.close()
             self._session = None
-        with self._gate:
-            self._connected = False
 
     def _schedule_close(self):
         # Called under the gate. The last owner arranges shutdown. Device close
@@ -260,7 +297,7 @@ class ArmMotionGateway:
             self._busy = True
         try:
             if self._profile and self._reason is None:
-                self._profile.claim()
+                self._claim_profile()
             state, sample = self._read()
             with self._gate:
                 if self._reason is None:
@@ -284,7 +321,7 @@ class ArmMotionGateway:
         try:
             if self._profile:
                 try:
-                    self._profile.claim()
+                    self._claim_profile()
                 except _Fault:
                     pass  # Already consumed or unavailable: observation remains available.
             self._disconnect()
@@ -469,6 +506,7 @@ class ArmMotionGateway:
         op.start_position = poses[-1]
         with self._gate:
             self._check(op)
+            self._preflight_passed = True
             op.state["observed_start"] = op.sample
             op.state["phase"] = "moving"
 
@@ -565,7 +603,7 @@ class ArmMotionGateway:
         phase, stationary, fault = None, None, None
         try:
             try:
-                self._profile.claim()
+                self._claim_profile()
                 self._preflight(op)
                 if op.joint == "h":
                     phase, stationary = self._monitor_gripper(op)

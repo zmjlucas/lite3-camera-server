@@ -6,6 +6,7 @@ from src.camera import LatestFrame
 from src.application import ControlApplication
 from src.control import ControlService
 from src.http_server import CameraRequestHandler
+from src.lite3_dev_server._build_info import UNKNOWN_BUILD
 from fixtures.http_connection import MemoryConnection
 
 
@@ -23,7 +24,7 @@ class CameraSecurityTests(unittest.TestCase):
             path, "\r\n".join("{}: {}".format(*header) for header in headers))
         connection = MemoryConnection(raw.encode("latin-1"))
         CameraRequestHandler(connection, ("127.0.0.1", 12345),
-                             SimpleNamespace(frames=frames,
+                             SimpleNamespace(frames=frames, build_info=UNKNOWN_BUILD,
                                              application=ControlApplication(ControlService(mode="disabled"))))
         head, body = bytes(connection.output).split(b"\r\n\r\n", 1)
         return int(head.split()[1]), head, body

@@ -170,6 +170,8 @@ class DiscoveryTests(unittest.TestCase):
                 handle = self.owner(os.getpid() + 1000, target)
                 found = self.discover(probe=lambda device: {"YUYV"} if device == "/dev/video4" else {"Z16 "})
                 self.assertEqual(len(found), 1)
+                self.assertEqual(set(found[0]['related_devices']),
+                                 {'/dev/video4', '/dev/video0', '/dev/bus/usb/002/007'})
                 self.assertFalse(found[0]["available"])
                 self.assertIn(target, found[0]["error"])
                 handle.unlink()
@@ -512,7 +514,9 @@ class SourceHTTPTests(unittest.TestCase):
         raw = "{} {} HTTP/1.1\r\n{}\r\nConnection: close\r\n\r\n".format(
             method, path, "\r\n".join("{}: {}".format(*header) for header in headers))
         connection = MemoryConnection(raw.encode() + body)
+        from src.lite3_dev_server._build_info import UNKNOWN_BUILD
         http_server = SimpleNamespace(frames=self.controller.frames, controller=self.controller,
+                                      build_info=UNKNOWN_BUILD,
                                       application=self.application)
         CameraRequestHandler(connection, ("127.0.0.1", 12345), http_server)
         head, payload = bytes(connection.output).split(b"\r\n\r\n", 1)
@@ -589,7 +593,9 @@ class SourceHTTPTests(unittest.TestCase):
         replacement.publish(b"different-camera-jpeg")
         replacements = iter([(b"different-camera-jpeg", 2), (None, 2)])
         replacement.wait_for_frame = lambda sequence, generation: next(replacements, (None, sequence))
-        http_server = SimpleNamespace(frames=old, controller=self.controller, application=self.application)
+        from src.lite3_dev_server._build_info import UNKNOWN_BUILD
+        http_server = SimpleNamespace(frames=old, controller=self.controller, application=self.application,
+                                      build_info=UNKNOWN_BUILD)
         original_send = connection.sendall
         def send(data):
             original_send(data)
