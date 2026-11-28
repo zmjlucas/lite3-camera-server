@@ -32,14 +32,18 @@ class CameraServiceTests(unittest.TestCase):
         (self.home / "lite3-dev-server/server.py").write_text("# deployed server")
         self.calls = []
         self.installed = None
+        self.legacy_units = ""
 
     def run_command(self, command, **kwargs):
         self.calls.append(command)
         actual = command[2:] if command[:2] == ["sudo", "-n"] else command
         if actual[0] == "install":
             self.installed = Path(actual[-2]).read_text()
-            self.assertEqual(actual[-1], "/etc/systemd/system/lite3-camera-server.service")
-        return subprocess.CompletedProcess(command, 0)
+            self.assertEqual(actual[-1], "/etc/systemd/system/lite3-dev-server.service")
+        if actual[:2] == ["systemctl", "list-unit-files"]:
+            self.assertEqual(actual[-1], "lite3-camera-server.service")
+            return subprocess.CompletedProcess(command, 0, stdout=self.legacy_units)
+        return subprocess.CompletedProcess(command, 0, stdout="")
 
     def install(self, uid=1000, extra=()):
         with patch.object(self.installer.subprocess, "run", side_effect=self.run_command), \
@@ -57,11 +61,64 @@ class CameraServiceTests(unittest.TestCase):
         self.assertEqual(unit["Install"]["WantedBy"], "multi-user.target")
         self.assertIn('"--retry-camera"', unit["Service"]["ExecStart"])
         self.assertIn('"--device" "/dev/video4" "--port" "8081"', unit["Service"]["ExecStart"])
+        self.assertEqual(unit["Unit"]["Conflicts"], "lite3-camera-server.service")
+        self.assertIn("lite3-camera-server.service", unit["Unit"]["After"].split())
         self.assertEqual(self.calls[-2:], [
             ["sudo", "-n", "systemctl", "daemon-reload"],
-            ["sudo", "-n", "systemctl", "enable", "lite3-camera-server.service"]])
+            ["sudo", "-n", "systemctl", "enable", "lite3-dev-server.service"]])
         self.assertFalse(any(word in command for command in self.calls
                              for word in ("start", "restart", "stop", "--now")))
+        self.assertFalse(any("disable" in command for command in self.calls))
+
+    def test_redeployment_disables_legacy_autostart_after_enabling_new_service(self):
+        self.legacy_units = "lite3-camera-server.service enabled enabled\n"
+        self.install()
+        self.assertEqual(self.calls[-3:], [
+            ["sudo", "-n", "systemctl", "daemon-reload"],
+            ["sudo", "-n", "systemctl", "enable", "lite3-dev-server.service"],
+            ["sudo", "-n", "systemctl", "disable", "lite3-camera-server.service"]])
+        self.assertFalse(any(word in command for command in self.calls
+                             for word in ("start", "restart", "stop", "--now")))
+
+    def test_enable_failure_preserves_legacy_autostart(self):
+        self.legacy_units = "lite3-camera-server.service enabled enabled\n"
+        original = self.run_command
+
+        def fail(command, **kwargs):
+            if "enable" in command:
+                raise subprocess.CalledProcessError(1, command)
+            return original(command, **kwargs)
+
+        self.run_command = fail
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.install()
+        self.assertFalse(any("disable" in command for command in self.calls))
+
+    def test_legacy_detection_failure_does_not_install_a_unit(self):
+        original = self.run_command
+
+        def fail(command, **kwargs):
+            if "list-unit-files" in command:
+                raise subprocess.CalledProcessError(1, command)
+            return original(command, **kwargs)
+
+        self.run_command = fail
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.install()
+        self.assertIsNone(self.installed)
+
+    def test_legacy_disable_failure_is_reported(self):
+        self.legacy_units = "lite3-camera-server.service enabled enabled\n"
+        original = self.run_command
+
+        def fail(command, **kwargs):
+            if "disable" in command:
+                raise subprocess.CalledProcessError(1, command)
+            return original(command, **kwargs)
+
+        self.run_command = fail
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.install()
 
     def test_root_installs_without_sudo(self):
         self.install(uid=0)
@@ -80,7 +137,7 @@ class CameraServiceTests(unittest.TestCase):
         (self.home / "lite3-dev-server").mkdir(parents=True)
         (self.home / "lite3-dev-server/server.py").write_text("# deployed server")
         self.install(uid=os.getuid())
-        unit = self.home / "lite3-camera-server.service"
+        unit = self.home / "lite3-dev-server.service"
         unit.write_text(self.installed)
         result = subprocess.run(["systemd-analyze", "verify", str(unit)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

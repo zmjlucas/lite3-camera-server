@@ -2,7 +2,7 @@
 
 Dev Server centralizes camera streaming, Lite3 UDP commands and R5 serial feedback. Scripts and the browser call one HTTP service; SSH is used for deployment, tunnels and an optional persistent arm helper. No caller can upload arbitrary programs or send arbitrary robot packets through this API.
 
-The camera viewer is at `/`; the control console is `/control`. The service runs from `~/lite3-dev-server/` as `lite3-camera-server.service`. ROS mode uses the external camera-only `web_video_server`.
+The camera viewer is at `/`; the control console is `/control`. The service runs from `~/lite3-dev-server/` as `lite3-dev-server.service`. ROS mode uses the external camera-only `web_video_server`.
 
 ## Default robot connection
 
@@ -49,8 +49,8 @@ python3 src/launcher.py deploy ysc@192.168.1.103 \
 Use the confirmed camera path in place of the example. Use `--backend none` for a service without camera capture. Deployment writes the current launch options to the service unit. For an existing installation, deploy again and check local systemd overrides for obsolete options. Once ready to replace the current process, use the existing service lifecycle:
 
 ```bash
-sudo systemctl restart lite3-camera-server.service
-journalctl -u lite3-camera-server.service -b
+sudo systemctl restart lite3-dev-server.service
+journalctl -u lite3-dev-server.service -b
 ```
 
 A manually started detached server must first be stopped using the existing [camera lifecycle guide](CAMERA_STREAM.md#shared-server-lifecycle); do not start two instances against the same hardware. The new code does not migrate a live process automatically.

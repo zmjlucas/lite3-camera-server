@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Arguments: Python installer source, camera server options.
+# Arguments: Python installer source, dev server options.
 set -e
 installer=$1
 shift

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Arguments: Python shared-start source, port, camera server options.
+# Arguments: Python shared-start source, port, dev server options.
 set -e
 helper=$1
 port=$2

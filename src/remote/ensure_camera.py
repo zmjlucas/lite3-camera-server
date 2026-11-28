@@ -1,4 +1,4 @@
-"""Start or reuse a detached native camera server on the Linux perception host."""
+"""Start or reuse a detached native dev server on the Linux perception host."""
 import argparse
 import errno
 import fcntl
@@ -40,7 +40,7 @@ def camera_available(port, starting=False, environment="dist", simulate=False,
     except (OSError, HTTPException) as error:
         if starting or getattr(error, "errno", None) == errno.ECONNREFUSED:
             return False
-        raise RuntimeError("Cannot check the remote camera port: " + str(error))
+        raise RuntimeError("Cannot check the remote dev server port: " + str(error))
     finally:
         connection.close()
 
@@ -68,10 +68,10 @@ def ensure_server(server_path, port, options):
     server_path = Path(server_path)
     # A sibling launcher may hold the lock while its new listener initializes.
     if camera_available(port, starting=server_path.is_file(), **expected):
-        report("Reusing camera server on port {} (existing camera and control settings; launch options do not change the running server).".format(port))
+        report("Reusing dev server on port {} (existing camera and control settings; launch options do not change the running server).".format(port))
         return
     if not server_path.is_file():
-        raise RuntimeError("The camera server script is missing. Run deploy first.")
+        raise RuntimeError("The dev server script is missing. Run deploy first.")
     runtime = server_path.parent / ".runtime"
     runtime.mkdir(exist_ok=True)
     log_path = runtime / (str(port) + ".log")
@@ -80,7 +80,7 @@ def ensure_server(server_path, port, options):
     with (runtime / (str(port) + ".lock")).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if camera_available(port, **expected):
-            report("Reusing camera server on port {} (existing camera and control settings; launch options do not change the running server).".format(port))
+            report("Reusing dev server on port {} (existing camera and control settings; launch options do not change the running server).".format(port))
             return
         # Check all interfaces, not just loopback, before detaching a new LAN listener.
         with socket.socket() as listener:
@@ -88,7 +88,7 @@ def ensure_server(server_path, port, options):
             try:
                 listener.bind(("0.0.0.0", port))
             except OSError as error:
-                raise RuntimeError("Cannot use the remote camera port: " + str(error))
+                raise RuntimeError("Cannot use the remote dev server port: " + str(error))
         with log_path.open("ab", buffering=0) as log:
             process = subprocess.Popen([sys.executable, "-u", str(server_path)] + options,
                                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
@@ -98,11 +98,11 @@ def ensure_server(server_path, port, options):
             deadline = time.monotonic() + 15
             while process.poll() is None and time.monotonic() < deadline:
                 if camera_available(port, starting=True, **expected):
-                    report("Started shared camera server on port {}. Log: {}. PID: {}.".format(
+                    report("Started shared dev server on port {}. Log: {}. PID: {}.".format(
                         port, log_path, pid_path))
                     return
                 time.sleep(0.1)
-            raise RuntimeError("Camera server did not start. Check log: " + str(log_path))
+            raise RuntimeError("Dev server did not start. Check log: " + str(log_path))
         except BaseException:
             if process.poll() is None:
                 process.terminate()

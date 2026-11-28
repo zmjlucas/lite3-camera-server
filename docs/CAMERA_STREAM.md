@@ -187,9 +187,11 @@ Press Ctrl+C (or Ctrl+Break on Windows) to close just that client's tunnel. Othe
 
 ### Boot service
 
-Each `deploy` installs `/etc/systemd/system/lite3-camera-server.service`, reloads systemd, and enables it for every boot. Installation needs a running systemd host and root or sudo access. The SSH terminal allows a sudo password prompt. The service runs as the deployment account, with its home directory, camera permissions, and the Python interpreter found during deployment. Dependencies must be installed for that interpreter and account; the service does not source interactive shell startup files.
+Each `deploy` installs `/etc/systemd/system/lite3-dev-server.service`, reloads systemd, and enables it for every boot. Installation needs a running systemd host and root or sudo access. The SSH terminal allows a sudo password prompt. The service runs as the deployment account, with its home directory, camera permissions, and the Python interpreter found during deployment. Dependencies must be installed for that interpreter and account; the service does not source interactive shell startup files.
 
-The installation directory is `~/lite3-dev-server/`. Redeploying an older installation updates the existing `lite3-camera-server.service` unit to use this directory. The old `~/lite3-camera-server/` directory and any running processes remain in place. Restart the service to apply the new path. If a detached server was started from the old directory, inspect its PID file under `~/lite3-camera-server/.runtime/` and stop that process before starting the updated service.
+The installation directory is `~/lite3-dev-server/`. When upgrading an older installation, `deploy` enables `lite3-dev-server.service`, then disables autostart for the legacy `lite3-camera-server.service` if it is installed. The legacy unit file, old `~/lite3-camera-server/` directory and running processes remain in place. Starting the new service stops the legacy service first, releasing its camera and port. If a detached server was started from the old directory, inspect its PID file under `~/lite3-camera-server/.runtime/` and stop that process before starting the new service.
+
+Review any systemd drop-in overrides for the legacy service and reapply the settings you need under `lite3-dev-server.service` before starting it. Drop-ins are tied to the unit name and stay with the legacy unit during deployment.
 
 Deployment leaves current processes running. On first installation, the service starts at the next boot. On redeployment, the new code and boot settings apply at the next boot or explicit restart. Deploying again replaces the service's configured account, backend, port, capture options and control configuration. Include the desired environment and control flags on each deployment. The defaults are `--env dist` and `--control-mode hardware`. On startup, the native service opens the configured camera. Browser selections apply to the running process. ROS `web_video_server` has its own lifecycle.
 
@@ -200,18 +202,18 @@ For a stable V4L2 boot device, use the camera's confirmed RGB `/dev/v4l/by-id/NA
 python3 src/launcher.py deploy ysc@192.168.1.103 --backend v4l2 --device /dev/v4l/by-id/NAME
 
 # On the perception host:
-systemctl is-enabled lite3-camera-server.service
-systemctl status lite3-camera-server.service
-journalctl -u lite3-camera-server.service -b -f
+systemctl is-enabled lite3-dev-server.service
+systemctl status lite3-dev-server.service
+journalctl -u lite3-dev-server.service -b -f
 ```
 
-To use the service immediately, first stop any detached or foreground camera server using the instructions below, then run `sudo systemctl restart lite3-camera-server.service`. Do not run both processes against the same camera or port. Subsequent service restarts use the same command. A service restart interrupts all viewers; existing pages reconnect at the same URL.
+To use the service immediately, first stop any detached or foreground dev server using the instructions below, then run `sudo systemctl restart lite3-dev-server.service`. Do not run both processes against the same camera or port. Subsequent service restarts use the same command. A service restart interrupts all viewers; existing pages reconnect at the same URL.
 
 Wait for the service's HTTP listener before launching a new `view` during a restart. If `view` starts its detached fallback first, stop that detached process so the service can claim the port on its next retry.
 
 The service retries camera initialization every five seconds so a USB camera that becomes available after boot can recover. It also reopens V4L2 or wide-angle capture after a read failure. RealSense frame-read errors retain the existing SDK pipeline and retry frame reads. HTTP can remain available with `/healthz` returning 503 while capture is unavailable. A crashed server process is restarted by systemd. Use `systemctl is-active` to check the process and `/healthz` and the live image to check frame delivery.
 
-Use `sudo systemctl stop lite3-camera-server.service` to stop it until the next boot, or `sudo systemctl disable --now lite3-camera-server.service` to stop it and disable autostart. Running `deploy` enables it again. A later `view` can still start a detached server if the service is stopped. Service logs are in the journal; service processes do not use the launcher's `.runtime/*.pid` files.
+Use `sudo systemctl stop lite3-dev-server.service` to stop it until the next boot, or `sudo systemctl disable --now lite3-dev-server.service` to stop it and disable autostart. Running `deploy` enables it again. A later `view` can still start a detached server if the service is stopped. Service logs are in the journal; service processes do not use the launcher's `.runtime/*.pid` files.
 
 ### Detached and foreground servers
 
@@ -219,7 +221,7 @@ For servers started by `view`, background logs and PID files are under `~/lite3-
 
 ```bash
 cat ~/lite3-dev-server/.runtime/8080.pid
-# Inspect that PID and confirm it is this camera server before sending SIGTERM:
+# Inspect that PID and confirm it is this dev server before sending SIGTERM:
 ps -p <PID> -o pid,args
 kill -TERM <PID>
 ```

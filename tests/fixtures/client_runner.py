@@ -17,7 +17,7 @@ def stub_command():
         with open(os.environ["CAMERA_TEST_COPY_LOG"], "a", encoding="utf-8") as log:
             log.write(json.dumps(Path(arguments[-2]).read_text(encoding="utf-8")) + "\n")
     if "--source" in arguments[-1]:
-        print("Shared camera server on port 8080", flush=True)
+        print("Shared dev server on port 8080", flush=True)
     if os.environ.get("CAMERA_TEST_PID_FILE"):
         Path(os.environ["CAMERA_TEST_PID_FILE"]).write_text(str(os.getpid()), encoding="utf-8")
         time.sleep(30)

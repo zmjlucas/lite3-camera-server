@@ -78,7 +78,7 @@ def remote_source(name):
 
 
 def remote_shell(name, *arguments):
-    return quoted_command(["bash", "-lc", remote_source(name), "lite3-camera", *arguments])
+    return quoted_command(["bash", "-lc", remote_source(name), "lite3-dev-server", *arguments])
 
 
 def macos_route(address):
@@ -317,7 +317,7 @@ def read_windows_deploy_source(path):
 def deploy(args, jump):
     # Capture all allowlisted files before SSH can wait for login or another process can change the checkout.
     installer = remote_source("install_service.py")
-    with tempfile.TemporaryDirectory(prefix="lite3-camera-deploy-") as directory:
+    with tempfile.TemporaryDirectory(prefix="lite3-dev-deploy-") as directory:
         sources = []
         for path, destination in SERVER_BUNDLE:
             content = read_deploy_source(path)
@@ -355,7 +355,7 @@ def run_foreground(command, url, open_browser, native=False, expected_identity=N
             listener.bind(("127.0.0.1", urlsplit(url).port))
             listener.listen(1)
         except OSError as exc:
-            raise OSError("Cannot use the local camera port. Select another port with --local-port: " + str(exc)) from exc
+            raise OSError("Cannot use the local dev server port. Select another port with --local-port: " + str(exc)) from exc
     print("Viewer: " + url + "\nKeep this terminal open. To disconnect, press Ctrl+C.", flush=True)
     previous_handlers = {}
 
@@ -418,7 +418,7 @@ def parser():
     commands = result.add_subparsers(dest="command", required=True)
     for name, help_text in (("doctor", "check the host environment through SSH without changes"),
                             ("deploy", "copy the development server and enable its system boot service"),
-                            ("view", "start or reuse the remote camera server and open an SSH tunnel")):
+                            ("view", "start or reuse the remote dev server and open an SSH tunnel")):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("target", type=target, help="perception host SSH target: ysc@192.168.1.103")
         routing = command.add_mutually_exclusive_group()
