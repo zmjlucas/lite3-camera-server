@@ -8,6 +8,16 @@ from src import client
 
 
 class DevDeployTests(unittest.TestCase):
+    def test_dog_state_listener_port_reaches_detached_and_installed_server(self):
+        for action in ('view', 'deploy'):
+            with self.subTest(action=action), contextlib.redirect_stdout(io.StringIO()):
+                with patch.object(client, 'show_command') as printed:
+                    result = client.main([action, 'robot', '--backend', 'none', '--direct', '--dry-run',
+                                          '--dog-state-port', '43901'])
+                self.assertEqual(result, 0)
+                remote = shlex.split(printed.call_args[0][0][-1])
+                self.assertEqual(remote[remote.index('--dog-state-port') + 1], '43901')
+
     def test_native_view_and_deploy_select_dist_explicitly(self):
         for action in ('view', 'deploy'):
             with self.subTest(action=action), contextlib.redirect_stdout(io.StringIO()):

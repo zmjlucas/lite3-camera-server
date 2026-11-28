@@ -42,6 +42,37 @@ class DevHTTPTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(value)['mode'], 'hardware')
 
+    def test_dog_action_dispatches_through_http_and_checks_readiness(self):
+        from test_control import Clock
+        clock = Clock()
+        self.control = control.ControlService(clock=clock, environment='dev', simulate=True)
+        self.addCleanup(self.control.close)
+        _, body = self.request('POST', '/api/control/acquire', b'{"owner":"actions"}')
+        lease = json.loads(body)['lease']
+        action = dict(lease=lease, seq=2, name='turn_left', speed=.2, duration=1)
+        self.assertEqual(self.request('POST', '/api/dog/action', json.dumps(action).encode())[0], 409)
+        self.request('POST', '/api/dog/stand', json.dumps(dict(lease=lease, seq=1)).encode())
+        self.control._tick()
+        for elapsed in (1.5, 1.5, 1.5, .5, .21, .21, .21):
+            clock.advance(elapsed)
+            self.request('POST', '/api/control/heartbeat', json.dumps(dict(lease=lease)).encode())
+            self.control._tick()
+        code, body = self.request('POST', '/api/dog/action', json.dumps(action).encode())
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)['dog']['velocity']['yaw'], -.2)
+        self.assertEqual(json.loads(body)['dog']['action']['phase'], 'running')
+        self.control._tick()
+        clock.advance(1)
+        _, body = self.request('GET', '/api/status')
+        self.assertEqual(json.loads(body)['dog']['action']['phase'], 'completed')
+        self.assertFalse(json.loads(body)['lease_active'])
+
+    def test_dog_state_port_rejects_invalid_values(self):
+        for port in ('0', '65536', '-1'):
+            with self.subTest(port=port), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    server.parse_args(['--source', 'none', '--dog-state-port', port])
+
     def test_default_server_constructs_real_dist_control(self):
         options = server.parse_args(['--source', 'none'])
         service, gateway = server.development_services(options)

@@ -115,12 +115,14 @@ class CameraCommandsTest(unittest.TestCase):
         result = self.run_cli("deploy", "robot")
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
-        self.assertEqual([call[0] for call in calls], ["ssh"] + ["scp"] * 8 + ["ssh"])
+        self.assertEqual([call[0] for call in calls], ["ssh"] + ["scp"] * 10 + ["ssh"])
         self.assertIn("mkdir -p", calls[0][-1])
         for command in calls[1:]:
             self.assertNotIn("-r", command)
         self.assertEqual([(Path(call[-2]).name, call[-1]) for call in calls[1:-1]], [
             ("wide_angle.py", "robot:lite3-camera-server/"),
+            ("dog_actions.py", "robot:lite3-camera-server/"),
+            ("dog_state.py", "robot:lite3-camera-server/"),
             ("arm_motion.py", "robot:lite3-camera-server/"),
             ("camera.html", "robot:lite3-camera-server/web/"),
             ("control.py", "robot:lite3-camera-server/"),
@@ -164,7 +166,8 @@ class CameraCommandsTest(unittest.TestCase):
 
     def test_failed_runtime_dependency_upload_preserves_existing_entrypoint(self):
         for dependency, expected_copies in (("wide_angle.py", ["wide_angle.py"]),
-                                            ("arm_motion.py", ["wide_angle.py", "arm_motion.py"])):
+                                            ("dog_state.py", ["wide_angle.py", "dog_actions.py", "dog_state.py"]),
+                                            ("arm_motion.py", ["wide_angle.py", "dog_actions.py", "dog_state.py", "arm_motion.py"])):
             with self.subTest(dependency=dependency):
                 uploaded = []
                 installed = []
@@ -196,6 +199,7 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(calls[0][-2], "r")
         self.assertEqual([command[-1] for command in calls if command[0] == "scp"],
                          ["[r]:lite3-camera-server/", "[r]:lite3-camera-server/",
+                          "[r]:lite3-camera-server/", "[r]:lite3-camera-server/",
                           "[r]:lite3-camera-server/web/", "[r]:lite3-camera-server/",
                           "[r]:lite3-camera-server/", "[r]:lite3-camera-server/remote/",
                           "[r]:lite3-camera-server/web/", "[r]:lite3-camera-server/"])

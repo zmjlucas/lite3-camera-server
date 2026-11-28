@@ -408,7 +408,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
     def _control_post(self):
         action = self.path.partition("?")[0][5:]
         allowed = {"control/acquire", "control/heartbeat", "control/release", "control/estop",
-                   "control/reset", "dog/stand", "dog/velocity", "dog/stop", "arm/jog",
+                   "control/reset", "dog/stand", "dog/velocity", "dog/action", "dog/stop", "arm/jog",
                    "arm/state", "arm/reconnect", "arm/operation", "arm/stop"}
         if action not in allowed:
             self._json(404, {"error": "Unknown control operation"})
@@ -843,11 +843,15 @@ def parse_args(argv):
                         help="use simulated dog and arm control (requires --env dev)")
     parser.add_argument("--control-mode", choices=("disabled", "readonly", "hardware"), default="hardware")
     parser.add_argument("--dog-host", default="192.168.1.120", help="motion host IPv4 for UDP port 43893")
+    parser.add_argument("--dog-state-port", type=int, default=43897,
+                        help="local UDP port for pushed dog state (default: 43897)")
     parser.add_argument("--arm-device", default="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")
     parser.add_argument("--arm-host", help="optional SSH host for the read-only serial gateway")
     parser.add_argument("--arm-motion-profile", metavar="PATH",
                         help="one-use local R5 commissioning record; disables dog output")
     options = parser.parse_args(argv)
+    if not 1 <= options.dog_state_port <= 65535:
+        parser.error("--dog-state-port must be between 1 and 65535")
     if options.simulate and (options.env != "dev" or options.control_mode != "hardware"):
         parser.error("--simulate requires --env dev and hardware control mode")
     if options.arm_motion_profile is not None:
@@ -884,9 +888,11 @@ def development_services(options):
     if __package__:
         from .control import ControlService
         from .arm_gateway import ArmGateway
+        from .dog_state import DogStateReceiver
     else:
         from control import ControlService
         from arm_gateway import ArmGateway
+        from dog_state import DogStateReceiver
     arm_gateway = None
     profile = options.arm_motion_profile
     try:
@@ -900,10 +906,12 @@ def development_services(options):
             arm_gateway = ArmMotionGateway(options.arm_device, profile)
         elif not options.simulate and options.control_mode in ("hardware", "readonly"):
             arm_gateway = ArmGateway(device=options.arm_device, host=options.arm_host)
+        dog_state = (DogStateReceiver(options.dog_host, options.dog_state_port)
+                     if not profile and not options.simulate and options.control_mode == "hardware" else None)
         control = ControlService(mode=options.control_mode, dog_host=options.dog_host,
                                  arm_gateway=arm_gateway if profile else None,
                                  dog_enabled=not bool(profile), environment=options.env,
-                                 simulate=options.simulate)
+                                 simulate=options.simulate, dog_state=dog_state)
         return control, arm_gateway
     except Exception:
         if arm_gateway is not None:

@@ -16,7 +16,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 from .api import (
     AcquireRequest, AcquireResponse, ArmJoint, ArmReconnectResponse, ArmState,
     ArmOperation, ArmOperationRequest,
-    ControlStatus, LeaseRequest, ResetRequest, StatusResponse, StopRequest,
+    ControlStatus, DogActionName, LeaseRequest, ResetRequest, StatusResponse, StopRequest,
 )
 
 
@@ -40,7 +40,8 @@ class _NoRedirect(HTTPRedirectHandler):
 class DevClient:
     """Explicit API calls; context exit releases an acquired lease.
 
-    Stops, resets and failed requests forget ownership for their own session.
+    Stops, resets, terminal dog actions and failed requests forget ownership for
+    their own session.
     Reacquire and explicitly prepare the dog again before further motion. A
     successful response is software state, never proof of physical robot state.
     Motion calls are serialized; reads, heartbeats and stops can run concurrently.
@@ -61,6 +62,7 @@ class DevClient:
         self.url = url.rstrip('/')
         self.timeout = float(timeout)
         self._lease: Optional[str] = None
+        self._dog_action_id: Optional[str] = None
         self._sequence = 0
         self._epoch = 0
         self._acquiring = False
@@ -77,6 +79,7 @@ class DevClient:
 
     def _forget_locked(self) -> int:
         self._lease = None
+        self._dog_action_id = None
         self._acquiring = False
         self._epoch += 1
         return self._epoch
@@ -85,6 +88,22 @@ class DevClient:
         with self._lock:
             if epoch == self._epoch:
                 self._forget_locked()
+
+    @staticmethod
+    def _action_status(result: Mapping[str, Any]) -> Mapping[str, object]:
+        dog = result.get('dog')
+        action = cast(Dict[str, object], dog).get('action') if isinstance(dog, dict) else None
+        return cast(Dict[str, object], action) if isinstance(action, dict) else {}
+
+    def _observe_dog_action(self, result: Mapping[str, Any], epoch: int,
+                           lease: Optional[str]) -> None:
+        action = self._action_status(result)
+        if lease is not None and action.get('phase') in ('completed', 'cancelled', 'fault'):
+            with self._lock:
+                owns_action = self._dog_action_id is not None and action.get('id') == self._dog_action_id
+                if (epoch == self._epoch and self._lease == lease and
+                        (result.get('lease_active') is False or owns_action)):
+                    self._forget_locked()
 
     def _request(self, action: str, body: Optional[Mapping[str, object]] = None,
                  epoch: Optional[int] = None) -> Dict[str, Any]:
@@ -142,8 +161,9 @@ class DevClient:
         with self._lock:
             if epoch != self._epoch or self._lease is None:
                 raise DevClientError('Control operation was superseded by a session change')
+            lease = self._lease
             body = dict(values or {})
-            body['lease'] = self._lease
+            body['lease'] = lease
             if motion:
                 self._sequence += 1
                 body['seq'] = self._sequence
@@ -151,10 +171,20 @@ class DevClient:
         with self._lock:
             if epoch != self._epoch:
                 raise DevClientError('Control operation was superseded by a session change')
+            if action == 'dog/action':
+                action_id = self._action_status(result).get('id')
+                if isinstance(action_id, str) and action_id:
+                    self._dog_action_id = action_id
+            self._observe_dog_action(result, epoch, lease)
         return cast(ControlStatus, result)
 
     def status(self) -> StatusResponse:
-        return cast(StatusResponse, self._request('status'))
+        with self._lock:
+            epoch = self._epoch
+            lease = self._lease
+        result = self._request('status', epoch=epoch)
+        self._observe_dog_action(result, epoch, lease)
+        return cast(StatusResponse, result)
 
     def acquire(self, owner: str = 'python-sdk') -> AcquireResponse:
         with self._lock:
@@ -188,6 +218,31 @@ class DevClient:
         """Submit m/s, m/s, rad/s for at most ttl seconds; no automatic renewal."""
         return self._owned('dog/velocity', {'vx': vx, 'vy': vy, 'yaw': yaw, 'ttl': ttl}, motion=True)
 
+    def dog_action(self, name: DogActionName, speed: float, duration: float) -> ControlStatus:
+        """Start one timed action after explicit stand and fresh standing feedback.
+
+        Speed is positive m/s for translation or rad/s for turns; duration is
+        positive seconds, at most 10. Returns immediately with dog.action. Send
+        explicit heartbeats while it runs; completion stops and revokes the lease.
+        """
+        return self._owned('dog/action', {'name': name, 'speed': speed, 'duration': duration}, motion=True)
+
+    def forward(self, speed: float = 0.1, duration: float = 1.0) -> ControlStatus:
+        """Start forward motion at positive speed (m/s), at most 0.2 m/s."""
+        return self.dog_action('forward', speed, duration)
+
+    def backward(self, speed: float = 0.1, duration: float = 1.0) -> ControlStatus:
+        """Start backward motion at positive speed (m/s), at most 0.2 m/s."""
+        return self.dog_action('backward', speed, duration)
+
+    def turn_left(self, speed: float = 0.2, duration: float = 1.0) -> ControlStatus:
+        """Start a left turn at positive speed (rad/s), at most 0.3 rad/s."""
+        return self.dog_action('turn_left', speed, duration)
+
+    def turn_right(self, speed: float = 0.2, duration: float = 1.0) -> ControlStatus:
+        """Start a right turn at positive speed (rad/s), at most 0.3 rad/s."""
+        return self.dog_action('turn_right', speed, duration)
+
     def stop(self) -> ControlStatus:
         """Stop the dog, revoke ownership, and cancel preparation (observer allowed)."""
         with self._lock:
@@ -196,13 +251,28 @@ class DevClient:
         return cast(ControlStatus, self._request('dog/stop', body, epoch))
 
     def release(self) -> Optional[ControlStatus]:
+        return self._release()
+
+    def _release(self, allow_completed_action: bool = False) -> Optional[ControlStatus]:
         with self._lock:
             lease = self._lease
+            action_id = self._dog_action_id
             epoch = self._forget_locked()
             if lease is None:
                 return None
         body: LeaseRequest = {'lease': lease}
-        return cast(ControlStatus, self._request('control/release', body, epoch))
+        try:
+            return cast(ControlStatus, self._request('control/release', body, epoch))
+        except DevClientError as error:
+            if not allow_completed_action or error.status != 409 or action_id is None:
+                raise
+            # Completion revokes this lease. A newer controller may already own
+            # the service; only read back our acknowledged action to confirm it.
+            result = self._request('status', epoch=epoch)
+            action = self._action_status(result)
+            if action.get('id') == action_id and action.get('phase') == 'completed':
+                return cast(ControlStatus, result)
+            raise
 
     def estop(self) -> ControlStatus:
         with self._lock:
@@ -244,7 +314,8 @@ class DevClient:
         return cast(ArmReconnectResponse, self._request('arm/reconnect', {}))
 
     def close(self) -> None:
-        self.release()
+        """Release ownership, accepting confirmed completion of this session's action."""
+        self._release(allow_completed_action=True)
 
     def __enter__(self) -> 'DevClient':
         return self

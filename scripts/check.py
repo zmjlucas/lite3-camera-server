@@ -20,7 +20,8 @@ def main():
         if sys.version_info >= (3, 13):
             parser.error("Use Python 3.8-3.12 to check Python 3.6 syntax")
         sources = [ROOT / "src" / name
-                   for name in ("server.py", "control.py", "arm_gateway.py", "wide_angle.py", "arm_motion.py")]
+                   for name in ("server.py", "control.py", "dog_actions.py", "dog_state.py",
+                                "arm_gateway.py", "wide_angle.py", "arm_motion.py")]
         sources.extend(sorted((ROOT / "src/remote").glob("*.py")))
         grammar = (3, 6)
     else:

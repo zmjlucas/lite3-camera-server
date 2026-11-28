@@ -69,6 +69,27 @@ class SDKPackageTests(unittest.TestCase):
         self.assertIs(get_type_hints(DevClient.reset)['revision'], str)
         self.assertEqual(get_type_hints(DevClientError)['status'], Optional[int])
 
+    def test_dog_action_contracts_are_exported_and_preserve_typed_results(self):
+        from src import lite3_dev_server as sdk
+
+        for name in ('DogActionName', 'DogActionStatus', 'DogActionRequest', 'DogFeedback'):
+            self.assertTrue(hasattr(sdk, name), name)
+            self.assertIn(name, sdk.__all__)
+        for name in ('dog_action', 'forward', 'backward', 'turn_left', 'turn_right'):
+            hints = get_type_hints(getattr(sdk.DevClient, name))
+            self.assertIs(hints['return'], sdk.ControlStatus)
+            self.assertIs(hints['speed'], float)
+            self.assertIs(hints['duration'], float)
+        self.assertIs(get_type_hints(sdk.DevClient.dog_action)['name'], sdk.DogActionName)
+        dog = get_type_hints(sdk.DogStatus)
+        self.assertIs(dog['feedback'], sdk.DogFeedback)
+        self.assertEqual(dog['action'], Optional[sdk.DogActionStatus])
+        self.assertIs(dog['actions_enabled'], bool)
+        request = get_type_hints(sdk.DogActionRequest)
+        self.assertIs(request['name'], sdk.DogActionName)
+        self.assertIs(request['lease'], str)
+        self.assertIs(request['seq'], int)
+
 
 if __name__ == '__main__':
     unittest.main()

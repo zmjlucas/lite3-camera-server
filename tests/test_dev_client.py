@@ -16,6 +16,30 @@ class Response(io.BytesIO):
         super().__init__(body if isinstance(body, bytes) else json.dumps(body).encode())
 
 
+def action_status(phase='running', lease_active=True):
+    return {
+        'mode': 'hardware', 'environment': 'dev', 'estop': False,
+        'safety_revision': 'revision-1', 'lease_active': lease_active,
+        'dog': {
+            'phase': 'moving' if phase == 'running' else 'disarmed',
+            'velocity': {'vx': 0.1 if phase == 'running' else 0.0, 'vy': 0.0, 'yaw': 0.0},
+            'limits': {'vx': 0.2, 'vy': 0.1, 'yaw': 0.3, 'ttl': 0.5},
+            'error': None, 'stop_verified': False, 'simulated': True,
+            'motion_enabled': True, 'actions_enabled': False,
+            'feedback': {
+                'observed': False, 'simulated': True, 'fresh': True, 'age_s': 0.0,
+                'basic_state': 6, 'gait_state': 0, 'motion_state': 0,
+                'standing': True, 'motion_ready': True, 'reason': None,
+            },
+            'action': {
+                'id': 'action-1', 'name': 'forward', 'speed': 0.1, 'duration': 1.0,
+                'phase': phase, 'reason': None, 'remaining_s': 1.0 if phase == 'running' else 0.0,
+            },
+        },
+        'arm': {'motion_enabled': True, 'reason': None, 'position_deg': None, 'simulated': True},
+    }
+
+
 class Endpoint:
     def __init__(self):
         self.calls = []
@@ -90,6 +114,239 @@ class DevClientTests(unittest.TestCase):
             {'lease': 'opaque-lease', 'seq': 2, 'vx': 0.1, 'vy': -0.05, 'yaw': 0.2, 'ttl': 0.3},
             {'lease': 'opaque-lease', 'seq': 3, 'joint': 'b', 'delta': -1, 'speed': 2},
         ])
+
+    def test_dog_actions_send_one_request_with_shared_sequence_and_positive_speed(self):
+        self.assertTrue(callable(getattr(self.client, 'dog_action', None)))
+        self.client.acquire()
+        self.client.stand()
+        self.endpoint.response = action_status()
+        result = self.client.dog_action('backward', speed=0.15, duration=2.5)
+        self.assertEqual(result['dog']['action']['id'], 'action-1')
+        self.client.forward()
+        self.client.backward(speed=0.12, duration=0.8)
+        self.client.turn_left()
+        self.client.turn_right(speed=0.25, duration=2)
+        self.client.velocity(vx=0.1)
+        actions = self.endpoint.calls[2:-1]
+        self.assertEqual([row[0].full_url for row in actions],
+                         ['http://127.0.0.1:8080/api/dog/action'] * 5)
+        self.assertTrue(all(row[0].get_method() == 'POST' for row in actions))
+        self.assertEqual([row[1] for row in actions], [
+            {'lease': 'opaque-lease', 'seq': 2, 'name': 'backward', 'speed': 0.15, 'duration': 2.5},
+            {'lease': 'opaque-lease', 'seq': 3, 'name': 'forward', 'speed': 0.1, 'duration': 1.0},
+            {'lease': 'opaque-lease', 'seq': 4, 'name': 'backward', 'speed': 0.12, 'duration': 0.8},
+            {'lease': 'opaque-lease', 'seq': 5, 'name': 'turn_left', 'speed': 0.2, 'duration': 1.0},
+            {'lease': 'opaque-lease', 'seq': 6, 'name': 'turn_right', 'speed': 0.25, 'duration': 2},
+        ])
+        self.assertEqual(self.endpoint.calls[-1][1]['seq'], 7)
+        self.assertEqual(self.client.lease, 'opaque-lease')
+
+    def test_dog_actions_require_explicit_ownership(self):
+        for name in ('dog_action', 'forward', 'backward', 'turn_left', 'turn_right'):
+            with self.subTest(method=name):
+                self.assertTrue(callable(getattr(self.client, name, None)))
+                args = ('forward', 0.1, 1.0) if name == 'dog_action' else ()
+                with self.assertRaises(DevClientError):
+                    getattr(self.client, name)(*args)
+        self.assertEqual(self.endpoint.calls, [])
+
+    def test_dog_action_error_forgets_ownership_without_retry_or_implicit_preparation(self):
+        self.assertTrue(callable(getattr(self.client, 'forward', None)))
+        self.client.acquire()
+        self.endpoint.failure = HTTPError('http://127.0.0.1/api/dog/action', 423, 'blocked', {},
+                                          io.BytesIO(b'{"error":"fresh standing feedback required"}'))
+        with self.assertRaisesRegex(DevClientError, 'fresh standing feedback required') as error:
+            self.client.forward()
+        self.assertEqual(error.exception.status, 423)
+        self.assertIsNone(self.client.lease)
+        self.assertEqual(len(self.endpoint.calls), 2)
+        self.assertTrue(self.endpoint.calls[-1][0].full_url.endswith('/dog/action'))
+
+    def test_terminal_action_status_forgets_lease_and_context_cleanup_sends_no_release(self):
+        for phase in ('completed', 'cancelled', 'fault'):
+            for method in ('status', 'heartbeat'):
+                with self.subTest(phase=phase, method=method):
+                    self.endpoint.response = None
+                    with self.client as client:
+                        client.acquire()
+                        self.endpoint.response = action_status(phase, lease_active=False)
+                        state = getattr(client, method)()
+                        self.assertEqual(state['dog']['action']['phase'], phase)
+                        self.assertIsNone(client.lease)
+                        calls_before_exit = len(self.endpoint.calls)
+                    self.assertEqual(len(self.endpoint.calls), calls_before_exit)
+
+    def test_running_or_old_terminal_action_with_active_lease_preserves_ownership(self):
+        self.client.acquire()
+        for phase, active in (('running', True), ('completed', True), ('running', False)):
+            with self.subTest(phase=phase, lease_active=active):
+                self.endpoint.response = action_status(phase, lease_active=active)
+                self.client.status()
+                self.assertEqual(self.client.lease, 'opaque-lease')
+
+    def test_own_terminal_action_with_successor_lease_clears_local_ownership(self):
+        for phase in ('completed', 'cancelled', 'fault'):
+            with self.subTest(phase=phase):
+                self.client = DevClient('http://127.0.0.1:8080')
+                self.endpoint.response = None
+                self.client.acquire()
+                self.endpoint.response = action_status()
+                self.client.forward()
+                self.endpoint.response = action_status(phase, lease_active=True)
+                before = len(self.endpoint.calls)
+                self.client.status()
+                self.assertIsNone(self.client.lease)
+                self.assertEqual(len(self.endpoint.calls), before + 1)
+                self.assertTrue(self.endpoint.calls[-1][0].full_url.endswith('/status'))
+                self.client.close()
+                self.assertEqual(len(self.endpoint.calls), before + 1)
+                self.endpoint.response = None
+                self.client.acquire('later-session')
+                self.assertEqual(self.endpoint.calls[-1][1], {'owner': 'later-session'})
+                self.client.release()
+
+    def test_another_terminal_action_with_active_lease_preserves_local_ownership(self):
+        self.client.acquire()
+        self.endpoint.response = action_status()
+        self.client.forward()
+        self.endpoint.response = action_status('completed', lease_active=True)
+        self.endpoint.response['dog']['action']['id'] = 'another-action'
+        self.client.status()
+        self.assertEqual(self.client.lease, 'opaque-lease')
+
+    def test_delayed_terminal_status_cannot_forget_reacquired_lease(self):
+        self.client.acquire()
+        self.endpoint.response = action_status('completed', lease_active=False)
+        entered, proceed = self.delay_response('status')
+        done, result = self.start_call(self.client.status)
+        self.assertTrue(entered.wait(1))
+        try:
+            self.endpoint.response = None
+            self.client.stop()
+            self.client.acquire('new-session')
+            new_lease = self.client.lease
+        finally:
+            proceed.set()
+            self.assertTrue(done.wait(1))
+        self.assertFalse(result['errors'])
+        self.assertEqual(result['values'][0]['dog']['action']['phase'], 'completed')
+        self.assertEqual(self.client.lease, new_lease)
+        self.client.heartbeat()
+
+    def test_status_started_during_acquire_cannot_clear_the_new_lease(self):
+        acquire_entered, finish_acquire = self.delay_response('control/acquire')
+        acquired, acquisition = self.start_call(self.client.acquire)
+        self.assertTrue(acquire_entered.wait(1))
+        self.endpoint.response = action_status('completed', lease_active=False)
+        status_entered, finish_status = self.delay_response('status')
+        read, result = self.start_call(self.client.status)
+        self.assertTrue(status_entered.wait(1))
+        try:
+            finish_acquire.set()
+            self.assertTrue(acquired.wait(1))
+            self.assertFalse(acquisition['errors'])
+            self.assertEqual(self.client.lease, 'opaque-lease')
+        finally:
+            finish_status.set()
+            self.assertTrue(read.wait(1))
+        self.assertFalse(result['errors'])
+        self.assertEqual(result['values'][0]['dog']['action']['phase'], 'completed')
+        self.assertEqual(self.client.lease, 'opaque-lease')
+
+    def completed_action_release(self, status, failure=None):
+        self.client.acquire()
+        self.endpoint.response = action_status()
+        self.client.forward()
+        original = self.endpoint.open
+        def revoked(request, timeout):
+            response = original(request, timeout)
+            if request.full_url.endswith('/control/release'):
+                raise HTTPError(request.full_url, 409, 'conflict', {},
+                                io.BytesIO(b'{"error":"Invalid or expired control lease"}'))
+            if request.full_url.endswith('/status'):
+                if failure is not None:
+                    raise failure
+                return Response(status)
+            return response
+        self.endpoint.open = revoked
+
+    def test_context_cleanup_accepts_completed_action_without_explicit_poll(self):
+        self.completed_action_release(action_status('completed', lease_active=False))
+        with self.client:
+            pass
+        self.assertIsNone(self.client.lease)
+        self.assertEqual([row[0].full_url.rsplit('/api/', 1)[1] for row in self.endpoint.calls],
+                         ['control/acquire', 'dog/action', 'control/release', 'status'])
+        self.assertEqual(self.endpoint.calls[-2][1], {'lease': 'opaque-lease'})
+
+    def test_cleanup_of_completed_action_preserves_another_controllers_lease(self):
+        self.completed_action_release(action_status('completed', lease_active=True))
+        self.client.close()
+        self.assertIsNone(self.client.lease)
+        self.assertEqual([row[0].full_url.rsplit('/api/', 1)[1] for row in self.endpoint.calls],
+                         ['control/acquire', 'dog/action', 'control/release', 'status'])
+        self.assertEqual(self.endpoint.calls[-2][1], {'lease': 'opaque-lease'})
+
+    def test_cleanup_keeps_release_errors_for_unconfirmed_completion(self):
+        for phase, action_id in (('running', 'action-1'), ('cancelled', 'action-1'),
+                                 ('fault', 'action-1'), ('completed', 'another-action')):
+            with self.subTest(phase=phase, action_id=action_id):
+                self.endpoint = Endpoint()
+                self.client._opener = self.endpoint
+                status = action_status(phase, lease_active=False)
+                status['dog']['action']['id'] = action_id
+                self.completed_action_release(status)
+                with self.assertRaises(DevClientError) as error:
+                    self.client.close()
+                self.assertEqual(error.exception.status, 409)
+                self.assertIsNone(self.client.lease)
+
+    def test_cleanup_preserves_status_transport_failure_after_release_conflict(self):
+        self.completed_action_release(action_status('completed', lease_active=False),
+                                      failure=URLError('confirmation unavailable'))
+        with self.assertRaisesRegex(DevClientError, 'confirmation unavailable'):
+            self.client.close()
+
+    def test_cleanup_keeps_transport_failure_without_querying_status(self):
+        self.client.acquire()
+        self.endpoint.response = action_status()
+        self.client.forward()
+        self.endpoint.failure = URLError('release unavailable')
+        with self.assertRaisesRegex(DevClientError, 'release unavailable'):
+            self.client.close()
+        self.assertEqual(len(self.endpoint.calls), 3)
+
+    def test_explicit_release_stays_strict_after_action_completion(self):
+        self.completed_action_release(action_status('completed', lease_active=False))
+        with self.assertRaises(DevClientError) as error:
+            self.client.release()
+        self.assertEqual(error.exception.status, 409)
+        self.assertEqual(len(self.endpoint.calls), 3)
+
+    def test_cleanup_does_not_associate_an_old_action_with_a_new_lease(self):
+        self.completed_action_release(action_status('completed', lease_active=False))
+        self.client.stop()
+        self.endpoint.response = None
+        self.client.acquire('new-session')
+        with self.assertRaises(DevClientError) as error:
+            self.client.close()
+        self.assertEqual(error.exception.status, 409)
+        self.assertFalse(any(row[0].full_url.endswith('/status') for row in self.endpoint.calls))
+
+    def test_stop_supersedes_delayed_dog_action_response(self):
+        self.assertTrue(callable(getattr(self.client, 'forward', None)))
+        self.client.acquire()
+        entered, proceed = self.delay_response('dog/action')
+        done, result = self.start_call(self.client.forward)
+        self.assertTrue(entered.wait(1))
+        try:
+            self.client.stop()
+        finally:
+            proceed.set()
+            self.assertTrue(done.wait(1))
+        self.assertEqual(result['values'], [])
+        self.assertIsInstance(result['errors'][0], DevClientError)
+        self.assertIsNone(self.client.lease)
 
     def test_concurrent_motion_keeps_wire_sequence_in_order(self):
         self.client.acquire()

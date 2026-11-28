@@ -13,6 +13,11 @@ import threading
 import time
 from typing import TYPE_CHECKING
 
+if __package__:
+    from .dog_actions import DogActions, action_velocity, feedback_status
+else:
+    from dog_actions import DogActions, action_velocity, feedback_status
+
 if TYPE_CHECKING:
     from typing import Any, Dict, Tuple, Union
     from lite3_dev_server.api import (
@@ -61,7 +66,7 @@ class ControlService:
 
     def __init__(self, mode: 'ControlMode' = 'hardware', dog_host='192.168.1.120',
                  dog_port=43893, clock=time.monotonic, arm_gateway=None, dog_enabled=True,
-                 environment: 'Environment' = 'dist', simulate=False):
+                 environment: 'Environment' = 'dist', simulate=False, dog_state=None):
         if mode not in ('disabled', 'readonly', 'hardware'):
             raise ValueError('Unsupported control mode')
         if environment not in ('dev', 'dist'):
@@ -92,6 +97,8 @@ class ControlService:
         self.simulate = simulate
         self._target = (dog_host, dog_port)
         self._clock = clock
+        self._dog_state = dog_state
+        self._actions = DogActions(clock)
         self._lock = threading.RLock()
         self._wake = threading.Event()
         self._thread = None
@@ -119,6 +126,8 @@ class ControlService:
             if self._closed:
                 raise ControlError(503, 'Control service is closed')
             if self._thread is None:
+                if self._dog_state is not None:
+                    self._dog_state.start()
                 self._thread = threading.Thread(target=self._run, name='lite3-dog-writer')
                 self._thread.daemon = True
                 self._thread.start()
@@ -149,6 +158,8 @@ class ControlService:
                     self._error = 'UDP worker shutdown timed out'
         if self._arm_gateway is not None:
             self._arm_gateway.close()
+        if self._dog_state is not None:
+            self._dog_state.close()
 
     def status(self) -> 'ControlStatus':
         with self._lock:
@@ -157,6 +168,7 @@ class ControlService:
 
     def _status_locked(self) -> 'ControlStatus':
         simulated = self.simulate
+        feedback = feedback_status(simulated, self._phase, self._dog_state)
         result: 'ControlStatus' = {
             'mode': self.mode,
             'environment': self.environment,
@@ -170,6 +182,12 @@ class ControlService:
                 'error': self._error,
                 'stop_verified': False,
                 'simulated': simulated,
+                'feedback': feedback,
+                'action': self._actions.status(),
+                'actions_enabled': (self._dog_enabled and self.mode == 'hardware'
+                                    and not self._closed and not self._estop and not self._error
+                                    and self._lease is not None and self._phase == 'ready'
+                                    and feedback['standing']),
                 'motion_enabled': (self._dog_enabled and self.mode == 'hardware'
                                    and not self._closed and not self._estop),
             },
@@ -309,6 +327,28 @@ class ControlService:
                 self._stage = 0
                 self._stage_deadline = self._clock()
                 self._next_cycle = self._clock()
+            elif action == 'dog/action':
+                if not self._dog_enabled:
+                    raise ControlError(423, 'Dog output is disabled during arm diagnostics')
+                self._fields(body, ('lease', 'seq', 'name', 'speed', 'duration'),
+                             ('lease', 'seq', 'name', 'speed', 'duration'))
+                sequence = self._motion_locked(body)
+                try:
+                    values = action_velocity(body['name'], body['speed'], body['duration'], LIMITS)
+                except ValueError as error:
+                    raise ControlError(400, str(error)) from None
+                if self._phase != 'ready' or self._actions.running:
+                    raise ControlError(409, 'Prepare the dog and wait for idle readiness before an action')
+                feedback = feedback_status(self.simulate, self._phase, self._dog_state)
+                if not feedback['standing']:
+                    raise ControlError(409, feedback['reason'] or 'Fresh stable standing feedback is required')
+                self._sequence = sequence
+                self._generation += 1
+                self._velocity = values
+                self._velocity_deadline = None
+                self._actions.start(body['name'], body['speed'], body['duration'])
+                self._phase = 'moving'
+                self._next_cycle = self._clock()
             elif action == 'dog/velocity':
                 if not self._dog_enabled:
                     raise ControlError(423, 'Dog output is disabled during arm diagnostics')
@@ -322,6 +362,8 @@ class ControlService:
                     raise ControlError(400, 'ttl must be greater than zero')
                 if self._phase not in ('ready', 'moving'):
                     raise ControlError(409, 'Explicit dog preparation is required')
+                if self._actions.running:
+                    raise ControlError(409, 'Stop the current dog action before sending velocity')
                 self._sequence = sequence
                 self._generation += 1
                 self._velocity = values
@@ -360,7 +402,8 @@ class ControlService:
             self._wake.set()
             return self._status_locked()
 
-    def _stop_locked(self, reason='stop'):
+    def _stop_locked(self, reason='stop', action_phase='cancelled'):
+        self._actions.finish(action_phase, reason)
         self._generation += 1
         self._lease = None
         self._lease_deadline = 0.0
@@ -382,13 +425,20 @@ class ControlService:
         if ((self._lease is not None and now >= self._lease_deadline)
                 or (self._velocity_deadline is not None and now >= self._velocity_deadline)):
             self._stop_locked('expired')
+        elif self._actions.running:
+            if self._actions.deadline is not None and now >= self._actions.deadline:
+                self._stop_locked('duration_elapsed', 'completed')
+            else:
+                feedback = feedback_status(self.simulate, self._phase, self._dog_state)
+                if not feedback['motion_ready']:
+                    self._stop_locked(feedback['reason'] or 'Dog state is unsuitable for motion', 'fault')
 
     def _failure_locked(self):
         if self._error is None:
             self._safety_revision = secrets.token_urlsafe(32)
         self._error = 'Dog UDP send failed'
         if not self._stop_remaining:
-            self._stop_locked()
+            self._stop_locked('Dog UDP send failed', 'fault')
 
     def _send(self, packet, generation=None):
         """Only the writer calls this; guarded writes cannot outlive their lease."""
@@ -478,6 +528,10 @@ class ControlService:
                 value = self._velocity[name]
             if not self._send(_velocity(code, value), generation):
                 return
+            if value != 0:
+                with self._lock:
+                    if generation == self._generation:
+                        self._actions.mark_started()
 
     def _run(self):
         try:
@@ -486,7 +540,10 @@ class ControlService:
                 with self._lock:
                     if self._closed and not self._stop_remaining:
                         break
-                self._wake.wait(PERIOD)
+                    delay = PERIOD
+                    if self._actions.deadline is not None:
+                        delay = max(0.0, min(delay, self._actions.deadline - self._clock()))
+                self._wake.wait(delay)
                 self._wake.clear()
         finally:
             with self._lock:

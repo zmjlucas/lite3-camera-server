@@ -28,6 +28,8 @@ SERVER = Path(__file__).resolve().with_name("server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
 # Upload new dependencies before changing existing files, then replace the entry point last.
 SERVER_BUNDLE = ((SERVER.parent / "wide_angle.py", "lite3-camera-server/"),
+                 (SERVER.parent / "dog_actions.py", "lite3-camera-server/"),
+                 (SERVER.parent / "dog_state.py", "lite3-camera-server/"),
                  (SERVER.parent / "arm_motion.py", "lite3-camera-server/"),
                  (SERVER.parent / "web" / "camera.html", "lite3-camera-server/web/"),
                  (SERVER.parent / "control.py", "lite3-camera-server/"),
@@ -206,10 +208,10 @@ def control_options(args):
     values = []
     if getattr(args, "simulate", False):
         values.append("--simulate")
-    for name in ("control_mode", "dog_host", "arm_device", "arm_host", "arm_motion_profile"):
+    for name in ("control_mode", "dog_host", "dog_state_port", "arm_device", "arm_host", "arm_motion_profile"):
         value = getattr(args, name, None)
         if value is not None:
-            values.extend(["--" + name.replace("_", "-"), value])
+            values.extend(["--" + name.replace("_", "-"), str(value)])
     return values
 
 
@@ -453,6 +455,8 @@ def parser():
             command.add_argument("--control-mode", choices=("disabled", "readonly", "hardware"),
                                  help="control permission (default: hardware)")
             command.add_argument("--dog-host", help="motion host IPv4 (server default: 192.168.1.120, UDP port 43893)")
+            command.add_argument("--dog-state-port", type=bounded_int(1, 65535),
+                                 help="dog state UDP listener port on server (default: 43897)")
             command.add_argument("--arm-device", help="serial device on the arm host")
             command.add_argument("--arm-host", type=target, help="optional SSH target for remote arm access: ysc@192.168.1.103")
             command.add_argument("--arm-motion-profile", metavar="PATH",

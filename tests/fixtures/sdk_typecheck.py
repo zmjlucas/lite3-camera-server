@@ -1,7 +1,10 @@
 """Static consumer fixture. Copy outside the checkout to check the installed SDK."""
 from typing import Optional
 
-from lite3_dev_server import ArmCapabilities, ArmJoint, ArmOperation, ControlStatus, DevClient, DevClientError, DogPhase, Environment
+from lite3_dev_server import (
+    ArmCapabilities, ArmJoint, ArmOperation, ControlStatus, DevClient, DevClientError,
+    DogActionName, DogActionRequest, DogActionStatus, DogFeedback, DogPhase, Environment,
+)
 
 
 def status_phase(url: str) -> Optional[DogPhase]:
@@ -54,3 +57,27 @@ def poll_arm_operation(robot: DevClient, operation_id: str) -> ArmOperation:
 
 def cancel_arm_operation(robot: DevClient) -> Optional[ArmOperation]:
     return robot.arm_stop()['arm'].get('operation')
+
+
+def start_dog_action(robot: DevClient, name: DogActionName) -> Optional[DogActionStatus]:
+    state = robot.status()
+    if state['mode'] != 'hardware':
+        return None
+    feedback: DogFeedback = state['dog']['feedback']
+    if not state['dog']['actions_enabled'] or not feedback['fresh']:
+        return None
+    return robot.dog_action(name, speed=0.1, duration=1.0)['dog']['action']
+
+
+def dog_action_request(lease: str, seq: int, name: DogActionName) -> DogActionRequest:
+    return {'lease': lease, 'seq': seq, 'name': name, 'speed': 0.1, 'duration': 1.0}
+
+
+def default_dog_action(robot: DevClient, name: DogActionName) -> ControlStatus:
+    if name == 'forward':
+        return robot.forward()
+    if name == 'backward':
+        return robot.backward()
+    if name == 'turn_left':
+        return robot.turn_left()
+    return robot.turn_right()

@@ -9,10 +9,10 @@
   :root { color-scheme: light; font: 14px/1.55 system-ui, -apple-system, "PingFang SC", sans-serif; color: #172d32; background: #edf1ef; }
   * { box-sizing: border-box; }
   body { margin: 0; }
-  button { font: inherit; }
+  button, input, select { font: inherit; }
   button, .link-button { border: 1px solid #c9d4cf; border-radius: 7px; background: white; color: #173a33; padding: 9px 14px; cursor: pointer; font-weight: 600; text-decoration: none; }
   button:hover:not(:disabled), .link-button:hover { background: #eef6f1; border-color: #82a595; }
-  button:focus-visible, a:focus-visible { outline: 3px solid #dd9b38; outline-offset: 3px; }
+  button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #dd9b38; outline-offset: 3px; }
   button:disabled { cursor: not-allowed; opacity: .42; }
   button.primary { background: #14664e; color: white; border-color: #14664e; }
   button.primary:hover:not(:disabled) { background: #0d503c; }
@@ -53,6 +53,11 @@
   .drive-grid .wide { grid-column: span 3; min-height: 44px; }
   #dog-stop { color: #92332e; background: #fff5f2; border-color: #dfb2aa; }
   .readout { display: flex; flex-wrap: wrap; gap: 16px; margin: 10px 0; font: 12px ui-monospace, monospace; color: #546a5e; }
+  .action-controls { align-items: end; margin: 12px 0; }
+  .action-controls label { display: grid; gap: 5px; font-size: 12px; color: #546a5e; }
+  .action-controls input, .action-controls select { border: 1px solid #c9d4cf; border-radius: 7px; padding: 8px; background: white; color: #173a33; }
+  .action-controls input { width: 102px; }
+  #dog-feedback, #dog-action-status { overflow-wrap: anywhere; }
   .warning { border-left: 3px solid #d19938; padding-left: 10px; color: #755422; font-size: 12px; }
   .arm-lock { padding: 11px 13px; background: #f9f2e4; border-radius: 7px; font-size: 12px; color: #71501e; margin-bottom: 12px; overflow-wrap: anywhere; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -89,7 +94,18 @@
     </section>
     <section class="card">
       <div class="card-head"><div><div class="eyebrow">03 / Quadruped</div><h2>机器狗控制</h2></div><span id="dog-phase" class="pill">未准备</span></div>
-      <div class="status-line"><div><strong>先准备，再按住移动</strong><div class="muted">站立准备约 6 秒；松开、切换窗口或断线即停止。</div></div><button id="stand" class="primary" disabled>站立准备</button></div>
+      <div class="status-line"><div><strong>先准备，再选择移动方式</strong><div class="muted">站立准备约 6 秒；切换窗口或断线会请求停止。</div></div><button id="stand" class="primary" disabled>站立准备</button></div>
+      <h3>定时动作</h3>
+      <div class="row action-controls">
+        <label>动作<select id="dog-action-name"><option value="forward">前进</option><option value="backward">后退</option><option value="turn_left">左转</option><option value="turn_right">右转</option></select></label>
+        <label><span id="dog-action-speed-label">速度 (m/s)</span><input id="dog-action-speed" type="number" min="0.01" max="0.2" step="0.01" value="0.1" required></label>
+        <label>时长 (秒)<input id="dog-action-duration" type="number" min="0.1" max="10" step="0.1" value="1" required></label>
+        <button id="dog-action-start" class="primary" disabled>开始动作</button>
+      </div>
+      <div id="dog-action-status" class="muted" role="status" aria-live="polite">当前无定时动作。</div>
+      <div id="dog-feedback" class="muted">机器狗反馈：等待状态</div>
+      <p class="muted">收到新鲜的稳定站立反馈后可开始。动作由服务端计时，完成后释放控制权。</p>
+      <h3>按住移动</h3>
       <div class="drive-grid" aria-label="按住移动控制">
         <button data-axis="yaw" data-value="-0.15" disabled>yaw −<span>−0.15 rad/s</span></button>
         <button data-axis="vx" data-value="0.10" disabled>vx +<span>+0.10 m/s</span></button>
@@ -102,7 +118,7 @@
       <div id="dog-limits" class="mono muted">服务端速度上限：等待状态</div>
       <div id="dog-velocity" class="readout">最后接受的速度指令：—</div>
       <p class="muted">按钮使用设备原生坐标；vy / yaw 正负方向需要在现场确认。支持鼠标、触摸，或聚焦按钮后按住空格 / Enter。</p>
-      <p class="warning">界面显示的是指令状态，没有姿态或速度反馈。每次停止后都需要重新获取控制权并站立准备。</p>
+      <p class="warning">反馈显示机器狗上报的状态，实体移动与停止仍需现场确认。每次停止后都需要重新获取控制权并站立准备。</p>
     </section>
     <section class="card">
       <div class="card-head"><div><div class="eyebrow">04 / R5 Arm</div><h2>机械臂</h2></div><span id="arm-mode" class="pill">等待状态</span></div>
@@ -131,8 +147,11 @@ let lease = null, sequence = 0, epoch = 0;
 let state = null, connected = false, acquiring = false, motionBusy = false, armBusy = false;
 let armRevision = 0;
 let heartbeatTimer, velocityTimer, hold = null;
+let dogActionId = null, pendingDogAction = null;
 let cameraTimer, cameraController, cameraURL = null, cameraEpoch = 0;
 const phaseLabels = {disarmed: '未准备', preparing: '准备中', ready: '已准备', moving: '正在发送运动指令', stopping: '停止中', error: '故障锁定'};
+const actionNames = {forward: '前进', backward: '后退', turn_left: '左转', turn_right: '右转'};
+const actionPhases = {running: '执行中', completed: '已完成', cancelled: '已取消', fault: '故障停止'};
 const unknownEnvironment = '服务端环境未知。请更新并重启服务后再获取控制权。';
 
 function notice(message) { $('notice').textContent = message; }
@@ -143,6 +162,7 @@ function render() {
   const armDiagnostics = state?.environment === 'dev' && Boolean(arm.simulated || arm.capabilities);
   const operation = armDiagnostics ? arm.operation : null;
   const armActive = Boolean(operation && ['preflight', 'moving', 'stopping'].includes(operation.phase));
+  const dogActionActive = dog.action?.phase === 'running';
   const usable = canControl();
   $('connection').textContent = connected ? '● 服务在线' : '○ 服务离线';
   $('environment').textContent = ({dev: '开发环境 · dev', dist: '发行环境 · dist'})[state?.environment] || (state ? '环境未知' : '等待环境');
@@ -154,14 +174,22 @@ function render() {
   $('estop').disabled = state?.mode === 'readonly';
   $('reset').disabled = !(state?.estop || dog.error);
   $('dog-stop').disabled = state?.mode === 'readonly';
-  $('stand').disabled = !usable || !lease || motionBusy || dog.motion_enabled === false || Boolean(hold) || ['preparing', 'stopping', 'error', 'ready', 'moving'].includes(dog.phase);
+  $('stand').disabled = !usable || !lease || motionBusy || dogActionActive || dog.motion_enabled === false || Boolean(hold) || ['preparing', 'stopping', 'error', 'ready', 'moving'].includes(dog.phase);
   const dogPhase = state?.estop ? '软件急停已锁定' : phaseLabels[dog.phase] || '等待状态';
   $('dog-phase').textContent = dog.simulated ? '模拟 · ' + dogPhase : dogPhase;
-  for (const button of driveButtons) button.disabled = !usable || !lease || motionBusy || dog.motion_enabled === false || !['ready', 'moving'].includes(dog.phase) || Boolean(hold && hold.button !== button);
+  for (const button of driveButtons) button.disabled = !usable || !lease || motionBusy || dogActionActive || dog.motion_enabled === false || !['ready', 'moving'].includes(dog.phase) || Boolean(hold && hold.button !== button);
+  $('dog-action-start').disabled = !usable || !lease || motionBusy || Boolean(hold) || dogActionActive || !dog.actions_enabled;
+  for (const id of ['dog-action-name', 'dog-action-speed', 'dog-action-duration']) $(id).disabled = motionBusy || dogActionActive;
+  const action = dog.action;
+  $('dog-action-status').textContent = action ? `${actionNames[action.name] || action.name} · ${actionPhases[action.phase] || action.phase} · ${action.speed} ${action.name?.startsWith('turn_') ? 'rad/s' : 'm/s'} · ${action.duration} 秒${action.phase === 'running' && Number.isFinite(action.remaining_s) ? ' · 剩余 ' + action.remaining_s.toFixed(1) + ' 秒' : ''}${action.reason ? ' · ' + action.reason : ''}` : '当前无定时动作。';
+  const feedback = dog.feedback;
+  const feedbackSource = feedback?.simulated ? '模拟反馈' : feedback?.observed ? '实测反馈' : '尚无实测反馈';
+  const feedbackState = !feedback?.fresh ? '等待新鲜反馈' : feedback.standing ? '稳定站立' : feedback.motion_ready ? '运动状态有效' : '姿态未就绪';
+  $('dog-feedback').textContent = feedback ? `${feedbackSource} · ${feedback.fresh ? '新鲜' : feedback.observed ? '已过期' : '等待上报'}${Number.isFinite(feedback.age_s) ? ' · ' + feedback.age_s.toFixed(2) + ' 秒前' : ''} · 基本 / 步态 / 运动：${feedback.basic_state ?? '—'} / ${feedback.gait_state ?? '—'} / ${feedback.motion_state ?? '—'} · ${feedbackState}${feedback.fresh && feedback.standing && dog.actions_enabled ? ' · 可开始动作' : ''}${feedback.reason ? ' · ' + feedback.reason : ''}` : '机器狗反馈：等待状态';
   for (const element of armDiagnosticsElements) element.hidden = !armDiagnostics;
   for (const button of jointButtons) {
     const supported = arm.simulated || arm.capabilities?.joints?.includes(button.dataset.joint);
-    button.disabled = !armDiagnostics || !usable || !lease || motionBusy || armActive || Boolean(hold) || !arm.motion_enabled || !supported;
+    button.disabled = !armDiagnostics || !usable || !lease || motionBusy || dogActionActive || armActive || Boolean(hold) || !arm.motion_enabled || !supported;
     const increment = !arm.simulated && ['b', 'h'].includes(button.dataset.joint) ? .5 : 1;
     button.setAttribute('aria-label', `${button.dataset.joint} ${Number(button.dataset.delta) > 0 ? '+' : '−'}${increment}°`);
   }
@@ -201,6 +229,12 @@ function updateState(value) {
     renderArm({});
     if (!hasEnvironment() && value.mode !== 'disabled') notice(unknownEnvironment);
   }
+  const action = value.dog?.action;
+  if (lease && dogActionId && action?.id === dogActionId &&
+      ['completed', 'cancelled', 'fault'].includes(action.phase)) {
+    clearLocalControl();
+    notice(`定时动作${actionPhases[action.phase]}，控制权已释放。${action.reason ? action.reason + '。' : ''}再次操作请手动获取控制权。`);
+  }
   render();
 }
 function renderArm(arm) {
@@ -229,6 +263,7 @@ async function api(action, body, options = {}) {
 function clearLocalControl() {
   epoch++;
   lease = null; acquiring = false; motionBusy = false;
+  dogActionId = null; pendingDogAction = null;
   clearTimeout(heartbeatTimer); clearTimeout(velocityTimer);
   if (hold) hold.button.classList.remove('held');
   hold = null;
@@ -252,6 +287,16 @@ async function stop(action = 'dog/stop', message = '已请求停止并释放控�
   try { const data = await api(action, body, {keepalive: true}); if (epoch === stamp) updateState(data); }
   catch (error) { if (epoch === stamp) notice('停止请求失败：' + error.message + '。本页已停止续发；请使用物理停止手段。'); }
 }
+async function refreshDogAction(stamp) {
+  if (!dogActionId && !pendingDogAction) return;
+  // The accepted start reply supplies the action ID, even if completion came first.
+  if (pendingDogAction) { try { await pendingDogAction; } catch (_) {} }
+  if (stamp !== epoch || !lease || !dogActionId) return;
+  try {
+    const data = await api('status');
+    if (stamp === epoch && lease) updateState(data);
+  } catch (_) {}
+}
 function startHeartbeat(stamp) {
   heartbeatTimer = setTimeout(async () => {
     if (stamp !== epoch || !lease) return;
@@ -259,8 +304,12 @@ function startHeartbeat(stamp) {
       const data = await api('control/heartbeat', {lease});
       if (stamp !== epoch || !lease) return;
       updateState(data);
-      startHeartbeat(stamp);
-    } catch (error) { if (stamp === epoch) fail(error); }
+      if (stamp === epoch && lease) startHeartbeat(stamp);
+    } catch (error) {
+      // Completion revokes the lease before the next heartbeat can be accepted.
+      if (stamp === epoch) await refreshDogAction(stamp);
+      if (stamp === epoch) fail(error);
+    }
   }, 450);
 }
 async function acquire() {
@@ -291,17 +340,25 @@ async function acquire() {
   finally { if (stamp === epoch) { acquiring = false; render(); } }
 }
 async function owned(action, values = {}) {
-  if (!canControl() || !lease || motionBusy || hold) return;
+  if (!canControl() || !lease || motionBusy || hold || state?.dog?.action?.phase === 'running') return;
   const stamp = epoch;
+  let request;
   motionBusy = true; render();
   try {
-    const data = await api(action, {...values, lease, seq: ++sequence});
+    request = api(action, {...values, lease, seq: ++sequence});
+    if (action === 'dog/action') pendingDogAction = request;
+    const data = await request;
     if (stamp === epoch) {
+      if (action === 'dog/action') dogActionId = (data.status || data).dog?.action?.id || null;
       updateState(data);
-      if (action === 'dog/stand' && hasEnvironment()) notice(state.dog?.simulated ? '模拟站立准备已接受，请等待「已准备」。' : '站立准备已接受，请等待「已准备」。UDP 无反馈，实体站姿需要现场确认。');
+      if (action === 'dog/stand' && hasEnvironment()) notice(state.dog?.simulated ? '模拟站立准备已接受，请等待「已准备」。' : '站立准备已接受，请等待「已准备」并查看机器狗反馈。');
+      if (action === 'dog/action' && lease) notice('定时动作已开始，页面持续发送心跳；切换窗口会请求停止。');
     }
   } catch (error) { if (stamp === epoch) fail(error); }
-  finally { if (stamp === epoch) { motionBusy = false; render(); } }
+  finally {
+    if (pendingDogAction === request) pendingDogAction = null;
+    if (stamp === epoch) { motionBusy = false; render(); }
+  }
 }
 async function renewVelocity(active) {
   if (hold !== active || epoch !== active.epoch || !lease) return;
@@ -353,6 +410,18 @@ $('arm-stop').addEventListener('click', () => stop('arm/stop', '已请求取消�
 $('estop').addEventListener('click', () => stop('control/estop', '已请求锁定软件急停；实体停止状态仍需现场确认。'));
 $('reset').addEventListener('click', () => stop('control/reset', '已请求复位软件急停。请手动获取控制权；复位不会启动运动。'));
 $('stand').addEventListener('click', () => owned('dog/stand'));
+$('dog-action-name').addEventListener('change', () => {
+  const turning = $('dog-action-name').value.startsWith('turn_');
+  $('dog-action-speed-label').textContent = turning ? '速度 (rad/s)' : '速度 (m/s)';
+  $('dog-action-speed').max = turning ? '0.3' : '0.2';
+  $('dog-action-speed').value = turning ? '0.2' : '0.1';
+});
+$('dog-action-start').addEventListener('click', () => {
+  if ($('dog-action-start').disabled) return;
+  for (const id of ['dog-action-speed', 'dog-action-duration']) if (!$(id).reportValidity()) return;
+  owned('dog/action', {name: $('dog-action-name').value, speed: Number($('dog-action-speed').value),
+    duration: Number($('dog-action-duration').value)});
+});
 for (const button of jointButtons) button.addEventListener('click', () => {
   const simulated = state?.arm?.simulated;
   const scale = !simulated && ['b', 'h'].includes(button.dataset.joint) ? .5 : 1;
@@ -383,7 +452,10 @@ async function pollStatus() {
     // A snapshot begun before acquire/release describes the previous session.
     if (stamp !== epoch || requestedLease !== lease) return;
     updateState(data);
-    if (lease && (!data.lease_active || data.estop)) fail(new Error('服务端控制权已失效'));
+    if (lease && (!data.lease_active || data.estop)) {
+      await refreshDogAction(stamp);
+      if (stamp === epoch && lease && (!state.lease_active || state.estop)) fail(new Error('服务端控制权已失效'));
+    }
   } catch (error) {
     if (stamp !== epoch || requestedLease !== lease) return;
     connected = false;

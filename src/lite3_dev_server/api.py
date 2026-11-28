@@ -5,10 +5,34 @@ from typing import Dict, List, Literal, Optional, TypedDict, Union
 Environment = Literal['dev', 'dist']
 ControlMode = Literal['disabled', 'readonly', 'hardware']
 DogPhase = Literal['disarmed', 'preparing', 'ready', 'moving', 'stopping', 'error']
+DogActionName = Literal['forward', 'backward', 'turn_left', 'turn_right']
 VelocityAxis = Literal['vx', 'vy', 'yaw']
 VelocityLimit = Literal['vx', 'vy', 'yaw', 'ttl']
 ArmJoint = Literal['b', 's', 'e', 'w', 'h']
 ArmFeedbackJoint = Literal['b', 's', 'e', 'w']
+
+
+class DogFeedback(TypedDict):
+    observed: bool
+    simulated: bool
+    fresh: bool
+    age_s: Optional[float]
+    basic_state: Optional[int]
+    gait_state: Optional[int]
+    motion_state: Optional[int]
+    standing: bool
+    motion_ready: bool
+    reason: Optional[str]
+
+
+class DogActionStatus(TypedDict):
+    id: str
+    name: DogActionName
+    speed: float
+    duration: float
+    phase: Literal['running', 'completed', 'cancelled', 'fault']
+    reason: Optional[str]
+    remaining_s: float
 
 
 class DogStatus(TypedDict):
@@ -19,6 +43,9 @@ class DogStatus(TypedDict):
     stop_verified: Literal[False]
     simulated: bool
     motion_enabled: bool
+    feedback: DogFeedback
+    action: Optional[DogActionStatus]
+    actions_enabled: bool
 
 
 class ArmSample(TypedDict):
@@ -148,6 +175,12 @@ class VelocityRequest(MotionRequest):
     vy: float
     yaw: float
     ttl: float
+
+
+class DogActionRequest(MotionRequest):
+    name: DogActionName
+    speed: float
+    duration: float
 
 
 class ArmJogRequest(MotionRequest):

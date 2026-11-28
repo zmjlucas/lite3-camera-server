@@ -47,6 +47,7 @@ OBSERVER = r"""
     assert(!visible(joint('e')) && !visible($('arm-stop')) && !visible($('arm-operation')),
       'distribution must hide arm diagnostics');
     assert(!$('acquire').disabled, 'control must be available when the server is online');
+    assert($('dog-action-start')?.disabled, 'predefined actions require control and standing preparation');
     await ready();
     press();
     await until(async () => await count('dog/velocity') === 1, 'first velocity');
@@ -162,6 +163,99 @@ OBSERVER = r"""
       !$('arm-caption').textContent.includes('模拟'), 'distribution restart discards simulated targets');
 
     await ready();
+    await until(() => !$('dog-action-start').disabled, 'feedback enables predefined action');
+    assert($('dog-feedback').textContent.includes('实测') && $('dog-feedback').textContent.includes('6 / 0 / 0'),
+      'measured standing feedback must be visible separately from command phase');
+    $('dog-action-duration').value = '11';
+    $('dog-action-start').click();
+    await delay(100);
+    assert(await count('dog/action') === 0, 'invalid action duration must not be submitted');
+    $('dog-action-duration').value = '1';
+    $('dog-action-start').click();
+    await until(async () => await count('dog/action') === 1 && $('dog-action-status').textContent.includes('执行中'), 'forward starts');
+    const firstAction = (await calls()).find(row => row.action === 'dog/action').body;
+    assert(firstAction.name === 'forward' && firstAction.speed === 0.1 && firstAction.duration === 1 &&
+      firstAction.seq === 2 && typeof firstAction.lease === 'string', 'action uses numeric defaults and shared lease sequence');
+    assert(document.querySelector('[data-axis="vx"]').disabled && $('dog-action-start').disabled,
+      'running action disables manual drive and repeat start');
+    const heartbeats = await count('control/heartbeat');
+    await until(async () => await count('control/heartbeat') > heartbeats, 'action retains explicit heartbeat');
+    const actionStops = await count('dog/stop'), actionAcquisitions = await count('control/acquire');
+    await fetch('/test/complete-action', {method: 'POST'});
+    await until(() => $('dog-action-status').textContent.includes('已完成') && !$('acquire').disabled, 'completion releases ownership');
+    assert($('notice').textContent.includes('完成') && !$('notice').textContent.includes('失败'),
+      'natural completion must retain a success notice after lease revocation');
+    await delay(900);
+    assert(await count('dog/stop') === actionStops && await count('control/acquire') === actionAcquisitions,
+      'completion must avoid a redundant stop or automatic reacquisition');
+
+    await ready();
+    $('dog-action-start').click();
+    await until(() => $('dog-action-status').textContent.includes('执行中'), 'action before ownership handoff');
+    const handoffStops = await count('dog/stop'), handoffAcquisitions = await count('control/acquire');
+    await fetch('/test/complete-action', {method: 'POST', body: JSON.stringify({next_owner: true})});
+    await until(() => $('release').disabled, 'completed action clears local ownership after another controller acquires');
+    assert($('notice').textContent.includes('完成') && $('owner-state').textContent.includes('已占用'),
+      'completion must preserve the result when another controller already holds the server lease');
+    await delay(900);
+    assert(await count('dog/stop') === handoffStops && await count('control/acquire') === handoffAcquisitions,
+      'completed local action must not stop or reacquire another controller lease');
+    await fetch('/test/release-other-controller', {method: 'POST'});
+    await until(() => !$('acquire').disabled, 'other controller releases');
+
+    await ready();
+    await fetch('/test/delay-action', {method: 'POST', body: JSON.stringify({scenario: 'completed'})});
+    $('dog-action-duration').value = '0.1';
+    const shortActionStops = await count('dog/stop');
+    $('dog-action-start').click();
+    await until(() => !$('acquire').disabled, 'short action releases control before delayed start reply');
+    assert($('notice').textContent.includes('完成') && !$('notice').textContent.includes('失败'),
+      'short action completion must survive a delayed start response and rejected heartbeat');
+    await delay(900);
+    assert($('dog-action-status').textContent.includes('已完成') && await count('dog/stop') === shortActionStops,
+      'late action start response must preserve completion without a redundant stop');
+
+    await ready();
+    await fetch('/test/delay-action', {method: 'POST', body: JSON.stringify({scenario: 'rejected'})});
+    $('dog-action-start').click();
+    await until(() => !$('acquire').disabled, 'rejected start releases local control');
+    assert($('notice').textContent.includes('失败'), 'an old completed action must not hide a rejected new start');
+    $('dog-action-duration').value = '1';
+
+    await ready();
+    await fetch('/test/dog-feedback', {method: 'POST', body: JSON.stringify({scenario: 'stale'})});
+    await until(() => $('dog-action-start').disabled && $('dog-feedback').textContent.includes('过期'), 'stale feedback blocks action');
+    assert($('dog-feedback').textContent.includes('fixture stale feedback'), 'feedback reason remains visible');
+    await fetch('/test/dog-feedback', {method: 'POST', body: JSON.stringify({scenario: 'simulated'})});
+    await until(() => !$('dog-action-start').disabled && $('dog-feedback').textContent.includes('模拟'), 'simulated feedback is labeled');
+    await fetch('/test/dog-feedback', {method: 'POST', body: JSON.stringify({scenario: 'measured'})});
+    await until(() => $('dog-feedback').textContent.includes('实测'), 'measured feedback restored');
+    const cancellations = [
+      ['turn_left', 0.2, () => window.dispatchEvent(new Event('blur'))],
+      ['backward', 0.1, () => {
+        Object.defineProperty(document, 'hidden', {configurable: true, value: true});
+        document.dispatchEvent(new Event('visibilitychange'));
+        delete document.hidden;
+        document.dispatchEvent(new Event('visibilitychange'));
+      }],
+      ['turn_right', 0.2, () => $('dog-stop').click()]
+    ];
+    for (const [name, speed, cancel] of cancellations) {
+      if ($('stand').disabled && !$('owner-state').textContent.includes('本页持有')) await ready();
+      $('dog-action-name').value = name;
+      $('dog-action-name').dispatchEvent(new Event('change'));
+      const previous = await count('dog/action');
+      $('dog-action-start').click();
+      await until(async () => await count('dog/action') === previous + 1 && $('dog-action-status').textContent.includes('执行中'), name + ' starts');
+      const request = (await calls()).filter(row => row.action === 'dog/action').pop().body;
+      assert(request.name === name && request.speed === speed, 'action selection updates direction and default speed');
+      const stops = await count('dog/stop');
+      cancel();
+      await until(async () => await count('dog/stop') === stops + 1 && !$('acquire').disabled, name + ' cancelled');
+      assert($('dog-action-status').textContent.includes('已取消'), 'cancellation result remains visible');
+    }
+
+    await ready();
     await armEnvironment('legacy');
     await until(() => !$('environment').textContent.includes('dist'), 'legacy status replaces distribution status');
     assert($('notice').textContent.includes('重启') && $('acquire').disabled &&
@@ -203,11 +297,19 @@ def main():
     lock = threading.Lock()
     fixture = {'lease': None, 'phase': 'disarmed', 'fail': False, 'delay_acquire': False,
                'camera': True, 'dog_error': None, 'delay_status': False, 'delay_arm_failure': False,
-               'status_offline': False, 'arm_environment': 'distribution'}
+               'status_offline': False, 'arm_environment': 'distribution',
+               'dog_action': None, 'dog_feedback': 'measured', 'completion_heartbeat': False,
+               'delay_action': None}
 
     def status():
         simulated = fixture['arm_environment'] == 'simulated'
         commissioned = fixture['arm_environment'] == 'commissioned'
+        feedback = {'observed': True, 'simulated': fixture['dog_feedback'] == 'simulated',
+                    'fresh': fixture['dog_feedback'] != 'stale',
+                    'age_s': 1.5 if fixture['dog_feedback'] == 'stale' else 0.05,
+                    'basic_state': 6, 'gait_state': 0, 'motion_state': 0,
+                    'standing': True, 'motion_ready': fixture['dog_feedback'] != 'stale',
+                    'reason': 'fixture stale feedback' if fixture['dog_feedback'] == 'stale' else None}
         arm = {'motion_enabled': simulated or commissioned,
                'reason': 'Fixture arm state', 'simulated': simulated,
                'position_deg': dict.fromkeys('bsewh', 0) if simulated else None}
@@ -221,7 +323,9 @@ def main():
                   'lease_active': fixture['lease'] is not None,
                   'dog': {'phase': fixture['phase'], 'velocity': {'vx': 0, 'vy': 0, 'yaw': 0},
                           'limits': {'vx': 0.2, 'vy': 0.1, 'yaw': 0.3}, 'error': fixture['dog_error'],
-                          'stop_verified': False, 'simulated': simulated, 'motion_enabled': not commissioned},
+                          'stop_verified': False, 'simulated': simulated, 'motion_enabled': not commissioned,
+                          'feedback': feedback, 'action': fixture['dog_action'],
+                          'actions_enabled': not commissioned and fixture['phase'] == 'ready' and feedback['motion_ready']},
                   'arm': arm}
         if fixture['arm_environment'] != 'legacy':
             result['environment'] = 'dev' if simulated or commissioned else 'dist'
@@ -246,6 +350,8 @@ def main():
             if self.path == '/':
                 self.reply(200, page, 'text/html; charset=utf-8')
             elif self.path == '/api/status':
+                if fixture['completion_heartbeat']:
+                    time.sleep(0.7)
                 if fixture['status_offline']:
                     self.reply(503, {'error': 'status unavailable'})
                     return
@@ -286,6 +392,17 @@ def main():
                     fixture['status_offline'] = True
                 elif self.path == '/test/arm-environment':
                     fixture['arm_environment'] = body['scenario']
+                elif self.path == '/test/complete-action':
+                    fixture['dog_action'] = dict(fixture['dog_action'], phase='completed', remaining_s=0)
+                    fixture['lease'] = 'other-controller' if body.get('next_owner') else None
+                    fixture['phase'] = 'disarmed'
+                    fixture['completion_heartbeat'] = True
+                elif self.path == '/test/release-other-controller':
+                    fixture['lease'] = None
+                elif self.path == '/test/dog-feedback':
+                    fixture['dog_feedback'] = body['scenario']
+                elif self.path == '/test/delay-action':
+                    fixture['delay_action'] = body['scenario']
                 self.reply(200, {})
                 return
             action = self.path[len('/api/'):]
@@ -301,6 +418,34 @@ def main():
                 return
             if action == 'dog/stand':
                 fixture['phase'] = 'ready'
+            elif action == 'dog/action':
+                delayed = fixture['delay_action']
+                fixture['delay_action'] = None
+                if delayed == 'rejected':
+                    fixture['lease'] = None
+                    fixture['phase'] = 'disarmed'
+                    fixture['completion_heartbeat'] = True
+                    time.sleep(0.7)
+                    self.reply(409, {'error': 'New action rejected'})
+                    return
+                fixture['dog_action'] = dict(id='action-' + str(len(calls)), name=body['name'],
+                                             speed=body['speed'], duration=body['duration'],
+                                             phase='running', reason=None, remaining_s=body['duration'])
+                fixture['phase'] = 'moving'
+                if delayed == 'completed':
+                    value = status()
+                    time.sleep(body['duration'])
+                    fixture['dog_action'] = dict(fixture['dog_action'], phase='completed', remaining_s=0)
+                    fixture['lease'] = None
+                    fixture['phase'] = 'disarmed'
+                    fixture['completion_heartbeat'] = True
+                    time.sleep(0.9)
+                    self.reply(200, value)
+                    return
+            elif action == 'control/heartbeat' and fixture['completion_heartbeat']:
+                fixture['completion_heartbeat'] = False
+                self.reply(409, {'error': 'Lease expired after action completion'})
+                return
             elif action == 'arm/state' and fixture['delay_arm_failure']:
                 fixture['delay_arm_failure'] = False
                 time.sleep(0.6)
@@ -319,6 +464,8 @@ def main():
                 if velocity_count == 1:
                     time.sleep(0.5)
             elif action in ('dog/stop', 'control/release', 'control/estop'):
+                if fixture['dog_action'] and fixture['dog_action']['phase'] == 'running':
+                    fixture['dog_action'] = dict(fixture['dog_action'], phase='cancelled', remaining_s=0)
                 fixture['lease'] = None
                 fixture['phase'] = 'disarmed'
             elif action == 'control/reset':
@@ -350,7 +497,7 @@ def main():
                 browser.wait()
             server.shutdown()
     assert result['ok'], result.get('error', 'Browser checks failed')
-    print('PASS: Chrome control lifecycle, stale camera clearing, distribution feedback, dev diagnostics, and simulation.')
+    print('PASS: Chrome control lifecycle, dog actions and feedback, stale camera clearing, dev diagnostics, and simulation.')
 
 
 if __name__ == '__main__':

@@ -3,7 +3,8 @@ from .api import (
     AcquireRequest, AcquireResponse, ArmFeedbackJoint, ArmGatewayReconnect, ArmJogRequest,
     ArmCapabilities, ArmOperation, ArmOperationRequest, ArmSample,
     ArmJoint, ArmReconnectResponse, ArmState, ArmStatus, ControlMode, ControlStatus,
-    DisabledStatus, DogPhase, DogStatus, Environment, LeaseRequest, MotionRequest, ObservedArmState,
+    DisabledStatus, DogActionName, DogActionRequest, DogActionStatus, DogFeedback,
+    DogPhase, DogStatus, Environment, LeaseRequest, MotionRequest, ObservedArmState,
     ResetRequest, StatusResponse, StopRequest, UnobservedArmState, VelocityAxis,
     VelocityLimit, VelocityRequest,
 )
@@ -14,6 +15,7 @@ __all__ = [
     'AcquireRequest', 'AcquireResponse', 'ArmFeedbackJoint', 'ArmGatewayReconnect',
     'ArmJogRequest', 'ArmJoint', 'ArmReconnectResponse', 'ArmState', 'ArmStatus',
     'ControlMode', 'ControlStatus', 'DevClient', 'DevClientError', 'DisabledStatus',
+    'DogActionName', 'DogActionRequest', 'DogActionStatus', 'DogFeedback',
     'DogPhase', 'DogStatus', 'Environment', 'LeaseRequest', 'MotionRequest', 'ObservedArmState',
     'ResetRequest', 'StatusResponse', 'StopRequest', 'UnobservedArmState',
     'VelocityAxis', 'VelocityLimit', 'VelocityRequest',
