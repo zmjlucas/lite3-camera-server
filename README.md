@@ -5,11 +5,13 @@
 
 Share cameras and bounded robot communications through one development service. The browser console and Python SDK offer Lite3 UDP control, simulation and R5 serial feedback. RealSense/V4L2 camera streaming and existing SSH workflows remain supported; ROS mode remains camera-only.
 
-**Start with the [Dev Server guide](docs/DEV_SERVER.md)** for simulation, the `/control` console, API/SDK and deployment. Motion defaults to simulation; real dog output requires explicit hardware mode. R5 supports read-only hardware feedback and simulated jogs; hardware motion is disabled. Software stop cannot prove physical stopping.
+**Start with the [Dev Server guide](docs/DEV_SERVER.md)** for simulation, the `/control` console, API/SDK and deployment. Motion defaults to simulation. Real dog output requires explicit hardware mode. The R5 supports hardware feedback and simulated jogs. Bounded hardware diagnostics require a local commissioning profile and disable dog output. Physical motion and stopping remain unverified. [R5 diagnostics guide](docs/R5_DIAGNOSTICS.md)
+
+Install the Python SDK from this checkout with `python -m pip install .` and import `DevClient` from `lite3_dev_server`. It supports Python 3.8 and later and uses only the standard library at runtime.
 
 The launcher, simulation and tests use the Python standard library. R5 hardware feedback additionally needs pySerial on its host. The client does not need ROS.
 
-The RealSense/V4L2 viewer has a **Source** dropdown for the Lite3's D435i RGB camera and arm-mounted **SXW USB Camera**. It discovers their usable `/dev/videoN` capture nodes and labels each camera. Switching stops the previous capture and briefly interrupts video; all viewers of that server share the selected source. See [camera selection](docs/CAMERA_STREAM.md#switch-between-the-d435i-and-arm-camera).
+The RealSense/V4L2 viewer has a **Source** dropdown for the Lite3's D435i RGB camera and arm-mounted **SXW USB Camera**. It discovers their usable `/dev/videoN` capture nodes and labels each camera. Add `--wide-angle-host IPV4` to enable the motion host's vendor RTSP stream as a third source. Switching stops the previous capture and briefly interrupts video. All viewers of that server share the selected source. See [camera selection](docs/CAMERA_STREAM.md#switch-camera-sources) and [wide-angle setup](docs/CAMERA_STREAM.md#enable-the-lite3-wide-angle-camera).
 
 ## Quick start
 
@@ -78,7 +80,7 @@ To select a jump host manually, use `--jump ysc@192.168.2.1`. To use your existi
 
 Automatic selection applies only on macOS when the target is an explicit IPv4 address in `192.168.1.*`. SSH aliases, other subnets, and other operating systems use the existing SSH configuration. After a network change, run the command again. The `deploy` command uploads the server, control modules, arm helper and viewer pages to `~/lite3-camera-server/` and installs/enables the systemd service `lite3-camera-server.service`. The remote host needs systemd and root or sudo access; sudo can prompt in the SSH terminal.
 
-The service starts at every boot without an SSH login, using the deployment account and its Python interpreter. Its defaults are RealSense, port 8080, 640 x 480, 15 fps, and quality 70. For V4L2, deploy with `--backend v4l2 --device /dev/v4l/by-id/NAME`, replacing `NAME` with the confirmed RGB camera link. `deploy` also accepts `--remote-port`, `--width`, `--height`, `--fps`, `--quality`, and RealSense `--depth`/`--serial` to save boot settings. It leaves current camera processes running; new settings take effect at the next boot or an explicit service restart. See [boot service management](docs/CAMERA_STREAM.md#boot-service) for migration, logs, and disabling autostart.
+The service starts at every boot without an SSH login, using the deployment account and its Python interpreter. Its defaults are RealSense, port 8080, 640 x 480, 15 fps, and quality 70. For V4L2, deploy with `--backend v4l2 --device /dev/v4l/by-id/NAME`, replacing `NAME` with the confirmed RGB camera link. `deploy` also accepts `--remote-port`, `--width`, `--height`, `--fps`, `--quality`, `--wide-angle-host`, and RealSense `--depth`/`--serial` to save boot settings. New settings take effect at the next boot or an explicit service restart. See [boot service management](docs/CAMERA_STREAM.md#boot-service) for migration, logs, and disabling autostart.
 
 On Windows with robot Wi-Fi and a phone USB hotspot connected together, select the robot gateway explicitly if the direct route goes through the phone: `py -3 src/client.py view ysc@192.168.1.103 --jump ysc@192.168.2.1`. Use the same `--jump` option for `doctor` and `deploy`. Windows automatic route detection is not implemented.
 

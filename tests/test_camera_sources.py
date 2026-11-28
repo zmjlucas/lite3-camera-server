@@ -11,8 +11,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from src import server
+from src import server, wide_angle
 from fixtures.http_connection import MemoryConnection
+
+
+MOTION_HOST = "192.168.1.120"
 
 
 def sources():
@@ -198,9 +201,11 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class CaptureControllerTests(unittest.TestCase):
-    def controller(self, capture_fn=None, sdk=False):
+    def controller(self, capture_fn=None, sdk=False, wide=False):
         arguments = ["--depth", "--serial", "fixture-front"] if sdk else [
             "--source", "v4l2", "--device", "/dev/video4"]
+        if wide:
+            arguments.extend(["--wide-angle-host", MOTION_HOST])
         self.started = threading.Event()
         self.events = []
         def capture(options, frames, stop):
@@ -217,6 +222,44 @@ class CaptureControllerTests(unittest.TestCase):
         if capture_fn is None:
             self.assertTrue(self.started.wait(1))
         return controller
+
+    def test_local_startup_never_probes_rtsp_and_default_catalog_does_not_probe(self):
+        with patch.object(wide_angle, "probe", side_effect=AssertionError("unexpected RTSP probe")):
+            configured = self.controller(wide=True)
+            self.assertEqual(configured.frames.source, "v4l2")
+            default = self.controller()
+            self.assertEqual(default.catalog()["selected"], "front")
+            self.assertEqual(default.select("arm")["selected"], "arm")
+
+    def test_switch_from_realsense_to_rtsp_to_arm_and_back_releases_every_producer(self):
+        controller = self.controller(sdk=True, wide=True)
+        with patch.object(wide_angle, "probe") as probe:
+            entry = controller.catalog()["sources"][-1]
+            self.assertEqual(entry, {"id": entry["id"], "label": "Lite3 wide-angle camera", "device": MOTION_HOST,
+                                     "backend": "rtsp", "available": True, "error": None})
+            self.assertRegex(entry["id"], r"^camera-[0-9a-f]{24}$")
+            front, selected = controller.frames, {}
+            for camera_id, backend in ((entry["id"], "rtsp"), ("arm", "v4l2"), ("front", "realsense")):
+                with self.subTest(backend=backend):
+                    retired = controller.frames
+                    self.started.clear()
+                    selected = controller.select(camera_id)
+                    self.assertTrue(self.started.wait(1))
+                    self.assertEqual(selected["selected"], camera_id)
+                    self.assertEqual(controller.frames.snapshot()[0]["source"], backend)
+                    retired.publish(b"late")
+                    self.assertIsNone(retired.snapshot()[1])
+            self.assertIsNone(front.snapshot()[1])
+            self.assertEqual(probe.call_count, 4)
+        self.assertEqual(self.events, [
+            ("start", None, "realsense", True, "fixture-front", None),
+            ("release", None),
+            ("start", None, "rtsp", False, None, None),
+            ("release", None),
+            ("start", "/dev/video8", "v4l2", False, None, "MJPG"),
+            ("release", "/dev/video8"),
+            ("start", None, "realsense", True, "fixture-front", None),
+        ])
 
     def test_switch_releases_previous_camera_and_drops_previous_frame(self):
         controller = self.controller()
@@ -447,7 +490,10 @@ class RealSenseIdentityTests(unittest.TestCase):
 class SourceHTTPTests(unittest.TestCase):
 
     def setUp(self):
-        options = server.parse_args(["--source", "v4l2", "--device", "/dev/video4"])
+        self.start_controller()
+
+    def start_controller(self, *extra):
+        options = server.parse_args(["--source", "v4l2", "--device", "/dev/video4", *extra])
         self.controller = server.CaptureController(options, discover=sources,
                                                    capture_fn=lambda options, frames, stop: stop.wait())
         self.addCleanup(self.controller.shutdown)
@@ -465,6 +511,7 @@ class SourceHTTPTests(unittest.TestCase):
         http_server = SimpleNamespace(frames=self.controller.frames, controller=self.controller)
         server.CameraRequestHandler(connection, ("127.0.0.1", 12345), http_server)
         head, payload = bytes(connection.output).split(b"\r\n\r\n", 1)
+        self.response_headers = head
         return int(head.split()[1]), payload
 
     def test_catalog_and_selection_work_without_credentials(self):
@@ -476,6 +523,56 @@ class SourceHTTPTests(unittest.TestCase):
         self.assertEqual(json.loads(body)["selected"], "arm")
         self.assertEqual(self.request()[0], 200)
         self.assertNotIn(b"fixture-front", body)
+
+    def test_disabled_rtsp_source_preserves_live_local_generation_and_recovers_with_same_id(self):
+        self.controller.shutdown()
+        self.start_controller("--wide-angle-host", MOTION_HOST)
+        local = self.controller.frames
+        local.publish(b"local-frame")
+        with patch.object(wide_angle, "probe", side_effect=RuntimeError(
+                "Lite3 wide-angle camera: RTSP DESCRIBE returned 404. Check then Refresh.")) as probe:
+            status, body = self.request()
+            self.assertEqual(status, 200)
+            self.assertNotIn(b"rtsp://", body)
+            catalog = json.loads(body)
+            self.assertEqual(catalog["selected"], "front")
+            front, arm, wide = catalog["sources"]
+            self.assertTrue(front["available"])
+            self.assertTrue(arm["available"])
+            self.assertFalse(wide["available"])
+            self.assertIn("404", wide["error"])
+            selection = json.dumps({"id": wide["id"]}).encode()
+            status, body = self.request("POST", "/source", selection)
+            self.assertEqual(status, 409)
+            self.assertIn(b"Refresh", body)
+            self.assertIs(self.controller.frames, local)
+            self.assertEqual(self.request(path="/snapshot.jpg"), (200, b"local-frame"))
+            self.assertEqual(probe.call_count, 2)
+
+        with patch.object(wide_angle, "probe") as probe:
+            for body in (b'{"id":"rtsp://192.168.1.120:8554/test"}',
+                         b'{"id":"wide","host":"127.0.0.1"}'):
+                self.assertEqual(self.request("POST", "/source", body)[0], 400)
+            self.assertIs(self.controller.frames, local)
+            recovered = json.loads(self.request()[1])["sources"][-1]
+            self.assertEqual(recovered["id"], wide["id"])
+            self.assertTrue(recovered["available"])
+            self.assertIsNone(recovered["error"])
+            self.assertEqual(self.request("POST", "/source", selection)[0], 200)
+            self.assertEqual(probe.call_count, 3)
+
+        frames = self.controller.frames
+        frames.publish(b"wide-frame")
+        status, body = self.request(path="/healthz")
+        health = json.loads(body)
+        self.assertEqual((status, health["source"], health["source_id"]), (200, "rtsp", wide["id"]))
+        frames.wait_for_frame = lambda seq, generation: (None, seq)
+        status, body = self.request(path="/stream.mjpg")
+        self.assertEqual(status, 200)
+        self.assertIn(b"wide-frame", body)
+        self.assertIn(b"X-Camera-Source: rtsp", self.response_headers)
+        self.assertIn("X-Camera-Source-Id: {}".format(wide["id"]).encode(), self.response_headers)
+        self.assertIn(b"Lite3 wide-angle camera", self.request(path="/")[1])
 
     def test_stream_keeps_original_camera_identity_when_another_viewer_switches(self):
         old = self.controller.frames

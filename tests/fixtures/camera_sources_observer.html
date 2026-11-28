@@ -4,6 +4,7 @@ const testOriginalFetch = window.fetch.bind(window);
 let testAbortedStreams = 0;
 let testAbortedCatalogs = 0;
 let testStreamSource = null;
+let testStreamBackend = null;
 window.fetch = async (...args) => {
   if (args[0] === '/stream.mjpg' && args[1].signal) {
     args[1].signal.addEventListener('abort', () => testAbortedStreams++);
@@ -12,11 +13,16 @@ window.fetch = async (...args) => {
     args[1].signal.addEventListener('abort', () => testAbortedCatalogs++);
   }
   const response = await testOriginalFetch(...args);
-  if (args[0] === '/stream.mjpg') testStreamSource = response.headers.get('X-Camera-Source-Id');
+  if (args[0] === '/stream.mjpg') {
+    testStreamSource = response.headers.get('X-Camera-Source-Id');
+    testStreamBackend = response.headers.get('X-Camera-Source');
+  }
   return response;
 };
-let testPhase = sessionStorage.getItem('test-sources-reloaded') ? 'reloaded' : 'discovery-error';
+let testPhase = sessionStorage.getItem('test-wide-reloaded') ? 'wide-fallback' :
+  sessionStorage.getItem('test-sources-reloaded') ? 'reloaded' : 'discovery-error';
 let testBusy = false;
+const testWideWidths = new Set();
 function testView() {
   const select = document.getElementById('camera-source');
   const stream = document.getElementById('stream');
@@ -33,7 +39,7 @@ function testView() {
     unavailableOptions: select ? Array.from(select.options).filter(item => item.disabled && item.value).map(item => item.value) : [],
     refreshDisabled: document.getElementById('refresh-sources').disabled,
     aborted: testAbortedStreams, abortedCatalogs: testAbortedCatalogs,
-    streamSource: testStreamSource, retryVisible: !!retry && !retry.hidden,
+    streamSource: testStreamSource, streamBackend: testStreamBackend, retryVisible: !!retry && !retry.hidden,
     retryDisabled: retry?.disabled};
 }
 async function testReport(row) {
@@ -54,10 +60,11 @@ setInterval(async () => {
     const row = testView();
     await testReport(row);
     const live = row.status === 'Live' && !row.hidden && row.width === 160;
+    const wideLive = row.status === 'Live' && !row.hidden && row.streamBackend === 'rtsp';
     if (testPhase === 'discovery-error' && live && row.hasSelector && row.sourceStatus) {
       testPhase = 'catalog';
       document.getElementById('refresh-sources').click();
-    } else if (testPhase === 'catalog' && live && row.options.length === 3 && !row.disabled) {
+    } else if (testPhase === 'catalog' && live && row.options.length === 4 && !row.disabled) {
       testPhase = 'blocked-option';
       const select = document.getElementById('camera-source');
       select.value = 'blocked';
@@ -67,7 +74,7 @@ setInterval(async () => {
       testPhase = 'released-option';
       await testOriginalFetch('/release-blocked', {method: 'POST', body: '{}'});
       document.getElementById('refresh-sources').click();
-    } else if (testPhase === 'released-option' && live && !row.unavailableOptions.length && !row.refreshDisabled) {
+    } else if (testPhase === 'released-option' && live && !row.unavailableOptions.includes('blocked') && !row.refreshDisabled) {
       testPhase = 'refresh-race';
       document.getElementById('refresh-sources').click();
     } else if (testPhase === 'refresh-race' && live && !row.disabled) {
@@ -113,6 +120,28 @@ setInterval(async () => {
       document.getElementById('refresh-sources').click();
     } else if (testPhase === 'availability-recovered' && live && row.selected === 'arm' &&
                !row.unavailableOptions.length && !row.refreshDisabled) {
+      testPhase = 'wide-unavailable';
+      await testOriginalFetch('/show-wide', {method: 'POST', body: '{}'});
+      document.getElementById('refresh-sources').click();
+    } else if (testPhase === 'wide-unavailable' && live && row.unavailableOptions.includes('wide') && !row.refreshDisabled) {
+      testPhase = 'wide-available';
+      await testOriginalFetch('/release-wide', {method: 'POST', body: '{}'});
+      document.getElementById('refresh-sources').click();
+    } else if (testPhase === 'wide-available' && live && !row.unavailableOptions.length && !row.refreshDisabled) {
+      await testSelect('wide', 'switch-wide');
+    } else if (testPhase === 'switch-wide' && wideLive && row.selected === 'wide' && !row.disabled) {
+      testWideWidths.add(row.width);
+      if (testWideWidths.has(159) && testWideWidths.has(160)) {
+        testPhase = 'navigating';
+        sessionStorage.setItem('test-wide-reloaded', 'yes');
+        await testOriginalFetch('/prepare-wide-reload', {method: 'POST', body: '{}'});
+        location.reload();
+      }
+    } else if (testPhase === 'wide-fallback' && wideLive && !row.selected) {
+      testPhase = 'wide-restored';
+    } else if (testPhase === 'wide-restored' && wideLive && row.selected === 'wide' && !row.disabled) {
+      await testSelect('arm', 'return-arm-after-wide');
+    } else if (testPhase === 'return-arm-after-wide' && live && row.selected === 'arm' && !row.disabled) {
       testPhase = 'complete';
       await testReport({...testView(), complete: true});
     }

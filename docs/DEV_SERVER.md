@@ -65,9 +65,9 @@ Real dog output requires `--control-mode hardware`. The default motion target is
 
 R5 is attached by USB to the perception host. Normally the server owns serial locally, avoiding per-command SSH. If the server runs on another Linux host and needs remote serial access to the perception host, configure `--arm-host ysc@192.168.1.103` with verified OpenSSH configuration/known hosts and noninteractive authentication. One fixed persistent helper handles serialized queries. Opening serial is explicit via arm state retrieval; no background scan or automatic reconnect opens it. A failed session requires explicit `arm/reconnect` before another read. DTR/RTS are cleared before opening; opening may still reset a controller, so confirm its behavior on the device. Exclusive serial locking does not prevent unrelated software that ignores locks.
 
-**Hardware R5 motion is disabled.** Hardware jog fails before opening SSH or serial, with no override switch. Read-only T105 feedback is available; simulation supports bounded jogs.
+**Hardware R5 motion is disabled by default.** `--arm-motion-profile PATH` opts a local arm into bounded diagnostics in hardware mode and disables all dog UDP output. It requires a one-use commissioning record for the local Linux host, boot and serial device. The SSH gateway remains read-only. Current hardware verification covers read-only feedback. [R5 diagnostics guide](R5_DIAGNOSTICS.md)
 
-The protocol sources are the existing `robo-comp/scripts/lite3_stand_walk.py`, `r5_rotate_180.py`, `r5_elbow_down_ssh.py`, and the local Lite3/R5 vendor manuals. The R5 helper sends only `{"T":105}` and validates `T=1051` replies. `b/s/e/w` feedback is converted from radians to degrees under the observed device profile. The gripper has no reliable position feedback: it is returned as unknown, never replaced with a cached target. These ranges and mappings do not establish collision avoidance.
+The read-only R5 helper sends `{"T":105}` and validates `T=1051` replies. The gateway converts `b`, `s`, `e` and `w` feedback from radians to degrees. `gripper_position_deg` is always `null` for hardware feedback. Simulation exposes target values for all five joints.
 
 ## Control lifecycle and limits
 
@@ -93,7 +93,7 @@ Limits reject invalid inputs rather than silently clipping them. Boolean values,
 
 Dog sends use the stock little-endian `<III` and `<IIId` formats. An independent worker maintains 20 Hz heartbeat/velocity output. On stop it attempts zero forward/lateral/yaw and stationary packets independently, repeating a bounded burst. There is no UDP acknowledgement; a successful send does not prove execution or physical stop. This service does not send the vendor's separate soft-estop opcode, torque-release or posture-toggle commands.
 
-**Software emergency stop is a command latch and best-effort dog stop, not a hardware emergency stop.** No arm hold packet is sent. OS stalls, process kill, power loss, network loss or controller failure can defeat software stopping. Retain the physical remote/stop procedure and clear operating space. Command TTL is a server deadline, not a guaranteed stopping time or distance. No collision sensing, balance telemetry or hardware safety certification is provided.
+Software emergency stop latches motion and requests cancellation. Dog hardware mode attempts the bounded zero-velocity and stationary burst. In the arm-only diagnostics configuration, cancellation may submit one bounded base or elbow hold if command history and feedback are still credible. OS stalls, process termination, power loss or controller failure can defeat software stopping. Retain the physical stop procedure and clear operating space. Command TTL is a server deadline. Physical stopping remains unverified.
 
 ## HTTP contract
 
@@ -109,19 +109,29 @@ All camera and control endpoints use anonymous trusted-LAN access. `GET /api/sta
 | `/api/dog/stand` | `{"lease":"...","seq":1}` |
 | `/api/dog/velocity` | `{"lease":"...","seq":2,"vx":0.1,"vy":0,"yaw":0,"ttl":0.3}` |
 | `/api/dog/stop` | `{}` for an observer stop, or current `lease`; a stale supplied lease is rejected |
-| `/api/arm/jog` | `{"lease":"...","seq":3,"joint":"e","delta":1,"speed":2}`; simulation only |
+| `/api/arm/jog` | `{"lease":"...","seq":3,"joint":"e","delta":1,"speed":2}` for simulation. Commissioned hardware diagnostics use an explicit speed at or below 1°/s and return control status with an asynchronous operation. |
 | `/api/arm/state` | `{}`; explicit hardware serial query or simulated state |
-| `/api/arm/reconnect` | `{}`; explicitly clear failed read session, lazy until next read |
+| `/api/arm/reconnect` | `{}`; clear a failed read session and leave the transport unopened until the next read. Diagnostics require fresh commissioning after reconnect. |
+| `/api/arm/operation` | `{"id":"<operation_id>"}`; read the active or latest matching hardware operation without a lease |
+| `/api/arm/stop` | `{}` for an observer stop, or `{"lease":"..."}` for the current owner. Requests cancellation, revokes the shared lease and returns control status. |
 
 Success is HTTP 200; validation 400, origin 403, missing action 404, ownership conflicts 409, too-large body 413, safety latch/capability block 423, transport/unavailable 503. Error bodies contain `error`. POST requests are never automatically retried. A transport failure can mean an operation was accepted but the response was lost; reacquire only after inspecting status and taking appropriate stop action.
 
 ## Python scripts
 
-The SDK needs only the standard library. Put `src` on your module search path or import `src.dev_client` from the checkout. It retains a private lease and serializes motion requests with increasing sequence numbers. Reads, heartbeats and stop/estop use separate HTTP requests and can run concurrently; slow reads cannot block them. Requests have bounded timeouts, refuse redirects and never retry motion. Old responses/errors are scoped to their originating session; superseded acquire/motion calls raise `DevClientError`. It does not run an automatic heartbeat thread.
+Install the SDK from the repository root on your development machine. It needs Python 3.8 or later and has no runtime dependencies beyond the standard library.
+
+```bash
+python -m pip install .
+```
+
+The `lite3_dev_server` package exports `DevClient`, `DevClientError`, and typed JSON dictionaries for requests and responses. Existing checkout imports through `src.dev_client` or `dev_client` with `src` on the module search path still work. Robot deployment continues to use the standalone server files.
+
+The client retains a private lease and serializes motion requests with increasing sequence numbers. Reads, heartbeats and stop/estop use separate HTTP requests and can run concurrently. Requests have bounded timeouts, refuse redirects and never retry motion. Responses and errors are scoped to their originating session. Superseded acquire or motion calls raise `DevClientError`. Call heartbeat explicitly while holding a lease.
 
 ```python
 import time
-from src.dev_client import DevClient
+from lite3_dev_server import DevClient
 
 with DevClient('http://127.0.0.1:8080') as robot:
     robot.acquire('offline-demo')
@@ -137,8 +147,12 @@ with DevClient('http://127.0.0.1:8080') as robot:
     robot.stop()
 ```
 
-Run this against the simulation command above first. Normal context exit releases a held lease. An HTTP error clears its originating SDK lease instead of replaying requests; it cannot clear a newer session. To reset a latch, inspect `state = robot.status()` and explicitly call `robot.reset(state["safety_revision"])` after deciding to reset that observed state. For arm-only simulated development, acquire then call `arm_jog('e', 1)` and `arm_state()`; no dog stand is needed.
+Run this against the simulation command above first. Normal context exit releases a held lease. An HTTP error clears the lease belonging to its originating SDK session.
+
+Check `state = robot.status()` and `state["mode"]` before reading control fields. An endpoint with no control service may return only `{"mode": "disabled"}`. In simulation or hardware mode, pass `state["safety_revision"]` to `robot.reset()` after deciding to reset the observed latch. For arm-only simulated development, acquire a lease, call `arm_jog('e', 1)` and read `arm_state()`. The `observed` flag distinguishes hardware feedback from the arm status summary. Hardware feedback includes four measured angles and `gripper_position_deg` is `None`.
+
+In commissioned arm diagnostics, `arm_jog()` returns `ControlStatus` with `arm.operation`. Keep the operation's `operation_id`, call `arm_operation(id)` to read its `ArmOperation` status and send explicit heartbeats while it runs. `arm_stop()` cancels the operation and releases ownership. Inspect `arm.capabilities` for the diagnostic limits and `arm.motion_enabled` for current readiness. [R5 operation lifecycle](R5_DIAGNOSTICS.md#operation-lifecycle)
 
 ## Verification
 
-`python3 -B scripts/check.py --shell` runs offline syntax/unit/integration checks; `make browser-test` includes viewer and dev console behavior. Fakes and loopback are used for UDP, serial, SSH and control lifecycle checks.
+`python3 -B scripts/check.py --shell` runs offline syntax, unit and integration checks. `make browser-test` includes viewer and dev console behavior. Fakes and loopback cover UDP, serial, SSH and control lifecycle checks.

@@ -10,10 +10,14 @@ import math
 import re
 import sys
 import time
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from typing import Dict
+    from lite3_dev_server.api import ArmFeedbackJoint, ObservedArmState
 
 MOTION_BLOCK_REASON = "Hardware arm motion is disabled."
-LIMITS_DEG = {"b": 180.0, "s": 90.0, "e": 90.0, "w": 90.0}
+LIMITS_DEG: 'Dict[ArmFeedbackJoint, float]' = {"b": 180.0, "s": 90.0, "e": 90.0, "w": 90.0}
 MAX_LINE = 4096
 MAX_QUERY_BYTES = 16384
 MAX_REQUEST = 512
@@ -34,7 +38,7 @@ def finite_angle(value, limit):
     return float(value)
 
 
-def observed_state(position):
+def observed_state(position: 'Dict[ArmFeedbackJoint, float]') -> 'ObservedArmState':
     return {
         "position_deg": position,
         "gripper_position_deg": None,
@@ -60,7 +64,8 @@ def decode_json(data):
 class SerialSession:
     """Own a single lazy serial open, latched closed on any query failure."""
 
-    def __init__(self, device, timeout=0.8):
+    def __init__(self, device, timeout=0.8, strict_feedback=False):
+        self.strict_feedback = strict_feedback
         self.device = validate_device(device)
         self.timeout = finite_angle(timeout, 10.0)
         if self.timeout <= 0:
@@ -80,7 +85,7 @@ class SerialSession:
         self._port.port = self.device
         self._port.open()
 
-    def read_state(self):
+    def read_state(self) -> 'ObservedArmState':
         if self._closed or self._failed:
             raise RuntimeError("Arm session unavailable; explicit reconnect required.")
         try:
@@ -92,7 +97,7 @@ class SerialSession:
             self._close_port()
             raise
 
-    def _query(self):
+    def _query(self) -> 'ObservedArmState':
         # Reject buffered observations from earlier reads; never return a cache.
         self._port.reset_input_buffer()
         request = b'{"T":105}\n'
@@ -119,8 +124,12 @@ class SerialSession:
             line.clear()
             if (not isinstance(value, dict) or type(value.get("T")) is not int or
                     value["T"] != 1051):
+                if self.strict_feedback:
+                    raise ValueError("Unexpected arm feedback frame.")
                 continue
-            position = {}
+            if self.strict_feedback and self._port.in_waiting:
+                raise ValueError("Ambiguous additional arm feedback.")
+            position: 'Dict[ArmFeedbackJoint, float]' = {}
             for axis, limit in LIMITS_DEG.items():
                 radians = finite_angle(value.get(axis), math.radians(limit))
                 position[axis] = math.degrees(radians)

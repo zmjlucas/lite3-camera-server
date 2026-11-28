@@ -41,11 +41,11 @@ class CameraServiceTests(unittest.TestCase):
             self.assertEqual(actual[-1], "/etc/systemd/system/lite3-camera-server.service")
         return subprocess.CompletedProcess(command, 0)
 
-    def install(self, uid=1000):
+    def install(self, uid=1000, extra=()):
         with patch.object(self.installer.subprocess, "run", side_effect=self.run_command), \
                 patch.object(self.installer.os, "getuid", return_value=uid):
             self.installer.install_service(self.home, ["--source", "v4l2", "--device", "/dev/video4",
-                                                       "--port", "8081"])
+                                                       "--port", "8081", *extra])
 
     def test_installs_and_enables_system_service_without_interrupting_viewers(self):
         self.install()
@@ -67,6 +67,12 @@ class CameraServiceTests(unittest.TestCase):
         self.install(uid=0)
         self.assertFalse(any(command[0] == "sudo" for command in self.calls))
         self.assertIn("User=0", self.installed)
+
+    def test_installed_exec_start_sets_opt_in_wide_angle_host(self):
+        self.install(extra=["--wide-angle-host", "192.168.1.120"])
+        unit = configparser.ConfigParser(interpolation=None)
+        unit.read_string(self.installed)
+        self.assertIn('"--wide-angle-host" "192.168.1.120"', unit["Service"]["ExecStart"])
 
     @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd-analyze is only available on Linux")
     def test_generated_unit_is_accepted_by_systemd(self):

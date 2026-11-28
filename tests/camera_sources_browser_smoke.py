@@ -27,19 +27,29 @@ def main():
     fixture_errors = []
     switches = []
     state = {"selected": "rgb", "catalog_calls": 0, "rgb_failed": False, "only_arm": False,
-             "capture_failed": False, "blocked": True, "all_unavailable": False}
+             "capture_failed": False, "blocked": True, "wide_blocked": True, "wide_reload": False,
+             "all_unavailable": False}
     switch_observed = threading.Event()
     arm_selected = threading.Event()
     stopped = threading.Event()
     lock = threading.Lock()
     fixtures = Path(__file__).resolve().parent / "fixtures"
     frame = (fixtures / "camera-frame.jpg").read_bytes()
+    # A one-pixel crop keeps the same encoded blocks and gives Chrome a distinct frame width.
+    width = frame.index(b"\xff\xc0") + 7
+    assert frame[width:width + 2] == b"\x00\xa0"
+    cropped = frame[:width] + b"\x00\x9f" + frame[width + 2:]
+    def part(jpeg):
+        return (b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(jpeg)).encode()
+                + b"\r\n\r\n" + jpeg + b"\r\n")
+    full_part, cropped_part = part(frame), part(cropped)
     observer = (fixtures / "camera_sources_observer.html").read_text(encoding="utf-8")
     page = PAGE.replace("__SOURCE_LABEL__", "Camera").replace("<script>", observer + "<script>", 1).encode()
     sources = [
         {"id": "rgb", "label": "/dev/video4 — D435i RGB", "device": "/dev/video4", "backend": "v4l2"},
         {"id": "arm", "label": "/dev/video6 — Arm camera (SXW USB Camera)", "device": "/dev/video6", "backend": "v4l2"},
         {"id": "blocked", "label": "/dev/video10 — D435i RGB", "device": "/dev/video10", "backend": "v4l2"},
+        {"id": "wide", "label": "Lite3 wide-angle camera", "device": "192.168.1.120", "backend": "rtsp"},
     ]
 
     class Handler(BaseHTTPRequestHandler):
@@ -56,7 +66,9 @@ def main():
         def catalog(self):
             available = [dict(source) for source in ([sources[1]] if state["only_arm"] else sources)]
             for source in available:
-                if state["all_unavailable"] or (source["id"] == "blocked" and state["blocked"]):
+                if source["id"] == "wide" and state["wide_blocked"]:
+                    source.update(available=False, error="RTSP publisher unavailable. Check the motion host, then Refresh.")
+                elif state["all_unavailable"] or (source["id"] == "blocked" and state["blocked"]):
                     source.update(available=False, error="Camera is in use by realsense-viewer. Release it, then Refresh.")
             self.reply(200, json.dumps({"sources": available, "selected": state["selected"]}).encode())
 
@@ -65,6 +77,18 @@ def main():
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if self.path == "/release-blocked":
                     state["blocked"] = False
+                    self.reply(200, b"{}")
+                    return
+                if self.path == "/show-wide":
+                    state["only_arm"] = False
+                    self.reply(200, b"{}")
+                    return
+                if self.path == "/release-wide":
+                    state["wide_blocked"] = False
+                    self.reply(200, b"{}")
+                    return
+                if self.path == "/prepare-wide-reload":
+                    state["wide_reload"] = True
                     self.reply(200, b"{}")
                     return
                 if self.path == "/all-unavailable":
@@ -138,6 +162,9 @@ def main():
                             fixture_errors.append("No selection during delayed catalog refresh")
                         self.reply(200, stale)
                     else:
+                        if state["wide_reload"]:
+                            state["wide_reload"] = False
+                            time.sleep(0.6)
                         self.catalog()
                 elif self.path == "/stream.mjpg":
                     if state["capture_failed"]:
@@ -145,16 +172,19 @@ def main():
                                                     "source_id": state["selected"]}).encode())
                         return
                     source = state["selected"]
+                    backend = "rtsp" if source == "wide" else "v4l2"
                     self.send_response(200)
                     self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-                    self.send_header("X-Camera-Source", "v4l2")
+                    self.send_header("X-Camera-Source", backend)
                     self.send_header("X-Camera-Source-Id", source)
                     self.end_headers()
-                    part = b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n"
+                    parts = (full_part, cropped_part) if backend == "rtsp" else (full_part,)
+                    index = 0
                     while not stopped.is_set() and state["selected"] == source and not state["capture_failed"]:
-                        self.wfile.write(part)
+                        self.wfile.write(parts[index % len(parts)])
                         self.wfile.flush()
-                        stopped.wait(0.1)
+                        index += 1
+                        stopped.wait(0.18 if backend == "rtsp" else 0.1)
                 else:
                     self.send_error(404)
             except (BrokenPipeError, ConnectionResetError):
@@ -202,20 +232,21 @@ def main():
             server.shutdown()
     assert rows and rows[-1].get("complete"), "Browser did not finish camera selection: {}".format(rows[-1:] or "no observations")
     assert not fixture_errors, "; ".join(fixture_errors)
-    assert switches == ["arm", "rgb", "rgb", "rgb", "arm", "arm"], switches
+    assert switches == ["arm", "rgb", "rgb", "rgb", "arm", "arm", "wide", "arm"], switches
     blocked = [row for row in rows if row["phase"] == "blocked-option"]
     assert blocked and all(row["selected"] == "rgb" and row["status"] == "Live" and not row["hidden"]
                            and "realsense-viewer" in row["sourceErrors"] for row in blocked), blocked
-    assert any(row["unavailableOptions"] == ["blocked"] and "realsense-viewer" in row["sourceErrors"]
+    assert any(row["unavailableOptions"] == ["blocked", "wide"] and "realsense-viewer" in row["sourceErrors"]
                for row in rows), "Unavailable camera was not disabled and explained"
-    assert any(row["phase"] == "released-option" and not row["unavailableOptions"] for row in rows), \
+    assert any(row["phase"] == "released-option" and row["unavailableOptions"] == ["wide"] for row in rows), \
         "Refresh did not re-enable the released camera"
     assert any(row["phase"] == "all-unavailable" and row["unavailableOptions"] == ["arm"]
                and not row["refreshDisabled"] and "realsense-viewer" in row["sourceErrors"] for row in rows), \
         "All-unavailable catalog did not retain a disabled camera with an error and refresh"
     assert any(row["phase"] == "discovery-error" and row["status"] == "Live" and row["source"] == "V4L2 RGB"
                and row["disabled"] and row["sourceStatus"] for row in rows), "Discovery failure prevented playback"
-    for phase in ("switch-arm", "failed-switch", "switch-rgb", "retry-remote", "return-arm", "retry-current"):
+    for phase in ("switch-arm", "failed-switch", "switch-rgb", "retry-remote", "return-arm", "retry-current",
+                  "switch-wide", "return-arm-after-wide"):
         immediate = next(row for row in rows if row["phase"] == phase and row.get("immediate"))
         assert immediate["disabled"] and immediate["hidden"] and immediate["src"] is None, immediate
         assert immediate["snapshotHidden"] and immediate["snapshot"] is None, immediate
@@ -238,8 +269,20 @@ def main():
     assert remote and all(row["selected"] == "arm" and row["source"] == sources[1]["label"] for row in remote), \
         "Other-tab selection mislabeled two streams with the same backend"
     assert all(not row["retryVisible"] for row in rows if row["status"] == "Live"), "Retry remained visible during healthy playback"
-    assert rows[-1]["options"] == [{"id": "arm", "label": sources[1]["label"]}], "Recovery did not exercise a single-source catalog"
-    print("PASS: Chrome retained disabled cameras with errors, rejected unavailable selection without stopping video, recovered availability on refresh, handled all cameras unavailable, and passed discovery/switch/retry/reload regressions.")
+    assert any(row["phase"] == "availability-recovered" and row["options"] == [
+        {"id": "arm", "label": sources[1]["label"]}] for row in rows), "Recovery did not exercise a single-source catalog"
+    assert any(row["phase"] == "wide-unavailable" and row["unavailableOptions"] == ["wide"]
+               and "RTSP publisher unavailable" in row["sourceErrors"] and row["status"] == "Live"
+               and row["selected"] == "arm" for row in rows), "Disabled RTSP source hid local playback or its reason"
+    wide = [row for row in rows if row["phase"] == "switch-wide" and row["selected"] == "wide"
+            and row["status"] == "Live" and not row["hidden"]]
+    assert {row["width"] for row in wide} == {159, 160}, "The wide-angle preview did not decode changing frames"
+    assert all(row["source"] == sources[-1]["label"] and row["alt"] == sources[-1]["label"] + " video stream"
+               and row["streamBackend"] == "rtsp" and row["streamSource"] == "wide" for row in wide), wide
+    assert any(row["phase"] == "wide-fallback" and not row["selected"] and row["status"] == "Live"
+               and row["source"] == sources[-1]["label"] for row in rows), "RTSP fallback label was missing before catalog load"
+    assert rows[-1]["source"] == sources[1]["label"] and rows[-1]["streamBackend"] == "v4l2", rows[-1]
+    print("PASS: Chrome switched to live wide-angle video and back, explained unavailable cameras, and passed discovery, retry, and reload checks.")
 
 
 if __name__ == "__main__":

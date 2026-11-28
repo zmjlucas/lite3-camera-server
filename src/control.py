@@ -2,7 +2,7 @@
 
 No socket is opened in simulation. Hardware UDP has no acknowledgement, so neither
 successful preparation nor successful stop writes establish a physical state.
-The R5 hardware arm is intentionally unavailable for motion in this adapter.
+R5 diagnostics require a commissioned local gateway and isolated dog output.
 """
 import ipaddress
 import math
@@ -11,7 +11,14 @@ import socket
 import struct
 import threading
 import time
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from typing import Any, Dict, Tuple, Union
+    from lite3_dev_server.api import (
+        AcquireResponse, ArmJoint, ControlMode, ControlStatus, DogPhase, VelocityAxis,
+        VelocityLimit, ArmOperation,
+    )
 
 HEARTBEAT = 0x21040001
 VOICE = 0x21010C0A
@@ -19,9 +26,9 @@ STATIONARY = 0x21010D05
 MOVE = 0x21010D06
 LOW_GAIT = 0x21010300
 AUTONOMOUS = 0x21010C03
-AXES = (('vx', 0x0140), ('vy', 0x0145), ('yaw', 0x0141))
-LIMITS = {'vx': 0.2, 'vy': 0.1, 'yaw': 0.3, 'ttl': 0.5}
-JOINT_LIMITS = {'b': 180.0, 's': 90.0, 'e': 90.0, 'w': 90.0, 'h': 45.0}
+AXES: 'Tuple[Tuple[VelocityAxis, int], ...]' = (('vx', 0x0140), ('vy', 0x0145), ('yaw', 0x0141))
+LIMITS: 'Dict[VelocityLimit, float]' = {'vx': 0.2, 'vy': 0.1, 'yaw': 0.3, 'ttl': 0.5}
+JOINT_LIMITS: 'Dict[ArmJoint, float]' = {'b': 180.0, 's': 90.0, 'e': 90.0, 'w': 90.0, 'h': 45.0}
 ARM_BLOCK_REASON = 'Hardware arm motion is disabled.'
 PERIOD = 0.05
 LEASE_SECONDS = 2.0
@@ -52,10 +59,16 @@ class ControlService:
     Every stop revokes the lease, invalidating even delayed high-sequence work.
     """
 
-    def __init__(self, mode='simulation', dog_host='192.168.1.120',
-                 dog_port=43893, clock=time.monotonic):
+    def __init__(self, mode: 'ControlMode' = 'simulation', dog_host='192.168.1.120',
+                 dog_port=43893, clock=time.monotonic, arm_gateway=None, dog_enabled=True):
         if mode not in ('disabled', 'simulation', 'readonly', 'hardware'):
             raise ValueError('Unsupported control mode')
+        if type(dog_enabled) is not bool:
+            raise ValueError('dog_enabled must be boolean')
+        if arm_gateway is not None and (mode != 'hardware' or dog_enabled):
+            raise ValueError('Arm diagnostics require hardware mode with dog output disabled')
+        self._arm_gateway = arm_gateway
+        self._dog_enabled = dog_enabled
         if mode == 'hardware':
             if not isinstance(dog_host, str):
                 raise ValueError('dog_host must be a numeric IPv4 address')
@@ -67,7 +80,7 @@ class ControlService:
                 raise ValueError('dog_host must be a unicast IPv4 address')
             if type(dog_port) is not int or not 1 <= dog_port <= 65535:
                 raise ValueError('dog_port must be an integer from 1 to 65535')
-        self.mode = mode
+        self.mode: 'ControlMode' = mode
         self._target = (dog_host, dog_port)
         self._clock = clock
         self._lock = threading.RLock()
@@ -82,10 +95,10 @@ class ControlService:
         self._lease_deadline = 0.0
         self._sequence = 0
         self._generation = 0
-        self._phase = 'disarmed'
-        self._velocity = dict((name, 0.0) for name, _ in AXES)
+        self._phase: 'DogPhase' = 'disarmed'
+        self._velocity: 'Dict[VelocityAxis, float]' = dict((name, 0.0) for name, _ in AXES)
         self._velocity_deadline = None
-        self._positions = dict((name, 0.0) for name in JOINT_LIMITS)
+        self._positions: 'Dict[ArmJoint, float]' = dict((name, 0.0) for name in JOINT_LIMITS)
         self._stage = 0
         self._stage_deadline = 0.0
         self._next_cycle = 0.0
@@ -106,7 +119,7 @@ class ControlService:
         with self._lock:
             if not self._closed:
                 self._closed = True
-                self._stop_locked()
+                self._stop_locked('shutdown')
             worker = self._thread
             if worker is None:
                 # No production writer ever ran: there is no transport to stop.
@@ -121,15 +134,17 @@ class ControlService:
             if worker.is_alive():
                 with self._lock:
                     self._error = 'UDP worker shutdown timed out'
+        if self._arm_gateway is not None:
+            self._arm_gateway.close()
 
-    def status(self):
+    def status(self) -> 'ControlStatus':
         with self._lock:
             self._expire_locked()
             return self._status_locked()
 
-    def _status_locked(self):
+    def _status_locked(self) -> 'ControlStatus':
         simulated = self.mode == 'simulation'
-        return {
+        result: 'ControlStatus' = {
             'mode': self.mode,
             'estop': self._estop,
             'safety_revision': self._safety_revision,
@@ -141,6 +156,8 @@ class ControlService:
                 'error': self._error,
                 'stop_verified': False,
                 'simulated': simulated,
+                'motion_enabled': (self._dog_enabled and self.mode in ('simulation', 'hardware')
+                                   and not self._closed and not self._estop),
             },
             'arm': {
                 'motion_enabled': simulated and not self._estop and not self._closed,
@@ -150,6 +167,18 @@ class ControlService:
                 'simulated': simulated,
             },
         }
+        if self._arm_gateway is not None:
+            arm = self._arm_gateway.status()
+            result['arm'].update({
+                'motion_enabled': bool(arm['motion_enabled'] and not self._closed and not self._estop),
+                'reason': arm['reason'],
+                'operation': arm['active_operation'] or arm['last_operation'],
+                'capabilities': {'joints': ['b', 'e', 'h'], 'max_delta_deg': {'b': .5, 'e': 2., 'h': .5},
+                                 'max_speed_deg_s': 1., 'max_travel_deg': 3.,
+                                 'asynchronous': True, 'stop_verified': False,
+                                 'gripper_feedback': False},
+            })
+        return result
 
     @staticmethod
     def _fields(body, allowed, required=()):
@@ -183,13 +212,23 @@ class ControlService:
             raise ControlError(423, 'Control is latched; explicit reset is required')
         return sequence
 
-    def dispatch(self, action, body):
+    def dispatch(self, action: str, body: 'Any') -> 'Union[AcquireResponse, ControlStatus, ArmOperation]':
         """Dispatch an allowlisted operation from a trusted LAN client."""
         with self._lock:
             self._expire_locked()
             if self._closed or self.mode in ('disabled', 'readonly'):
                 raise ControlError(503, 'Control service is unavailable')
             self._fields(body, body.keys() if isinstance(body, dict) else ())
+            if action == 'arm/operation':
+                self._fields(body, ('id',), ('id',))
+                if not isinstance(body['id'], str) or not 1 <= len(body['id']) <= 128:
+                    raise ControlError(400, 'id must identify an arm operation')
+                if self._arm_gateway is None:
+                    raise ControlError(404, 'No hardware arm operation is available')
+                try:
+                    return self._arm_gateway.operation(body['id'])
+                except KeyError:
+                    raise ControlError(404, 'Unknown or superseded arm operation') from None
             if action == 'control/acquire':
                 self._fields(body, ('owner',), ('owner',))
                 owner = body['owner']
@@ -198,7 +237,8 @@ class ControlService:
                     raise ControlError(400, 'owner must be a short nonempty label')
                 if self._estop or self._error:
                     raise ControlError(423, 'Control is latched; explicit reset is required')
-                if self._lease is not None or self._stop_remaining:
+                if (self._lease is not None or self._stop_remaining or
+                        (self._arm_gateway is not None and self._arm_gateway.status()['active_operation'])):
                     raise ControlError(409, 'Control is owned or a stop is still in progress')
                 self._lease = secrets.token_urlsafe(32)
                 self._lease_deadline = self._clock() + LEASE_SECONDS
@@ -210,8 +250,10 @@ class ControlService:
                 self._owner_locked(body)
                 if action == 'control/heartbeat':
                     self._lease_deadline = self._clock() + LEASE_SECONDS
+                    if self._arm_gateway is not None:
+                        self._arm_gateway.renew(self._lease_deadline)
                 else:
-                    self._stop_locked()
+                    self._stop_locked('release')
             elif action == 'control/reset':
                 self._fields(body, ('revision',), ('revision',))
                 revision = body['revision']
@@ -232,15 +274,17 @@ class ControlService:
                     self._stop_locked()
                 else:
                     self._phase = 'disarmed'
-            elif action in ('dog/stop', 'control/estop'):
+            elif action in ('dog/stop', 'arm/stop', 'control/estop'):
                 self._fields(body, ('lease', 'seq'))
-                if action == 'dog/stop' and 'lease' in body:
+                if action in ('dog/stop', 'arm/stop') and 'lease' in body:
                     self._owner_locked(body)
                 if action == 'control/estop':
                     self._estop = True
                     self._safety_revision = secrets.token_urlsafe(32)
-                self._stop_locked()
+                self._stop_locked(action)
             elif action == 'dog/stand':
+                if not self._dog_enabled:
+                    raise ControlError(423, 'Dog output is disabled during arm diagnostics')
                 self._fields(body, ('lease', 'seq'), ('lease', 'seq'))
                 sequence = self._motion_locked(body)
                 if self._phase != 'disarmed' or self._stop_remaining:
@@ -252,6 +296,8 @@ class ControlService:
                 self._stage_deadline = self._clock()
                 self._next_cycle = self._clock()
             elif action == 'dog/velocity':
+                if not self._dog_enabled:
+                    raise ControlError(423, 'Dog output is disabled during arm diagnostics')
                 self._fields(body, ('lease', 'seq', 'vx', 'vy', 'yaw', 'ttl'),
                              ('lease', 'seq', 'vx', 'vy', 'yaw', 'ttl'))
                 sequence = self._motion_locked(body)
@@ -269,7 +315,7 @@ class ControlService:
                 self._phase = 'moving'
             elif action == 'arm/jog':
                 # Capability check precedes lease handling and any possible IO.
-                if self.mode != 'simulation':
+                if self.mode != 'simulation' and self._arm_gateway is None:
                     raise ControlError(423, ARM_BLOCK_REASON)
                 self._fields(body, ('lease', 'seq', 'joint', 'delta', 'speed'),
                              ('lease', 'seq', 'joint', 'delta', 'speed'))
@@ -281,6 +327,15 @@ class ControlService:
                 speed = self._number(body, 'speed', 0.0, 5.0)
                 if speed <= 0:
                     raise ControlError(400, 'speed must be greater than zero')
+                if self._arm_gateway is not None:
+                    try:
+                        self._arm_gateway.jog(joint, delta, speed, self._lease_deadline)
+                    except ValueError as error:
+                        raise ControlError(400, str(error)) from None
+                    except RuntimeError as error:
+                        raise ControlError(423, str(error)) from None
+                    self._sequence = sequence
+                    return self._status_locked()
                 target = self._positions[joint] + delta
                 if abs(target) > JOINT_LIMITS[joint]:
                     raise ControlError(400, 'Simulated joint target exceeds its limit')
@@ -291,14 +346,16 @@ class ControlService:
             self._wake.set()
             return self._status_locked()
 
-    def _stop_locked(self):
+    def _stop_locked(self, reason='stop'):
         self._generation += 1
         self._lease = None
         self._lease_deadline = 0.0
         self._velocity = dict((name, 0.0) for name, _ in AXES)
         self._velocity_deadline = None
         self._stage = 0
-        if self.mode == 'hardware':
+        if self._arm_gateway is not None:
+            self._arm_gateway.stop(reason)
+        if self.mode == 'hardware' and self._dog_enabled:
             self._stop_remaining = STOP_BURSTS
             self._next_stop = self._clock()
             self._phase = 'stopping'
@@ -310,7 +367,7 @@ class ControlService:
         now = self._clock()
         if ((self._lease is not None and now >= self._lease_deadline)
                 or (self._velocity_deadline is not None and now >= self._velocity_deadline)):
-            self._stop_locked()
+            self._stop_locked('expired')
 
     def _failure_locked(self):
         if self._error is None:
@@ -327,7 +384,7 @@ class ControlService:
                 if (generation != self._generation or self._lease is None
                         or self._estop or self._error or self._closed):
                     return False
-            if self.mode != 'hardware':
+            if self.mode != 'hardware' or not self._dog_enabled:
                 return True
             try:
                 if self._socket is None:

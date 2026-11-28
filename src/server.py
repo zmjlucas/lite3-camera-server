@@ -17,11 +17,25 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import TCPServer, ThreadingMixIn
+from typing import TYPE_CHECKING
 
+if __package__:
+    from . import wide_angle
+else:
+    import wide_angle
+
+if TYPE_CHECKING:
+    from typing import Union
+    from lite3_dev_server.api import (
+        AcquireResponse, ArmReconnectResponse, ArmState, ControlStatus, StatusResponse,
+        ArmOperation, UnobservedArmState,
+    )
 
 DEFAULT_BIND = "0.0.0.0"
 BOUNDARY = b"--frame\r\n"
-SOURCE_LABELS = {"realsense": "RealSense", "v4l2": "V4L2 RGB", "none": "No camera"}
+STARTUP_SOURCES = ("realsense", "v4l2", "none")
+SOURCE_LABELS = {"realsense": "RealSense", "v4l2": "V4L2 RGB", "none": "No camera",
+                 "rtsp": wide_angle.LABEL}
 
 PAGE = (Path(__file__).resolve().parent / "web" / "camera.html").read_text(encoding="utf-8")
 
@@ -304,7 +318,8 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         path = self.path.partition("?")[0]
         if path == "/api/status":
             control = getattr(self.server, "control", None)
-            self._json(200, control.status() if control else {"mode": "disabled"})
+            status: 'StatusResponse' = control.status() if control else {"mode": "disabled"}
+            self._json(200, status)
             return
         if path == "/control":
             page = (Path(__file__).resolve().parent / "web" / "control.html").read_bytes()
@@ -394,7 +409,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         action = self.path.partition("?")[0][5:]
         allowed = {"control/acquire", "control/heartbeat", "control/release", "control/estop",
                    "control/reset", "dog/stand", "dog/velocity", "dog/stop", "arm/jog",
-                   "arm/state", "arm/reconnect"}
+                   "arm/state", "arm/reconnect", "arm/operation", "arm/stop"}
         if action not in allowed:
             self._json(404, {"error": "Unknown control operation"})
             return
@@ -431,6 +446,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
             if control is None:
                 self._json(503, {"error": "Control is disabled"})
                 return
+            result: 'Union[AcquireResponse, ControlStatus, ArmState, ArmReconnectResponse, ArmOperation]'
             if action in ("arm/state", "arm/reconnect"):
                 if body:
                     raise ValueError("This operation takes an empty object")
@@ -440,9 +456,27 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
                     if state.get("mode") == "disabled":
                         self._json(409, {"error": "Control is disabled"})
                         return
-                    result = dict(state.get("arm", {}), observed=False)
+                    arm = state["arm"]
+                    unobserved: 'UnobservedArmState' = {
+                        "motion_enabled": arm["motion_enabled"], "reason": arm["reason"],
+                        "position_deg": arm["position_deg"], "simulated": arm["simulated"],
+                        "observed": False,
+                    }
+                    if "operation" in arm:
+                        unobserved["operation"] = arm["operation"]
+                    if "capabilities" in arm:
+                        unobserved["capabilities"] = arm["capabilities"]
+                    result = unobserved
                 else:
                     result = gateway.read_state() if action == "arm/state" else gateway.reconnect()
+                    # A stop can be admitted while a serial observation is in flight.
+                    # Reconcile capability after I/O without holding the control mutex.
+                    current = control.status()
+                    if "motion_enabled" in result:
+                        enabled = current.get("arm", {}).get("motion_enabled", False)
+                        result["motion_enabled"] = bool(result["motion_enabled"] and enabled)
+                        if current.get("estop"):
+                            result["reason"] = "Software emergency stop is latched."
             else:
                 result = control.dispatch(action, body)
             self._json(200, result)
@@ -632,8 +666,13 @@ def capture(options, frames, stop):
                 if len(matching) == 1:
                     options.pixel_format = matching[0]["pixel_format"]
                     frames.identify(matching[0]["id"])
-            source = (v4l2_frames(options, stop) if options.source == "v4l2"
-                      else realsense_frames(options, frames, stop))
+            if options.source == "rtsp":
+                source = wide_angle.capture_frames(options.wide_angle_host, options.quality, stop,
+                                                   lambda message: _report_capture_error(frames, message))
+            elif options.source == "v4l2":
+                source = v4l2_frames(options, stop)
+            else:
+                source = realsense_frames(options, frames, stop)
             with contextlib.closing(source):
                 for jpeg in source:
                     frames.publish(jpeg)
@@ -670,6 +709,8 @@ class CaptureController:
         return {"sources": public, "selected": selected}
 
     def _backend(self, entry):
+        if entry["kind"] == "rtsp":
+            return "rtsp"
         return "realsense" if entry["kind"] == "d435i" and self.options.source == "realsense" else "v4l2"
 
     def _source_options(self, entry):
@@ -679,19 +720,38 @@ class CaptureController:
             options.device = None
             options.usb_path = entry["usb_path"]
         else:
-            options.device = entry["device"]
             options.depth = False
             options.serial = None
-            options.pixel_format = entry["pixel_format"]
+            if options.source == "v4l2":
+                options.device = entry["device"]
+                options.pixel_format = entry["pixel_format"]
+            else:
+                options.device = None
         return options
+
+    def _switchable_sources(self):
+        detected = self.discover()
+        host = self.options.wide_angle_host
+        if not host:
+            return detected
+        identity = hashlib.sha256(wide_angle.endpoint(host).encode("ascii")).hexdigest()[:24]
+        error = None
+        try:
+            wide_angle.probe(host)
+        except RuntimeError as failure:
+            error = str(failure)
+        return [*detected, {"id": "camera-" + identity, "kind": "rtsp", "label": wide_angle.LABEL,
+                           "device": host, "available": error is None, "error": error}]
 
     def _launch(self, options, selected, detected):
         options = argparse.Namespace(**vars(options))
         options.camera_sources = detected
         self.frames = LatestFrame(options.source, source_id=selected)
         self._stop = threading.Event()
+        # The RTSP owner must finish reaping its child even if shutdown times out.
         self.producer = threading.Thread(target=self.capture_fn,
-                                         args=(options, self.frames, self._stop), daemon=True)
+                                         args=(options, self.frames, self._stop),
+                                         daemon=options.source != "rtsp")
         self.producer.start()
 
     def start(self):
@@ -718,13 +778,13 @@ class CaptureController:
 
     def catalog(self):
         with self._lock:
-            return self._catalog(self.discover())
+            return self._catalog(self._switchable_sources())
 
     def select(self, source_id):
         with self._lock:
             if self._closed:
                 raise RuntimeError("The camera server is stopping")
-            detected = self.discover()
+            detected = self._switchable_sources()
             entry = next((item for item in detected if item["id"] == source_id), None)
             if entry is None:
                 raise ValueError("That camera is unavailable. Refresh the source list.")
@@ -759,7 +819,7 @@ class CaptureController:
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", choices=SOURCE_LABELS, default="realsense")
+    parser.add_argument("--source", choices=STARTUP_SOURCES, default="realsense")
     parser.add_argument("--port", type=int, default=8080, help="HTTP port (use 0 for a free port)")
     parser.add_argument("--bind", default=DEFAULT_BIND, help="listen address (default: all IPv4 interfaces)")
     parser.add_argument("--width", type=int, default=640, help="frame width in pixels for each stream")
@@ -771,11 +831,26 @@ def parse_args(argv):
     parser.add_argument("--retry-camera", action="store_true",
                         help="retry failed capture every 5 seconds (used by the boot service)")
     parser.add_argument("--device", help="V4L2 RGB device path (required for --source v4l2)")
+    parser.add_argument("--wide-angle-host", metavar="IPV4", help="enable the motion host's vendor RTSP camera")
     parser.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"), default="simulation")
     parser.add_argument("--dog-host", default="192.168.1.120", help="motion host IPv4 for UDP port 43893")
     parser.add_argument("--arm-device", default="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")
     parser.add_argument("--arm-host", help="optional SSH host for the read-only serial gateway")
+    parser.add_argument("--arm-motion-profile", metavar="PATH",
+                        help="one-use local R5 commissioning record; disables dog output")
     options = parser.parse_args(argv)
+    if options.arm_motion_profile is not None:
+        if options.control_mode != "hardware" or options.arm_host is not None:
+            parser.error("--arm-motion-profile requires hardware mode and a local arm")
+        if not options.arm_motion_profile or any(ord(char) < 32 for char in options.arm_motion_profile):
+            parser.error("--arm-motion-profile must be a local record path")
+    if options.wide_angle_host is not None:
+        try:
+            wide_angle.validate_host(options.wide_angle_host)
+        except ValueError as error:
+            parser.error(str(error))
+        if options.source not in ("realsense", "v4l2"):
+            parser.error("--wide-angle-host requires --source realsense or v4l2")
     if options.source == "v4l2":
         if not re.fullmatch(r"/dev/(?:video[0-9]+|v4l/by-id/[A-Za-z0-9_][A-Za-z0-9_.:+-]*)", options.device or ""):
             parser.error("--source v4l2 requires --device /dev/videoN or /dev/v4l/by-id/NAME")
@@ -792,18 +867,39 @@ def parse_args(argv):
     return options
 
 
+def development_services(options):
+    """Construct lazy gateways; commissioning selects an arm-only control service."""
+    if __package__:
+        from .control import ControlService
+        from .arm_gateway import ArmGateway
+        from .arm_motion import ArmMotionGateway
+    else:
+        from control import ControlService
+        from arm_gateway import ArmGateway
+        from arm_motion import ArmMotionGateway
+    arm_gateway = None
+    profile = options.arm_motion_profile
+    try:
+        if profile:
+            if os.name != "posix":
+                raise ValueError("Hardware arm diagnostics require a POSIX service host")
+            arm_gateway = ArmMotionGateway(options.arm_device, profile)
+        elif options.control_mode in ("hardware", "readonly"):
+            arm_gateway = ArmGateway(device=options.arm_device, host=options.arm_host)
+        control = ControlService(mode=options.control_mode, dog_host=options.dog_host,
+                                 arm_gateway=arm_gateway if profile else None,
+                                 dog_enabled=not bool(profile))
+        return control, arm_gateway
+    except Exception:
+        if arm_gateway is not None:
+            arm_gateway.close()
+        raise
+
+
 def main(argv=None):
     options = parse_args(argv)
     try:
-        if __package__:
-            from .control import ControlService
-            from .arm_gateway import ArmGateway
-        else:
-            from control import ControlService
-            from arm_gateway import ArmGateway
-        control = ControlService(mode=options.control_mode, dog_host=options.dog_host)
-        arm_gateway = (ArmGateway(device=options.arm_device, host=options.arm_host)
-                       if options.control_mode in ("hardware", "readonly") else None)
+        control, arm_gateway = development_services(options)
     except (OSError, ValueError) as error:
         print("Invalid development server configuration: {}".format(error), file=sys.stderr)
         return 2

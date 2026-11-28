@@ -18,15 +18,23 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import ProxyHandler, build_opener
 import webbrowser
 
+if __package__:
+    from .wide_angle import validate_host as validate_wide_angle_host
+else:
+    from wide_angle import validate_host as validate_wide_angle_host
+
 
 SERVER = Path(__file__).resolve().with_name("server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
-SERVER_BUNDLE = ((SERVER, "lite3-camera-server/"),
+# Upload new dependencies before changing existing files, then replace the entry point last.
+SERVER_BUNDLE = ((SERVER.parent / "wide_angle.py", "lite3-camera-server/"),
+                 (SERVER.parent / "arm_motion.py", "lite3-camera-server/"),
                  (SERVER.parent / "web" / "camera.html", "lite3-camera-server/web/"),
                  (SERVER.parent / "control.py", "lite3-camera-server/"),
                  (SERVER.parent / "arm_gateway.py", "lite3-camera-server/"),
                  (SERVER.parent / "remote" / "arm_worker.py", "lite3-camera-server/remote/"),
-                 (SERVER.parent / "web" / "control.html", "lite3-camera-server/web/"))
+                 (SERVER.parent / "web" / "control.html", "lite3-camera-server/web/"),
+                 (SERVER, "lite3-camera-server/"))
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
 ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")
@@ -189,12 +197,14 @@ def camera_options(args):
         values.extend(["--serial", args.serial])
     if args.device:
         values.extend(["--device", args.device])
+    if args.wide_angle_host is not None:
+        values.extend(["--wide-angle-host", args.wide_angle_host])
     return values
 
 
 def control_options(args):
     values = []
-    for name in ("control_mode", "dog_host", "arm_device", "arm_host"):
+    for name in ("control_mode", "dog_host", "arm_device", "arm_host", "arm_motion_profile"):
         value = getattr(args, name, None)
         if value is not None:
             values.extend(["--" + name.replace("_", "-"), value])
@@ -415,6 +425,7 @@ def parser():
             command.add_argument("--depth", action="store_true", help="show a RealSense depth preview with false colors")
             command.add_argument("--serial", help="RealSense serial number")
             command.add_argument("--device", type=video_device, help="confirmed V4L2 RGB device path on the perception host")
+            command.add_argument("--wide-angle-host", metavar="IPV4", help="enable the motion host's vendor RTSP camera")
             command.add_argument("--width", type=bounded_int(1, 4096))
             command.add_argument("--height", type=bounded_int(1, 2160))
             command.add_argument("--fps", type=bounded_int(1, 60))
@@ -423,6 +434,8 @@ def parser():
             command.add_argument("--dog-host", help="motion host IPv4 (server default: 192.168.1.120, UDP port 43893)")
             command.add_argument("--arm-device", help="serial device on the arm host")
             command.add_argument("--arm-host", type=target, help="optional SSH target for remote arm access: ysc@192.168.1.103")
+            command.add_argument("--arm-motion-profile", metavar="PATH",
+                                 help="commissioning profile already on the perception host")
     return result
 
 
@@ -430,8 +443,20 @@ def main(argv=None):
     cli = parser()
     args = cli.parse_args(argv)
     if args.command in ("view", "deploy"):
+        if args.wide_angle_host is not None:
+            try:
+                validate_wide_angle_host(args.wide_angle_host)
+            except ValueError as error:
+                cli.error(str(error))
+            if args.backend not in ("realsense", "v4l2"):
+                cli.error("--wide-angle-host requires --backend realsense or v4l2")
         if args.backend == "ros" and (control_options(args) or getattr(args, "console", False)):
             cli.error("Robot control and --console require a native backend (use --backend none without cameras)")
+        if args.arm_motion_profile is not None:
+            if args.control_mode != "hardware" or args.arm_host is not None:
+                cli.error("--arm-motion-profile requires local --control-mode hardware without --arm-host")
+            if not args.arm_motion_profile or any(ord(char) < 32 or ord(char) == 127 for char in args.arm_motion_profile):
+                cli.error("--arm-motion-profile requires a nonempty path without control characters")
         if args.backend == "ros" and any((args.width, args.height, args.fps, args.quality)):
             cli.error("--width, --height, --fps, and --quality require --backend realsense or v4l2")
         if args.backend != "realsense" and (args.depth or args.serial):

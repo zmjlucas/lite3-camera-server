@@ -8,6 +8,11 @@ import subprocess
 import sys
 import threading
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+    from lite3_dev_server.api import ArmGatewayReconnect, ObservedArmState
 
 try:
     from .remote.arm_worker import (LIMITS_DEG, MAX_LINE, MOTION_BLOCK_REASON,
@@ -81,7 +86,7 @@ class ArmGateway:
             if not selector.select(remaining):
                 raise ArmGatewayError("Arm read timed out; explicit reconnect required.")
 
-    def _exchange(self, deadline):
+    def _exchange(self, deadline) -> 'ObservedArmState':
         self._request_id += 1
         request = ('{"id":%d,"action":"read_state"}\n' % self._request_id).encode("ascii")
         sent = 0
@@ -112,7 +117,7 @@ class ArmGateway:
                 value = decode_json(bytes(response))
                 return self._validate_reply(value)
 
-    def _validate_reply(self, reply):
+    def _validate_reply(self, reply: 'Any') -> 'ObservedArmState':
         if (not isinstance(reply, dict) or type(reply.get("id")) is not int or
                 reply["id"] != self._request_id or reply.get("ok") is not True):
             raise ArmGatewayError("Arm feedback unavailable; explicit reconnect required.")
@@ -127,7 +132,7 @@ class ArmGateway:
         return observed_state({axis: finite_angle(position[axis], limit)
                                for axis, limit in LIMITS_DEG.items()})
 
-    def read_state(self):
+    def read_state(self) -> 'ObservedArmState':
         if os.name == "nt":
             raise ArmGatewayError("Hardware arm gateway is unsupported on Windows; run it on a POSIX host.")
         deadline = time.monotonic() + self.timeout
@@ -170,7 +175,7 @@ class ArmGateway:
             if process.stdout is not None:
                 process.stdout.close()
 
-    def reconnect(self):
+    def reconnect(self) -> 'ArmGatewayReconnect':
         # Explicit reconnect resets the failure latch but remains lazy: the next
         # explicit read is the only action that may open serial or SSH.
         with self._lock:

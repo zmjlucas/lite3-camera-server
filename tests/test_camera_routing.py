@@ -1,15 +1,13 @@
 """Check route selection with sample OS routes. These tests do not connect to a robot."""
 import contextlib
-import importlib.util
 import io
-from pathlib import Path
 import shlex
 import subprocess
 import unittest
 from unittest.mock import patch
 
+from src import client
 
-SCRIPT = Path(__file__).resolve().parents[1] / "src/client.py"
 TARGET = "ysc@192.168.1.103"
 GATEWAY = "192.168.2.1"
 
@@ -60,9 +58,7 @@ Ethernet Address: 00:11:22:33:44:66
 
 class CameraRoutingTest(unittest.TestCase):
     def setUp(self):
-        spec = importlib.util.spec_from_file_location("camera_route_cli", SCRIPT)
-        self.cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(self.cli)
+        self.cli = client
         self.routes = {"192.168.1.103": USB_DEFAULT, GATEWAY: WIFI_GATEWAY}
         self.route_queries = []
         self.hardware_queries = []
@@ -105,7 +101,7 @@ class CameraRoutingTest(unittest.TestCase):
 
     def test_wifi_plus_usb_automatically_uses_robot_jump_for_all_commands(self):
         for command, options, executables in (
-                ("doctor", [], ["ssh"]), ("deploy", [], ["ssh"] + ["scp"] * 6 + ["ssh"]),
+                ("doctor", [], ["ssh"]), ("deploy", [], ["ssh"] + ["scp"] * len(client.SERVER_BUNDLE) + ["ssh"]),
                 ("view", ["--backend", "ros"], ["ssh"]),
                 ("view", ["--backend", "realsense"], ["ssh"]),
                 ("view", ["--backend", "v4l2", "--device", "/dev/video4"], ["ssh"])):

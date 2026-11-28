@@ -106,17 +106,18 @@
     </section>
     <section class="card">
       <div class="card-head"><div><div class="eyebrow">04 / R5 Arm</div><h2>机械臂</h2></div><span id="arm-mode" class="pill">等待状态</span></div>
-      <div id="arm-reason" class="arm-lock">硬件运动锁定：当前版本仅支持读取反馈；模拟模式可进行关节点动。</div>
-      <div class="row"><button id="arm-state" disabled>读取反馈</button><button id="arm-reconnect" disabled>显式重连</button></div>
+      <div id="arm-reason" class="arm-lock">硬件运动默认锁定；读取状态后显示可用能力。</div>
+      <div class="row"><button id="arm-state" disabled>读取反馈</button><button id="arm-reconnect" disabled>显式重连</button><button id="arm-stop" disabled>取消动作并释放控制权</button></div>
+      <p id="arm-operation" class="mono muted">当前无动作。</p>
       <p id="arm-caption" class="muted">读取会建立串口 / SSH 会话；失败后须手动重连。</p>
-      <table aria-label="机械臂关节状态"><thead><tr><th>关节</th><th>角度 °</th><th>模拟点动 · 1°</th></tr></thead><tbody>
+      <table aria-label="机械臂关节状态"><thead><tr><th>关节</th><th>角度 °</th><th id="arm-jog-mode">模拟点动 · 1°</th></tr></thead><tbody>
         <tr><td>基座 b</td><td id="joint-b" class="mono">—</td><td><button data-joint="b" data-delta="-1" disabled aria-label="基座减一度">−</button><button data-joint="b" data-delta="1" disabled aria-label="基座加一度">+</button></td></tr>
         <tr><td>肩 s</td><td id="joint-s" class="mono">—</td><td><button data-joint="s" data-delta="-1" disabled aria-label="肩减一度">−</button><button data-joint="s" data-delta="1" disabled aria-label="肩加一度">+</button></td></tr>
         <tr><td>肘 e</td><td id="joint-e" class="mono">—</td><td><button data-joint="e" data-delta="-1" disabled aria-label="肘减一度">−</button><button data-joint="e" data-delta="1" disabled aria-label="肘加一度">+</button></td></tr>
         <tr><td>腕 w</td><td id="joint-w" class="mono">—</td><td><button data-joint="w" data-delta="-1" disabled aria-label="腕减一度">−</button><button data-joint="w" data-delta="1" disabled aria-label="腕加一度">+</button></td></tr>
         <tr><td>夹爪 h</td><td id="joint-h" class="mono">未知</td><td><button data-joint="h" data-delta="-1" disabled aria-label="模拟夹爪减一度">−</button><button data-joint="h" data-delta="1" disabled aria-label="模拟夹爪加一度">+</button></td></tr>
       </tbody></table>
-      <p class="muted">模拟点动速度 2°/s。硬件读取不提供夹爪角度；缓存目标不能作为实测位置。</p>
+      <p class="muted">模拟点动速度 2°/s。受限硬件点动使用 1°/s，基座与夹爪每步 0.5°，肘部每步 1°。夹爪实际位置保持未知。</p>
     </section>
   </div>
   <footer><span>Lite3 Dev Server</span><span>Trusted LAN access · Acquire control before motion</span></footer>
@@ -135,6 +136,8 @@ const phaseLabels = {disarmed: '未准备', preparing: '准备中', ready: '已�
 function notice(message) { $('notice').textContent = message; }
 function render() {
   const dog = state?.dog || {}, arm = state?.arm || {};
+  const operation = arm.operation;
+  const armActive = Boolean(operation && ['preflight', 'moving', 'stopping'].includes(operation.phase));
   const usable = Boolean(connected && state && !['disabled', 'readonly'].includes(state.mode) && !state.estop);
   $('connection').textContent = connected ? '● 服务在线' : '○ 服务离线';
   $('mode').textContent = ({simulation: '模拟模式', hardware: '硬件模式', readonly: '硬件只读 · 禁止运动', disabled: '控制已禁用'})[state?.mode] || '等待状态';
@@ -145,18 +148,26 @@ function render() {
   $('estop').disabled = state?.mode === 'readonly';
   $('reset').disabled = !(state?.estop || dog.error);
   $('dog-stop').disabled = state?.mode === 'readonly';
-  $('stand').disabled = !usable || !lease || motionBusy || Boolean(hold) || ['preparing', 'stopping', 'error', 'ready', 'moving'].includes(dog.phase);
+  $('stand').disabled = !usable || !lease || motionBusy || dog.motion_enabled === false || Boolean(hold) || ['preparing', 'stopping', 'error', 'ready', 'moving'].includes(dog.phase);
   $('dog-phase').textContent = state?.estop ? '软件急停已锁定' : phaseLabels[dog.phase] || '等待状态';
-  for (const button of driveButtons) button.disabled = !usable || !lease || motionBusy || !['ready', 'moving'].includes(dog.phase) || Boolean(hold && hold.button !== button);
-  for (const button of jointButtons) button.disabled = !usable || !lease || motionBusy || Boolean(hold) || !arm.motion_enabled || state?.mode !== 'simulation';
-  $('arm-state').disabled = armBusy;
-  $('arm-reconnect').disabled = armBusy;
+  for (const button of driveButtons) button.disabled = !usable || !lease || motionBusy || dog.motion_enabled === false || !['ready', 'moving'].includes(dog.phase) || Boolean(hold && hold.button !== button);
+  for (const button of jointButtons) {
+    const supported = arm.simulated || arm.capabilities?.joints?.includes(button.dataset.joint);
+    button.disabled = !usable || !lease || motionBusy || armActive || Boolean(hold) || !arm.motion_enabled || !supported;
+    const increment = !arm.simulated && ['b', 'h'].includes(button.dataset.joint) ? .5 : 1;
+    button.setAttribute('aria-label', `${button.dataset.joint} ${Number(button.dataset.delta) > 0 ? '+' : '−'}${increment}°`);
+  }
+  $('arm-state').disabled = armBusy || armActive;
+  $('arm-reconnect').disabled = armBusy || armActive;
+  $('arm-stop').disabled = !connected || ['readonly', 'disabled'].includes(state?.mode);
   const limits = dog.limits || {};
   if (state) $('dog-limits').textContent = `服务端速度上限：|vx| ≤ ${limits.vx ?? '—'} m/s · |vy| ≤ ${limits.vy ?? '—'} m/s · |yaw| ≤ ${limits.yaw ?? '—'} rad/s`;
   const velocity = dog.velocity || {};
   $('dog-velocity').textContent = `最后接受的速度指令：vx ${velocity.vx ?? '—'} · vy ${velocity.vy ?? '—'} · yaw ${velocity.yaw ?? '—'}`;
-  $('arm-mode').textContent = arm.simulated ? '模拟目标角度' : '硬件只读';
-  $('arm-reason').textContent = arm.simulated ? '模拟模式：点动仅更新模拟目标，不连接机械臂。' : '硬件运动锁定：' + (arm.reason || 'R5 硬件模式仅支持状态读取。');
+  $('arm-mode').textContent = arm.simulated ? '模拟目标角度' : arm.motion_enabled ? '受限硬件诊断' : '硬件动作锁定';
+  $('arm-reason').textContent = arm.simulated ? '模拟模式：点动仅更新模拟目标，不连接机械臂。' : arm.motion_enabled ? '当前会话标定已载入；累计目标限于初始参考 ±3°，机器狗输出已禁用。' : '硬件动作锁定：' + (arm.reason || '需要当前会话的已验证标定记录。');
+  $('arm-jog-mode').textContent = arm.simulated ? '模拟点动 · 1°' : '受限点动 · b/h 0.5°，e 1°';
+  $('arm-operation').textContent = operation ? `动作 ${operation.phase} · 保持 ${operation.hold_status} · 实体停止未验证${operation.reason ? ' · ' + operation.reason : ''}` : '当前无动作。';
   if (arm.simulated) renderArm(arm);
 }
 function updateState(value) {
@@ -208,7 +219,7 @@ async function stop(action = 'dog/stop', message = '已请求停止并释放控�
   notice(message);
   if (action === 'control/release' && !previous) return;
   const body = action === 'control/reset' ? {revision: state?.safety_revision} :
-    previous && ['dog/stop', 'control/release'].includes(action) ? {lease: previous} : {};
+    previous && ['dog/stop', 'arm/stop', 'control/release'].includes(action) ? {lease: previous} : {};
   try { const data = await api(action, body, {keepalive: true}); if (epoch === stamp) updateState(data); }
   catch (error) { if (epoch === stamp) notice('停止请求失败：' + error.message + '。本页已停止续发；请使用物理停止手段。'); }
 }
@@ -293,10 +304,15 @@ window.addEventListener('pagehide', () => { suspend(); clearCamera('页面已离
 $('acquire').addEventListener('click', acquire);
 $('release').addEventListener('click', () => stop('control/release', '已请求释放控制权，所有续发已停止。'));
 $('dog-stop').addEventListener('click', () => stop());
+$('arm-stop').addEventListener('click', () => stop('arm/stop', '已请求取消机械臂动作并释放控制权；保持结果请查看动作状态。'));
 $('estop').addEventListener('click', () => stop('control/estop', '已请求锁定软件急停；实体停止状态仍需现场确认。'));
 $('reset').addEventListener('click', () => stop('control/reset', '已请求复位软件急停。请手动获取控制权；复位不会启动运动。'));
 $('stand').addEventListener('click', () => owned('dog/stand'));
-for (const button of jointButtons) button.addEventListener('click', () => owned('arm/jog', {joint: button.dataset.joint, delta: Number(button.dataset.delta), speed: 2}));
+for (const button of jointButtons) button.addEventListener('click', () => {
+  const simulated = state?.arm?.simulated;
+  const scale = !simulated && ['b', 'h'].includes(button.dataset.joint) ? .5 : 1;
+  owned('arm/jog', {joint: button.dataset.joint, delta: Number(button.dataset.delta) * scale, speed: simulated ? 2 : 1});
+});
 async function readArm(action) {
   if (armBusy) return;
   const stamp = epoch, requestedLease = lease;

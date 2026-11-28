@@ -37,7 +37,7 @@ class Endpoint:
 class DevClientTests(unittest.TestCase):
     def setUp(self):
         self.endpoint = Endpoint()
-        patcher = patch('src.dev_client.build_opener', return_value=self.endpoint)
+        patcher = patch(DevClient.__module__ + '.build_opener', return_value=self.endpoint)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.client = DevClient('http://127.0.0.1:8080/', timeout=0.75)
@@ -63,6 +63,21 @@ class DevClientTests(unittest.TestCase):
             with self.assertRaises(DevClientError):
                 method()
         self.assertEqual(self.endpoint.calls, [])
+
+    def test_arm_operation_lookup_does_not_replay_and_arm_stop_forgets_lease(self):
+        self.client.acquire()
+        self.client.arm_operation('operation-1')
+        request, body, _ = self.endpoint.calls[-1]
+        self.assertEqual(request.full_url, 'http://127.0.0.1:8080/api/arm/operation')
+        self.assertEqual(body, {'id': 'operation-1'})
+        self.assertEqual(self.client.lease, 'opaque-lease')
+        self.client.arm_stop()
+        request, body, _ = self.endpoint.calls[-1]
+        self.assertEqual(request.full_url, 'http://127.0.0.1:8080/api/arm/stop')
+        self.assertEqual(body, {'lease': 'opaque-lease'})
+        self.assertIsNone(self.client.lease)
+        self.client.arm_stop()
+        self.assertEqual(self.endpoint.calls[-1][1], {})
 
     def test_commands_use_one_increasing_sequence_and_expected_units(self):
         self.client.acquire()

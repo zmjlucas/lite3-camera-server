@@ -118,7 +118,9 @@ function identifySource(source, sourceId) {
   selectedSource = knownSources.find(item => item.id === sourceId && item.backend === source) || null;
   renderSources();
   const sourceLabel = selectedSource ? selectedSource.label :
-    source === 'realsense' ? 'RealSense' : source === 'v4l2' ? 'V4L2 RGB' : 'Camera';
+    source === 'realsense' ? 'RealSense' :
+    source === 'v4l2' ? 'V4L2 RGB' :
+    source === 'rtsp' ? 'Lite3 wide-angle camera' : 'Camera';
   document.querySelector('.source').textContent = sourceLabel;
   image.alt = sourceLabel + ' video stream';
 }

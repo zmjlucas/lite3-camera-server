@@ -27,6 +27,7 @@ def stub_command():
 def main():
     if sys.argv[1] == "--ssh-stub":
         return stub_command()
+    sys.path.insert(0, str(Path(sys.argv[1]).resolve().parent))
     spec = importlib.util.spec_from_file_location("camera_cli", sys.argv[1])
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)

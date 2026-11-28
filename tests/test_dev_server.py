@@ -3,7 +3,8 @@ import json
 from types import SimpleNamespace
 import unittest
 
-from src import server
+from src import arm_gateway, control, server
+from src.remote.arm_worker import observed_state
 from fixtures.http_connection import MemoryConnection
 
 
@@ -55,6 +56,96 @@ class DevHTTPTests(unittest.TestCase):
     def test_ambiguous_http_framing_rejected(self):
         for headers in ([('Content-Length','2')], [('Transfer-Encoding','chunked')]):
             self.assertEqual(self.request('POST','/api/dog/stop',headers=headers)[0],400)
+
+
+    def test_status_and_control_responses_match_sdk_dictionary_shapes(self):
+        from src.lite3_dev_server import AcquireResponse, ArmStatus, ControlStatus, DisabledStatus, DogStatus
+
+        self.control = None
+        status, body = self.request('GET', '/api/status')
+        self.assertEqual((status, json.loads(body)), (200, {'mode': 'disabled'}))
+        self.assertEqual(json.loads(body).keys(), DisabledStatus.__annotations__.keys())
+
+        self.control = control.ControlService(mode='disabled')
+        _, body = self.request('GET', '/api/status')
+        self.assertEqual(json.loads(body).keys(), ControlStatus.__annotations__.keys())
+
+        self.control = control.ControlService()
+        self.addCleanup(self.control.close)
+        code, body = self.request('POST', '/api/control/acquire', b'{"owner":"contract"}')
+        reply = json.loads(body)
+        self.assertEqual(code, 200)
+        self.assertEqual(reply.keys(), AcquireResponse.__annotations__.keys())
+        self.assertIsInstance(reply['lease'], str)
+        self.assertEqual(reply['status'].keys(), ControlStatus.__annotations__.keys())
+        self.assertEqual(reply['status']['dog'].keys(), DogStatus.__annotations__.keys())
+        self.assertEqual(reply['status']['arm'].keys(), {'motion_enabled', 'reason', 'position_deg', 'simulated'})
+        self.assertLessEqual(reply['status']['arm'].keys(), ArmStatus.__annotations__.keys())
+
+    def test_arm_state_and_reconnect_keep_distinct_gateway_shapes(self):
+        from src.lite3_dev_server import ArmGatewayReconnect, ObservedArmState, UnobservedArmState
+
+        self.control = control.ControlService()
+        self.addCleanup(self.control.close)
+        self.gateway = None
+        for action in ('state', 'reconnect'):
+            with self.subTest(action=action):
+                code, body = self.request('POST', '/api/arm/' + action)
+                summary = json.loads(body)
+                self.assertEqual(code, 200)
+                self.assertEqual(summary.keys(), {'motion_enabled', 'reason', 'position_deg', 'simulated', 'observed'})
+                self.assertLessEqual(summary.keys(), UnobservedArmState.__annotations__.keys())
+                self.assertIs(summary['observed'], False)
+                self.assertEqual(set(summary['position_deg']), {'b', 's', 'e', 'w', 'h'})
+
+        angles = {'b': 10.0, 's': -5.0, 'e': 2.0, 'w': 0.0}
+        gateway = arm_gateway.ArmGateway()
+        self.addCleanup(gateway.close)
+        self.gateway = SimpleNamespace(read_state=lambda: observed_state(angles), reconnect=gateway.reconnect)
+        code, body = self.request('POST', '/api/arm/state')
+        measured = json.loads(body)
+        self.assertEqual(code, 200)
+        self.assertEqual(measured.keys(), {'position_deg', 'gripper_position_deg', 'observed', 'motion_enabled', 'reason'})
+        self.assertLessEqual(measured.keys(), ObservedArmState.__annotations__.keys())
+        self.assertIs(measured['observed'], True)
+        self.assertEqual(measured['position_deg'], angles)
+        self.assertIsNone(measured['gripper_position_deg'])
+
+        code, body = self.request('POST', '/api/arm/reconnect')
+        reconnected = json.loads(body)
+        self.assertEqual(code, 200)
+        self.assertEqual(reconnected.keys(), ArmGatewayReconnect.__annotations__.keys())
+        self.assertIs(reconnected['connected'], False)
+        self.assertIs(reconnected['reconnect_required'], False)
+
+    def test_arm_operation_and_stop_routes_reach_control(self):
+        self.assertEqual(self.request('POST', '/api/arm/operation', b'{"id":"op"}')[0], 200)
+        self.assertEqual(self.control.calls[-1], ('arm/operation', {'id': 'op'}))
+        self.assertEqual(self.request('POST', '/api/arm/stop')[0], 200)
+        self.assertEqual(self.control.calls[-1], ('arm/stop', {}))
+
+    def test_arm_read_rechecks_estop_after_serial_io(self):
+        self.control = control.ControlService(mode='hardware', dog_enabled=False)
+        self.addCleanup(self.control.close)
+        def read_then_estop():
+            self.control.dispatch('control/estop', {})
+            return dict(observed_state({'b': 0., 's': 0., 'e': 0., 'w': 0.}),
+                        motion_enabled=True, reason=None)
+        self.gateway = SimpleNamespace(read_state=read_then_estop)
+        code, body = self.request('POST', '/api/arm/state')
+        state = json.loads(body)
+        self.assertEqual(code, 200)
+        self.assertFalse(state['motion_enabled'])
+        self.assertIn('emergency stop', state['reason'].lower())
+
+    def test_arm_profile_is_local_hardware_only(self):
+        args = server.parse_args(['--source', 'none', '--control-mode', 'hardware',
+                                  '--arm-motion-profile', '/home/ysc/arm/session.json'])
+        self.assertEqual(args.arm_motion_profile, '/home/ysc/arm/session.json')
+        for options in ([], ['--control-mode', 'readonly'],
+                        ['--control-mode', 'hardware', '--arm-host', 'robot']):
+            with self.subTest(options=options), self.assertRaises(SystemExit):
+                server.parse_args(['--source', 'none', '--arm-motion-profile', '/tmp/profile'] + options)
 
 
 if __name__ == '__main__':

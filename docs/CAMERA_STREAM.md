@@ -150,19 +150,32 @@ The launcher selects the connection path with the rules above. Set `--device` to
 
 Use `--width`, `--height`, `--fps`, and `--quality` to request settings that the device supports. Check the actual image resolution and frame rate after the stream starts.
 
-### Switch between the D435i and arm camera
+### Switch camera sources
 
 After deploying the current version, start the RealSense or V4L2 viewer with either command above. Use the **Source** dropdown to select a detected camera. Entries show the current device node and camera name, such as `/dev/video4 — D435i RGB` or `/dev/video6 — Arm camera (SXW USB Camera)`. These numbers are examples; the server detects the current numbering. Use **Refresh** to scan again after connecting a camera.
 
-Only supported D435i RGB and SXW USB Camera capture nodes are offered. Auxiliary metadata, depth, infrared and unrelated camera nodes are excluded. Identifiable RGB ports remain in the dropdown when unavailable, with disabled options and the reason shown both in the option and below the controls. For example, a camera held by `realsense-viewer` shows the owning process when it is visible to the server. Release the camera in that application, or correct the reported connection/permission problem, then use **Refresh** to enable the option again. Rejecting an unavailable selection leaves the current capture running.
+Local discovery offers supported D435i RGB and SXW USB Camera capture nodes. Auxiliary metadata, depth, infrared and unrelated camera nodes are excluded. Identifiable RGB ports remain in the dropdown when unavailable, with disabled options and the reason shown both in the option and below the controls. For example, a camera held by `realsense-viewer` shows the owning process when it is visible to the server. Release the camera in that application, or correct the reported connection/permission problem, then use **Refresh** to enable the option again. Rejecting an unavailable selection leaves the current capture running.
 
 Discovery queries capabilities and reads Linux process descriptors without starting capture or stopping other applications. The server ignores its own descriptors so shared viewers can keep using its capture. An external handle on a camera's video interfaces or USB device is conservatively treated as in use. If capability probing fails, sysfs must identify the RGB capture interface; unidentified nodes stay excluded. Process inspection depends on Linux permissions, and another application can acquire a camera after a refresh, so capture may still report a later error.
 
 One camera streams at a time. Selecting another source clears the old image and snapshot, stops the previous capture, and starts the selected camera. The HTTP server and SSH tunnels stay open, so viewer URLs remain valid. Selection affects every viewer connected to this server. If a driver blocks during capture shutdown, the server refuses to open a second camera; stop and restart the shared server after resolving the device problem.
 
-The SXW arm camera uses V4L2 with MJPG input. A V4L2 session uses YUYV for D435i RGB. A session launched with `--backend realsense` uses the RealSense SDK for D435i and restores its original `--depth` setting when switching back from the arm camera. Depth preview is not available on SXW. The dropdown applies to this server's RealSense/V4L2 viewer; ROS mode continues to use the external topic viewer.
+The SXW arm camera uses V4L2 with MJPG input. A V4L2 session uses YUYV for D435i RGB. A session launched with `--backend realsense` uses the RealSense SDK for D435i and restores its original `--depth` setting when switching back to D435i. The dropdown applies to this server's RealSense/V4L2 viewer. ROS mode uses the external topic viewer.
 
 If a selection fails, read the source error and check the connection, permissions, camera usage, and requested resolution/frame rate. Use **Retry camera** to restart the selected camera after a capture failure, or refresh the list and select another camera. Explicit `--device` paths remain supported for starting V4L2; the web selection API accepts only IDs from the detected catalog, not arbitrary device paths.
+
+### Enable the Lite3 wide-angle camera
+
+Add the motion host's IPv4 address with `--wide-angle-host` to make its vendor camera stream selectable in a RealSense or V4L2 session. The decoder runs on the Linux perception host and needs OpenCV with the FFmpeg backend and RTSP capture timeout support. Keep the vendor publisher running on the motion host. The perception host reads its TCP RTSP stream on port 8554 at `/test`.
+
+```bash
+python3 src/client.py deploy ysc@192.168.1.103 --backend realsense --wide-angle-host 192.168.1.120
+python3 src/client.py view ysc@192.168.1.103 --backend realsense --wide-angle-host 192.168.1.120
+```
+
+The server starts with the configured local camera. Select **Lite3 wide-angle camera** from **Source**. The preview uses the vendor stream's resolution and frame rate and the server's JPEG quality. If the motion host or stream is unavailable, the source stays visible with a reason. Use **Refresh** after the publisher recovers. If decoding fails after selection, use **Retry camera** or switch to another source.
+
+The option is off by default and is independent of `--dog-host`. A new detached session started by `view` uses the supplied option. An existing session uses its current configuration. For the boot service, the option saved by `deploy` takes effect at the next boot or explicit service restart.
 
 ## Shared server lifecycle
 
@@ -194,7 +207,7 @@ To use the service immediately, first stop any detached or foreground camera ser
 
 Wait for the service's HTTP listener before launching a new `view` during a restart. If `view` starts its detached fallback first, stop that detached process so the service can claim the port on its next retry.
 
-The service retries camera initialization every five seconds so a USB camera that becomes available after boot can recover. It also reopens V4L2 capture after a read failure; RealSense frame-read errors retain the existing SDK pipeline and retry frame reads. HTTP can remain available with `/healthz` returning 503 while capture is unavailable. A crashed server process is restarted by systemd. `systemctl is-active` checks the process, not whether frames are arriving; check `/healthz` and the live image too.
+The service retries camera initialization every five seconds so a USB camera that becomes available after boot can recover. It also reopens V4L2 or wide-angle capture after a read failure. RealSense frame-read errors retain the existing SDK pipeline and retry frame reads. HTTP can remain available with `/healthz` returning 503 while capture is unavailable. A crashed server process is restarted by systemd. Use `systemctl is-active` to check the process and `/healthz` and the live image to check frame delivery.
 
 Use `sudo systemctl stop lite3-camera-server.service` to stop it until the next boot, or `sudo systemctl disable --now lite3-camera-server.service` to stop it and disable autostart. Running `deploy` enables it again. A later `view` can still start a detached server if the service is stopped. Service logs are in the journal; service processes do not use the launcher's `.runtime/*.pid` files.
 
