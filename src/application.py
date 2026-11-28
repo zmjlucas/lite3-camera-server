@@ -13,10 +13,10 @@ if TYPE_CHECKING:
     from control import ControlService
     from lite3_dev_server.api import (
         AcquireResponse, ArmGatewayReconnect, ArmOperation, ArmReconnectResponse, ArmState,
-        ControlStatus, ObservedArmState, UnobservedArmState,
+        ControlStatus, DogActionStatus, ObservedArmState, UnobservedArmState,
     )
 
-    ControlResult = Union[AcquireResponse, ControlStatus, ArmState, ArmReconnectResponse, ArmOperation]
+    ControlResult = Union[AcquireResponse, ControlStatus, ArmState, ArmReconnectResponse, ArmOperation, DogActionStatus]
 
 
 class ControlApplication:

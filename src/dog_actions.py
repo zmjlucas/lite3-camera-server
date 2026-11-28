@@ -3,6 +3,7 @@
 Native yaw sign follows DeepRoboticsLab/Lite3_ROS at e4ab5dc1c7f3ff46274162a1ef302253936578aa,
 src/transfer/src/Jetson2Motion.cpp: CmdVelCallback negates ROS angular.z.
 """
+from collections import OrderedDict
 import math
 import secrets
 
@@ -10,6 +11,8 @@ import secrets
 ACTION_AXES = {'forward': ('vx', 1), 'backward': ('vx', -1),
                'turn_left': ('yaw', -1), 'turn_right': ('yaw', 1)}
 MAX_DURATION = 10.0
+MAX_TERMINAL_ACTIONS = 128
+TERMINAL_RETENTION_SECONDS = 300.0
 
 
 def action_velocity(name, speed, duration, limits):
@@ -30,6 +33,7 @@ class DogActions:
     def __init__(self, clock):
         self._clock = clock
         self._current = None
+        self._terminal = OrderedDict()
         self.deadline = None
 
     @property
@@ -37,6 +41,7 @@ class DogActions:
         return self._current is not None and self._current['phase'] == 'running'
 
     def start(self, name, speed, duration):
+        self.prune()
         self.deadline = None
         self._current = dict(id=secrets.token_urlsafe(12), name=name, speed=float(speed),
                              duration=float(duration), phase='running', reason=None)
@@ -49,6 +54,24 @@ class DogActions:
         if self.running:
             self._current.update(phase=phase, reason=reason)
             self.deadline = None
+            self._terminal[self._current['id']] = (self._clock(), self.status())
+        self.prune()
+
+    def prune(self):
+        now = self._clock()
+        while self._terminal:
+            finished_at, _ = next(iter(self._terminal.values()))
+            if (len(self._terminal) <= MAX_TERMINAL_ACTIONS
+                    and now - finished_at < TERMINAL_RETENTION_SECONDS):
+                break
+            self._terminal.popitem(last=False)
+
+    def lookup(self, action_id):
+        """Return a copy without advancing motion or extending retention."""
+        self.prune()
+        if self.running and self._current['id'] == action_id:
+            return self.status()
+        return dict(self._terminal[action_id][1])
 
     def status(self):
         if self._current is None:

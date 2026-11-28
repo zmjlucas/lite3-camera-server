@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src import control
+from src.dog_actions import DogActions
 from tests.test_control import Clock, DatagramSink
 
 
@@ -207,6 +208,127 @@ class DogActionTests(unittest.TestCase):
         self.service._run()
         self.assertAlmostEqual(waits[0], .025)
         self.assertEqual(self.service.status()['dog']['action']['phase'], 'completed')
+
+    def test_lookup_keeps_completed_action_after_a_successor_starts(self):
+        first = self.action(self.ready())['dog']['action']
+        self.service._tick()
+        self.clock.advance(1)
+        self.service._tick()
+        second = self.action(self.ready(), name='turn_left', speed=.2)['dog']['action']
+        expected = dict(first, phase='completed', reason='duration_elapsed', remaining_s=0.0)
+        self.assertEqual(self.service.dispatch('dog/action/status', {'id': first['id']}), expected)
+        current = self.service.dispatch('dog/action/status', {'id': second['id']})
+        self.assertEqual(current, second)
+        self.assertEqual(current['phase'], 'running')
+        self.assertEqual(self.service.status()['dog']['action'], second)
+        current['name'] = 'backward'
+        self.assertEqual(self.service.dispatch('dog/action/status', {'id': second['id']}), second)
+
+    def test_lookup_returns_cancellation_and_fault_without_ownership(self):
+        for stop in ('dog/stop', 'control/release', 'control/estop', 'shutdown'):
+            with self.subTest(stop=stop):
+                lease = self.ready()
+                action = self.action(lease)['dog']['action']
+                if stop == 'shutdown':
+                    self.service.close()
+                else:
+                    self.service.dispatch(stop, {'lease': lease} if stop == 'control/release' else {})
+                reason = 'release' if stop == 'control/release' else stop
+                result = self.service.dispatch('dog/action/status', {'id': action['id']})
+                self.assertEqual(result, dict(action, phase='cancelled', reason=reason, remaining_s=0.0))
+                if stop == 'control/estop':
+                    self.service.dispatch('control/reset', {'revision': self.service.status()['safety_revision']})
+
+        service, feedback, sink, lease = self.hardware()
+        action = self.action(lease, service)['dog']['action']
+        sink.fail_codes.add(control.HEARTBEAT)
+        service._tick()
+        result = service.dispatch('dog/action/status', {'id': action['id']})
+        self.assertEqual(result, dict(action, phase='fault', reason='Dog UDP send failed', remaining_s=0.0))
+
+    def test_lookup_validation_and_missing_ids_do_not_change_due_control_state(self):
+        service, feedback, sink, lease = self.hardware()
+        action = self.action(lease, service)['dog']['action']
+        service._tick()
+        # The writer alone will act on the due deadline after these reads.
+        self.clock.advance(2)
+        before = (service._lease, service._lease_deadline, service._sequence, service._generation,
+                  service._phase, dict(service._velocity), service._actions.deadline,
+                  service._velocity_deadline, service._safety_revision, list(sink.packets))
+        service._wake.clear()
+        result = service.dispatch('dog/action/status', {'id': action['id']})
+        self.assertEqual(result['phase'], 'running')
+        self.assertEqual(result['remaining_s'], 0)
+        for body, code in (({'id': 'unknown'}, 'not_found'), ({}, 'invalid_request'),
+                           ({'id': ''}, 'invalid_request'), ({'id': []}, 'invalid_request'),
+                           ({'id': True}, 'invalid_request'), ({'id': 'x' * 129}, 'invalid_request'),
+                           ({'id': action['id'], 'lease': lease}, 'invalid_request'),
+                           ({'id': action['id'], 'seq': 3}, 'invalid_request')):
+            with self.subTest(body=body), self.assertRaises(control.ControlError) as caught:
+                service.dispatch('dog/action/status', body)
+            self.assertEqual(caught.exception.code, code)
+        self.assertEqual((service._lease, service._lease_deadline, service._sequence, service._generation,
+                          service._phase, dict(service._velocity), service._actions.deadline,
+                          service._velocity_deadline, service._safety_revision, list(sink.packets)), before)
+        self.assertFalse(service._wake.is_set())
+        service._tick()
+        self.assertEqual(service.dispatch('dog/action/status', {'id': action['id']})['reason'], 'expired')
+
+
+class DogActionHistoryTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.actions = DogActions(self.clock)
+
+    def test_count_limit_evicts_oldest_terminal_and_keeps_running_action(self):
+        completed = []
+        for _ in range(129):
+            self.actions.start('forward', .1, 1)
+            self.actions.finish('completed', 'duration_elapsed')
+            completed.append(self.actions.status())
+        with self.assertRaises(KeyError):
+            self.actions.lookup(completed[0]['id'])
+        for record in completed[1:]:
+            self.assertEqual(self.actions.lookup(record['id']), record)
+        self.actions.start('backward', .2, 10)
+        running = self.actions.status()
+        self.assertEqual(self.actions.lookup(running['id']), running)
+        self.assertEqual(self.actions.lookup(completed[1]['id']), completed[1])
+        self.actions.finish('cancelled', 'dog/stop')
+        with self.assertRaises(KeyError):
+            self.actions.lookup(completed[1]['id'])
+
+    def test_terminal_ttl_starts_at_finish_and_reads_or_stops_never_extend_it(self):
+        self.actions.start('turn_right', .2, 10)
+        self.actions.mark_started()
+        self.clock.advance(10)
+        self.actions.finish('fault', 'feedback lost')
+        terminal = self.actions.status()
+        self.clock.advance(299)
+        copy = self.actions.lookup(terminal['id'])
+        self.assertEqual(copy, terminal)
+        copy['reason'] = 'changed by caller'
+        self.assertEqual(self.actions.lookup(terminal['id']), terminal)
+        self.actions.finish('cancelled', 'later stop')
+        self.clock.advance(1)
+        with self.assertRaises(KeyError):
+            self.actions.lookup(terminal['id'])
+        self.assertEqual(self.actions.status(), terminal)
+
+    def test_expiring_history_keeps_the_running_record_and_its_deadline(self):
+        self.actions.start('forward', .1, 1)
+        self.actions.finish('completed', 'duration_elapsed')
+        first = self.actions.status()
+        self.clock.advance(299)
+        self.actions.start('turn_left', .2, 10)
+        second = self.actions.status()
+        self.actions.mark_started()
+        deadline = self.actions.deadline
+        self.clock.advance(1)
+        with self.assertRaises(KeyError):
+            self.actions.lookup(first['id'])
+        self.assertEqual(self.actions.lookup(second['id']), dict(second, remaining_s=9))
+        self.assertEqual(self.actions.deadline, deadline)
 
 
 if __name__ == '__main__':

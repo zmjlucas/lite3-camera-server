@@ -188,6 +188,10 @@ class DogActionRequest(MotionRequest):
     duration: float
 
 
+class DogActionStatusRequest(TypedDict):
+    id: str
+
+
 class ArmJogRequest(MotionRequest):
     joint: ArmJoint
     delta: float

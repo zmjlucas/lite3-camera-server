@@ -35,6 +35,13 @@ def main():
             assert status['dog']['simulated']
             acquired = robot.acquire('installed-wheel')
             assert acquired['status']['lease_active']
+            try:
+                robot.dog_action_status('unknown-action')
+            except DevClientError as error:
+                assert error.status == 404
+            else:
+                raise AssertionError('Unknown dog action resolved')
+            assert robot.lease == acquired['lease']
             observer = DevClient(origin)
             try:
                 observer.acquire('conflicting-wheel-client')

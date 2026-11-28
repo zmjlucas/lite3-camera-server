@@ -237,6 +237,55 @@ class DevClientTests(unittest.TestCase):
                     getattr(self.client, name)(*args)
         self.assertEqual(self.endpoint.calls, [])
 
+    def test_dog_action_lookup_requires_only_id_and_preserves_owned_sequence(self):
+        record = action_status('completed', lease_active=False)['dog']['action']
+        self.endpoint.response = dict(record, future_field='preserved')
+        self.assertEqual(self.client.dog_action_status('action-1'), self.endpoint.response)
+        self.assertIsNone(self.client.lease)
+        request, body, _ = self.endpoint.calls[-1]
+        self.assertEqual(request.full_url, 'http://127.0.0.1:8080/api/dog/action/status')
+        self.assertEqual(request.get_method(), 'POST')
+        self.assertEqual(body, {'id': 'action-1'})
+        self.endpoint.response = None
+        self.client.acquire()
+        self.client.stand()
+        for phase in ('running', 'completed', 'cancelled', 'fault'):
+            self.endpoint.response = action_status(phase)['dog']['action']
+            self.assertEqual(self.client.dog_action_status('action-1')['phase'], phase)
+            self.assertEqual(self.client.lease, 'opaque-lease')
+        self.endpoint.response = None
+        self.client.velocity(vx=.1)
+        self.assertEqual(self.endpoint.calls[-1][1]['seq'], 2)
+
+    def test_dog_action_lookup_errors_keep_ownership_without_retry(self):
+        self.client.acquire()
+        self.client.stand()
+        for status in (400, 404, 503):
+            self.endpoint.failure = HTTPError('http://127.0.0.1/api/dog/action/status', status,
+                                             'lookup failed', protocol_headers(),
+                                             io.BytesIO(b'{"error":"Action unavailable","code":"not_found"}'))
+            before = len(self.endpoint.calls)
+            with self.assertRaisesRegex(DevClientError, 'Action unavailable') as caught:
+                self.client.dog_action_status('unknown')
+            self.assertEqual(caught.exception.status, status)
+            self.assertEqual(len(self.endpoint.calls), before + 1)
+            self.assertEqual(self.client.lease, 'opaque-lease')
+        self.endpoint.failure = None
+        self.client.velocity(vx=.1)
+        self.assertEqual(self.endpoint.calls[-1][1]['seq'], 2)
+
+    def test_dog_action_lookup_rejects_malformed_or_mismatched_results(self):
+        self.client.acquire()
+        record = action_status()['dog']['action']
+        for response in ({}, dict(record, id='different'), dict(record, phase='future'),
+                         dict(record, duration=True), dict(record, reason=[]),
+                         dict(record, remaining_s=float('inf'))):
+            with self.subTest(response=response):
+                self.endpoint.response = response
+                with self.assertRaises(DevClientError):
+                    self.client.dog_action_status('action-1')
+                self.assertEqual(self.client.lease, 'opaque-lease')
+
     def test_dog_action_error_forgets_ownership_without_retry_or_implicit_preparation(self):
         self.assertTrue(callable(getattr(self.client, 'forward', None)))
         self.client.acquire()

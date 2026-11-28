@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from typing import Any, Dict, Literal, Optional, Tuple, Union
     from lite3_dev_server.api import (
         AcquireResponse, ArmJoint, ControlMode, ControlStatus, DogPhase, Environment, VelocityAxis,
-        VelocityLimit, ArmOperation,
+        VelocityLimit, ArmOperation, DogActionStatus,
     )
 
     ControlErrorCode = Literal['invalid_request', 'not_found', 'conflict', 'locked', 'unavailable']
@@ -264,9 +264,18 @@ class ControlService:
             raise ControlError('locked', 'Control is latched; explicit reset is required')
         return sequence
 
-    def dispatch(self, action: str, body: 'Any') -> 'Union[AcquireResponse, ControlStatus, ArmOperation]':
+    def dispatch(self, action: str, body: 'Any') -> 'Union[AcquireResponse, ControlStatus, ArmOperation, DogActionStatus]':
         """Dispatch an allowlisted operation from a trusted LAN client."""
         with self._lock:
+            # Observers leave expiry and stopping to the independently scheduled writer.
+            if action == 'dog/action/status':
+                self._fields(body, ('id',), ('id',))
+                if not isinstance(body['id'], str) or not 1 <= len(body['id']) <= 128:
+                    raise ControlError('invalid_request', 'id must identify a dog action')
+                try:
+                    return self._actions.lookup(body['id'])
+                except KeyError:
+                    raise ControlError('not_found', 'Unknown or expired dog action') from None
             self._expire_locked()
             if self._closed or self.mode in ('disabled', 'readonly'):
                 raise ControlError('unavailable', 'Control service is unavailable')
@@ -442,6 +451,7 @@ class ControlService:
         self._wake.set()
 
     def _expire_locked(self):
+        self._actions.prune()
         now = self._clock()
         if ((self._lease is not None and now >= self._lease_deadline)
                 or (self._velocity_deadline is not None and now >= self._velocity_deadline)):

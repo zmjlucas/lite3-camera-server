@@ -3,7 +3,7 @@ from typing import Optional
 
 from lite3_dev_server import (
     ArmCapabilities, ArmJoint, ArmOperation, ControlStatus, DevClient, DevClientError,
-    DogActionName, DogActionRequest, DogActionStatus, DogFeedback, DogPhase, Environment,
+    DogActionName, DogActionRequest, DogActionStatus, DogActionStatusRequest, DogFeedback, DogPhase, Environment,
 )
 
 
@@ -71,6 +71,11 @@ def start_dog_action(robot: DevClient, name: DogActionName) -> Optional[DogActio
 
 def dog_action_request(lease: str, seq: int, name: DogActionName) -> DogActionRequest:
     return {'lease': lease, 'seq': seq, 'name': name, 'speed': 0.1, 'duration': 1.0}
+
+
+def lookup_dog_action(robot: DevClient, action_id: str) -> DogActionStatus:
+    request: DogActionStatusRequest = {'id': action_id}
+    return robot.dog_action_status(request['id'])
 
 
 def default_dog_action(robot: DevClient, name: DogActionName) -> ControlStatus:

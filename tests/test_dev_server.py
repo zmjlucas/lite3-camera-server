@@ -30,8 +30,8 @@ class DevHTTPTests(unittest.TestCase):
         self.addCleanup(self.control.close)
         self.measured = observed_state({'b': 1., 's': 2., 'e': 3., 'w': 4.})
         self.gateway = SimpleNamespace(read_state=lambda: dict(self.measured))
-    def request(self, method, path, body=b'{}', headers=()):
-        fields = [('Host', 'localhost:8080'), ('Content-Type', 'application/json'),
+    def request(self, method, path, body=b'{}', headers=(), content_type='application/json'):
+        fields = [('Host', 'localhost:8080'), ('Content-Type', content_type),
                   ('Content-Length', str(len(body)))]
         fields.extend(headers)
         raw = '{} {} HTTP/1.1\r\n{}\r\n\r\n'.format(method, path, '\r\n'.join('{}: {}'.format(*x) for x in fields))
@@ -71,6 +71,69 @@ class DevHTTPTests(unittest.TestCase):
         _, body = self.request('GET', '/api/status')
         self.assertEqual(json.loads(body)['dog']['action']['phase'], 'completed')
         self.assertFalse(json.loads(body)['lease_active'])
+
+    def test_dog_action_lookup_is_read_only_including_response_headers_and_errors(self):
+        from test_control import Clock
+        clock = Clock()
+        self.control = control.ControlService(clock=clock, environment='dev', simulate=True)
+        self.addCleanup(self.control.close)
+        lease = self.control.dispatch('control/acquire', {'owner': 'actions'})['lease']
+        self.control.dispatch('dog/stand', {'lease': lease, 'seq': 1})
+        self.control._tick()
+        for elapsed in (1.5, 1.5, 1.5, .5, .21, .21, .21):
+            clock.advance(elapsed)
+            self.control.dispatch('control/heartbeat', {'lease': lease})
+            self.control._tick()
+        action = self.control.dispatch('dog/action', dict(lease=lease, seq=2, name='forward',
+                                                         speed=.1, duration=1))['dog']['action']
+        self.control._tick()
+        clock.advance(2)
+        before = (self.control._lease, self.control._lease_deadline, self.control._sequence,
+                  self.control._generation, self.control._actions.deadline,
+                  dict(self.control._velocity), self.control._safety_revision)
+        self.control._wake.clear()
+        body = json.dumps({'id': action['id']}).encode()
+        for payload, expected_code in ((body, 200), (b'{"id":"missing"}', 404),
+                                       (b'{"id":null}', 400), (b'{"id":""}', 400),
+                                       (b'{"id":"missing","seq":3}', 400), (b'{', 400),
+                                       (b'[]', 400), (b'{"id":"a","id":"b"}', 400)):
+            with self.subTest(payload=payload):
+                code, response = self.request('POST', '/api/dog/action/status', payload)
+                self.assertEqual(code, expected_code)
+                if code == 200:
+                    self.assertEqual(json.loads(response), dict(action, remaining_s=0.0))
+                elif code == 404:
+                    self.assertEqual(json.loads(response)['code'], 'not_found')
+                else:
+                    self.assertEqual(json.loads(response).get('code'), 'invalid_request')
+                self.assertEqual((self.control._lease, self.control._lease_deadline, self.control._sequence,
+                                  self.control._generation, self.control._actions.deadline,
+                                  dict(self.control._velocity), self.control._safety_revision), before)
+                self.assertEqual(self.control._actions.status()['phase'], 'running')
+                self.assertFalse(self.control._wake.is_set())
+        self.control._tick()
+        code, response = self.request('POST', '/api/dog/action/status', body)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(response), dict(action, phase='cancelled', reason='expired', remaining_s=0.0))
+
+    def test_dog_action_lookup_framing_errors_have_a_semantic_code(self):
+        for headers, content_type in (([('Content-Length', '2')], 'application/json'),
+                                      ([('Transfer-Encoding', 'chunked')], 'application/json'),
+                                      ([], 'text/plain')):
+            with self.subTest(headers=headers, content_type=content_type):
+                code, body = self.request('POST', '/api/dog/action/status', headers=headers,
+                                         content_type=content_type)
+                self.assertEqual(code, 400)
+                self.assertEqual(json.loads(body).get('code'), 'invalid_request')
+
+    def test_unknown_dog_action_has_a_semantic_404_in_readonly_modes(self):
+        for mode in ('disabled', 'readonly'):
+            with self.subTest(mode=mode):
+                self.control = control.ControlService(mode=mode)
+                self.addCleanup(self.control.close)
+                code, body = self.request('POST', '/api/dog/action/status', b'{"id":"missing"}')
+                self.assertEqual(code, 404)
+                self.assertEqual(json.loads(body)['code'], 'not_found')
 
     def test_dog_state_port_rejects_invalid_values(self):
         for port in ('0', '65536', '-1'):

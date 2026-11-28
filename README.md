@@ -11,6 +11,8 @@ Install the Python SDK from this checkout with `python -m pip install .` and imp
 
 The SDK and control console provide timed `forward`, `backward`, `turn_left` and `turn_right` actions with speed and duration. Actions require explicit control ownership, stand preparation, fresh measured standing feedback and continuing lease heartbeats. The server receives robot state passively on UDP `--dog-state-port 43897`; configure the robot's upload destination and use an unoccupied port. Simulation marks its feedback as simulated. [Action lifecycle and limits](docs/DEV_SERVER.md#predefined-dog-actions) · [SDK heartbeat example](docs/DEV_SERVER.md#python-scripts)
 
+Use `DevClient.dog_action_status(action_id)` to read an active or retained action without a lease. Terminal results remain available for up to 5 minutes and 128 records, including after another action starts.
+
 The launcher, simulation and tests use the Python standard library. R5 hardware feedback additionally needs pySerial on its host. The client does not need ROS.
 
 The RealSense/V4L2 viewer has a **Source** dropdown for the Lite3's D435i RGB camera and arm-mounted **SXW USB Camera**. It discovers their usable `/dev/videoN` capture nodes and labels each camera. Add `--wide-angle-host IPV4` to enable the motion host's vendor RTSP stream as a third source. Switching stops the previous capture and briefly interrupts video. All viewers of that server share the selected source. See [camera selection](docs/CAMERA_STREAM.md#switch-camera-sources) and [wide-angle setup](docs/CAMERA_STREAM.md#enable-the-lite3-wide-angle-camera).

@@ -17,7 +17,7 @@ from . import _responses
 from .api import (
     AcquireRequest, AcquireResponse, ArmJoint, ArmReconnectResponse, ArmState,
     ArmOperation, ArmOperationRequest,
-    ControlStatus, DogActionName, LeaseRequest, ResetRequest, StopRequest,
+    ControlStatus, DogActionName, DogActionStatus, DogActionStatusRequest, LeaseRequest, ResetRequest, StopRequest,
     PROTOCOL_HEADER, PROTOCOL_VERSION,
 )
 
@@ -66,8 +66,8 @@ def _unique_json_object(pairs: List[Tuple[str, object]]) -> Dict[str, object]:
 class DevClient:
     """Explicit API calls; context exit releases an acquired lease.
 
-    Stops, resets, terminal dog actions and failed requests forget ownership for
-    their own session.
+    Stops, resets, observed terminal dog actions and failed control requests forget
+    ownership for their own session. Action-ID lookups leave ownership unchanged.
     Reacquire and explicitly prepare the dog again before further motion. A
     successful response is software state, never proof of physical robot state.
     Motion calls are serialized; reads, heartbeats and stops can run concurrently.
@@ -126,7 +126,8 @@ class DevClient:
                     self._forget_locked()
 
     def _request(self, action: str, validate: Callable[[object], _Response],
-                 body: Optional[Mapping[str, object]] = None, epoch: Optional[int] = None) -> _Response:
+                 body: Optional[Mapping[str, object]] = None, epoch: Optional[int] = None,
+                 *, forget_on_error: bool = True) -> _Response:
         with self._lock:
             if epoch is None:
                 epoch = self._epoch
@@ -144,7 +145,8 @@ class DevClient:
                 raw = response.read(self.MAX_RESPONSE + 1)
             return validate(self._decode_response(raw))
         except HTTPError as error:
-            self._forget(epoch)
+            if forget_on_error:
+                self._forget(epoch)
             message = 'Control request rejected (HTTP {})'.format(error.code)
             try:
                 _check_protocol(error.headers.get_all(PROTOCOL_HEADER) if error.headers is not None else None)
@@ -158,7 +160,8 @@ class DevClient:
                 error.close()
             raise DevClientError(message, error.code) from None
         except (URLError, OSError, HTTPException, ValueError, RecursionError, DevClientError) as error:
-            self._forget(epoch)
+            if forget_on_error:
+                self._forget(epoch)
             if isinstance(error, DevClientError):
                 raise
             raise DevClientError('Control request failed: ' + str(error)) from None
@@ -250,6 +253,21 @@ class DevClient:
         explicit heartbeats while it runs; completion stops and revokes the lease.
         """
         return self._owned('dog/action', {'name': name, 'speed': speed, 'duration': duration}, motion=True)
+
+    def dog_action_status(self, action_id: str) -> DogActionStatus:
+        """Read an active or retained action without changing this client's lease.
+
+        Terminal results are retained for up to 300 seconds and 128 records.
+        Unknown or evicted IDs raise DevClientError with status 404.
+        """
+        def validate(value: object) -> DogActionStatus:
+            result = _responses.dog_action_status(value)
+            if result['id'] != action_id:
+                raise ValueError('Response dog action ID does not match the requested ID')
+            return result
+
+        body: DogActionStatusRequest = {'id': action_id}
+        return self._request('dog/action/status', validate, body, forget_on_error=False)
 
     def forward(self, speed: float = 0.1, duration: float = 1.0) -> ControlStatus:
         """Start forward motion at positive speed (m/s), at most 0.2 m/s."""

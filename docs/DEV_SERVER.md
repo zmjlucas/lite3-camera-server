@@ -115,6 +115,10 @@ While an action runs, the server continues checking fresh suitable feedback and 
 
 `dog.action` is null before the first action. Thereafter it contains `id`, `name`, `speed`, `duration`, `phase`, `reason` and `remaining_s`. The phase is `running`, `completed`, `cancelled` or `fault`. Completion runs the bounded stop sequence and revokes ownership. Inspect the terminal phase and reason before proceeding. Further motion requires a new lease and explicit preparation. Reported completion describes the server's timed command lifecycle; physical stopping remains unverified.
 
+Keep the returned action `id` to query it through `POST /api/dog/action/status` after another action starts or control changes hands. The lookup returns the active action or a retained terminal snapshot with the original ID, parameters, phase and reason. The process retains at most 128 terminal records for 300 seconds from each terminal transition, evicting the oldest completions first. Reads leave that retention deadline unchanged. Running actions remain queryable independently of these limits. Unknown, evicted or expired IDs return HTTP 404 with `code: "not_found"`; restarting the process clears history. The global `dog.action` summary continues to show the current or most recent action, including its terminal state after lookup retention expires.
+
+An action lookup requires only the ID and leaves leases, control sequences, action timing and motion unchanged. The writer remains responsible for advancing deadlines and stopping motion. A lookup can briefly report `running` with `remaining_s=0` while the writer processes a due deadline.
+
 Dog sends use the stock little-endian `<III` and `<IIId` formats. An independent worker maintains 20 Hz heartbeat/velocity output. Every hardware dog stop path, including release, expiry and shutdown, repeats ten bounded bursts. Each burst first attempts the vendor's voice cancellation (`0x21010C0A`, value `0`) to end the persistent voice stand action started by `dog/stand`, then heartbeat, zero forward/lateral/yaw and stationary packets. Each packet is attempted independently, including when cancellation fails. There is no UDP acknowledgement; a successful send does not prove execution or physical stop. This service does not send the vendor's separate soft-estop opcode, torque-release or posture-toggle commands.
 
 Software emergency stop latches motion and requests cancellation. Dog hardware mode attempts the bounded zero-velocity and stationary burst. In the arm-only diagnostics configuration, cancellation may submit one bounded base or elbow hold if command history and feedback are still credible. OS stalls, process termination, power loss or controller failure can defeat software stopping. Retain the physical stop procedure and clear operating space. Command TTL is a server deadline. Physical stopping remains unverified.
@@ -133,6 +137,7 @@ All camera and control endpoints use anonymous trusted-LAN access. `GET /api/sta
 | `/api/dog/stand` | `{"lease":"...","seq":1}` |
 | `/api/dog/velocity` | `{"lease":"...","seq":2,"vx":0.1,"vy":0,"yaw":0,"ttl":0.3}` |
 | `/api/dog/action` | `{"lease":"...","seq":2,"name":"forward","speed":0.1,"duration":1.0}`; all fields are required; returns control status immediately |
+| `/api/dog/action/status` | `{"id":"<action_id>"}`; ID must be a string of 1–128 characters; returns `DogActionStatus` without a lease or sequence |
 | `/api/dog/stop` | `{}` for an observer stop, or current `lease`; a stale supplied lease is rejected |
 | `/api/arm/jog` | Dev only. `{"lease":"...","seq":3,"joint":"e","delta":1,"speed":2}` for simulation. Commissioned hardware diagnostics use an explicit speed at or below 1°/s and return control status with an asynchronous operation. |
 | `/api/arm/state` | `{}`; explicit hardware serial query or simulated state |
@@ -148,7 +153,7 @@ Control-service errors also carry an optional stable `code`: `invalid_request`, 
 
 Responses must advertise exactly one `X-Lite3-Dev-Protocol: 1` header. The Python SDK and browser client reject missing, empty, ambiguous or different protocol values. A failed check never replays a command. Update the server, SDK and browser assets together.
 
-The Python SDK validates required response fields, nested objects, discriminators and finite numeric values before returning its typed dictionaries. Additional fields, including additional capability metadata, are retained. Unknown values of existing enums and missing or incorrectly typed required fields raise `DevClientError`; these changes require an updated contract. Validation failures clear ownership for the originating session, while a newer session remains intact. Keep wire-incompatible changes behind a new protocol version and update the SDK, browser client and contract tests together.
+The Python SDK validates required response fields, nested objects, discriminators and finite numeric values before returning its typed dictionaries. Additional fields, including additional capability metadata, are retained. Unknown values of existing enums and missing or incorrectly typed required fields raise `DevClientError`; these changes require an updated contract. Action-ID lookups preserve ownership on validation failure. Validation failures from other requests clear ownership for the originating session, while a newer session remains intact. Keep wire-incompatible changes behind a new protocol version and update the SDK, browser client and contract tests together.
 
 `GET /api/status` returns a full `ControlStatus`, including when its mode is `disabled`. Control, dog and arm fields are required. An SDK release version is independent of the HTTP protocol version.
 
@@ -160,7 +165,7 @@ Install the SDK from the repository root on your development machine. It needs P
 python -m pip install .
 ```
 
-The `lite3_dev_server` package exports `DevClient`, `DevClientError`, the `Environment` and `ControlMode` type aliases, and typed JSON dictionaries for requests and responses. Dog action contracts include `DogActionName`, `DogActionRequest`, `DogActionStatus` and `DogFeedback`; `DogStatus` includes `feedback`, `action` and `actions_enabled`. Use the installed `lite3_dev_server` package for Python callers. Robot deployment uses the standalone server files.
+The `lite3_dev_server` package exports `DevClient`, `DevClientError`, the `Environment` and `ControlMode` type aliases, and typed JSON dictionaries for requests and responses. Dog action contracts include `DogActionName`, `DogActionRequest`, `DogActionStatusRequest`, `DogActionStatus` and `DogFeedback`; `DogStatus` includes `feedback`, `action` and `actions_enabled`. Use the installed `lite3_dev_server` package for Python callers. Robot deployment uses the standalone server files.
 
 Use `src/launcher.py` for deployment and tunnels. The console loads its HTTP client from `/static/dev_client.js`; UI timers and local lease state remain in the control page.
 
@@ -206,7 +211,15 @@ with DevClient('http://127.0.0.1:8080') as robot:
     print(action['phase'])
 ```
 
-Run this example against the local `--env dev --simulate` server above. Normal context exit releases a held lease. When a status or owned response reports a terminal dog action with `lease_active=false`, the SDK forgets that session's lease, so context cleanup needs no release request. A terminal result matching the action acknowledged in that session also clears its lease when another controller now holds control. An HTTP error also clears the lease belonging to its originating SDK session. Responses from an earlier session cannot clear a newly acquired lease.
+Run this example against the local `--env dev --simulate` server above. Normal context exit releases a held lease. When a status or owned response reports a terminal dog action with `lease_active=false`, the SDK forgets that session's lease, so context cleanup needs no release request. A terminal result matching the action acknowledged in that session also clears its lease when another controller now holds control. An HTTP error from a control request also clears the lease belonging to its originating SDK session. Responses from an earlier session cannot clear a newly acquired lease.
+
+`dog_action_status(action_id)` returns `DogActionStatus` for a known ID, including retained results from an earlier session. It sends one lookup request and leaves the SDK's lease and sequence unchanged on success or error. An expired or unknown ID raises `DevClientError` with `status == 404`. Send heartbeats separately when maintaining control. For example, an observer can inspect the `action_id` saved above:
+
+```python
+observer = DevClient('http://127.0.0.1:8080')
+result = observer.dog_action_status(action_id)
+print(result['id'], result['phase'], result['reason'])
+```
 
 If an action completes between the last response and context exit, cleanup may receive HTTP 409 when releasing its revoked lease. It then reads status and accepts completion only for the action ID acknowledged in that lease session. This also works when another controller has acquired control. Cleanup sends only its original lease-scoped release and the confirmation read. Transport failures, unconfirmed completion, cancellation and faults remain errors. An explicit `release()` keeps its usual error behavior.
 

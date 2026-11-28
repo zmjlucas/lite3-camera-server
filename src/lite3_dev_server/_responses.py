@@ -4,7 +4,7 @@ from typing import Callable, List, Mapping, Optional, cast, get_args
 
 from .api import (
     AcquireResponse, ArmFeedbackJoint, ArmJoint, ArmOperation, ArmReconnectResponse,
-    ArmState, ControlMode, ControlStatus, DogActionName, DogPhase, Environment, ErrorResponse,
+    ArmState, ControlMode, ControlStatus, DogActionName, DogActionStatus, DogPhase, Environment, ErrorResponse,
     VelocityAxis, VelocityLimit,
 )
 
@@ -220,6 +220,11 @@ def arm_reconnect(value: object) -> ArmReconnectResponse:
 def arm_operation(value: object) -> ArmOperation:
     _ARM_OPERATION(value, 'response')
     return cast(ArmOperation, value)
+
+
+def dog_action_status(value: object) -> DogActionStatus:
+    _DOG_ACTION(value, 'response')
+    return cast(DogActionStatus, value)
 
 
 def error_response(value: object) -> ErrorResponse:

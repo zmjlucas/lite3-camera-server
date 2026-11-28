@@ -166,7 +166,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
     def _control_post(self):
         action = self.path.partition("?")[0][5:]
         allowed = {"control/acquire", "control/heartbeat", "control/release", "control/estop",
-                   "control/reset", "dog/stand", "dog/velocity", "dog/action", "dog/stop", "arm/jog",
+                   "control/reset", "dog/stand", "dog/velocity", "dog/action", "dog/action/status", "dog/stop", "arm/jog",
                    "arm/state", "arm/reconnect", "arm/operation", "arm/stop"}
         if action not in allowed:
             self._json(404, {"error": "Unknown control operation"})
@@ -174,14 +174,14 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         lengths = self.headers.get_all("Content-Length", [])
         if (len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,8}", lengths[0])
                 or self.headers.get_all("Transfer-Encoding")):
-            self._json(400, {"error": "One valid Content-Length is required"})
+            self._json(400, {"error": "One valid Content-Length is required", "code": "invalid_request"})
             return
         size = int(lengths[0])
         if size > 4096:
             self._json(413, {"error": "Control request is too large"})
             return
         if self.headers.get_content_type() != "application/json":
-            self._json(400, {"error": "Use application/json"})
+            self._json(400, {"error": "Use application/json", "code": "invalid_request"})
             return
         def unique_object(pairs):
             result = {}
@@ -205,7 +205,7 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         except ControlError as error:
             self._json(CONTROL_ERROR_STATUS[error.code], {"error": str(error), "code": error.code})
         except (ValueError, UnicodeError, RecursionError) as error:
-            self._json(400, {"error": str(error)})
+            self._json(400, {"error": str(error), "code": "invalid_request"})
         except (OSError, RuntimeError) as error:
             self._json(503, {"error": str(error)})
 
@@ -217,11 +217,11 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("X-Lite3-Camera-Protocol", "1")
         self.send_header("X-Lite3-Dev-Protocol", "1")
-        status = self.server.application.status()
-        self.send_header("X-Lite3-Environment", status["environment"])
-        self.send_header("X-Lite3-Simulated", "true" if status["dog"]["simulated"] else "false")
-        self.send_header("X-Lite3-Control-Mode", status["mode"])
-        self.send_header("X-Lite3-Arm-Diagnostics", "true" if status["arm"].get("capabilities") else "false")
+        control = self.server.application.control
+        self.send_header("X-Lite3-Environment", control.environment)
+        self.send_header("X-Lite3-Simulated", "true" if control.simulate else "false")
+        self.send_header("X-Lite3-Control-Mode", control.mode)
+        self.send_header("X-Lite3-Arm-Diagnostics", "true" if control.arm_diagnostics else "false")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
