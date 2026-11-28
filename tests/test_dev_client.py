@@ -31,7 +31,7 @@ class Endpoint:
             return Response(self.response)
         if request.full_url.endswith('/acquire'):
             return Response({'lease': 'opaque-lease', 'lease_active': True})
-        return Response({'mode': 'simulation', 'lease_active': False})
+        return Response({'mode': 'hardware', 'environment': 'dev', 'lease_active': False})
 
 
 class DevClientTests(unittest.TestCase):

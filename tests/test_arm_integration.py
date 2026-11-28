@@ -38,7 +38,7 @@ class ArmIntegrationTests(unittest.TestCase):
         self.gateway = ArmMotionGateway('/dev/testR5', str(path), session_factory=factory,
                                          identity_reader=lambda: ('offline-host', 'offline-boot'))
         self.addCleanup(self.gateway.close)
-        self.control = ControlService(mode='hardware', dog_host='127.0.0.1',
+        self.control = ControlService(mode='hardware', environment='dev', dog_host='127.0.0.1',
                                       arm_gateway=self.gateway, dog_enabled=False)
         self.addCleanup(self.control.close)
         self.server = CameraHTTPServer(0, LatestFrame('none'), bind='127.0.0.1',

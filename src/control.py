@@ -1,6 +1,6 @@
 """Lease-based Lite3 control with one bounded, independently scheduled UDP writer.
 
-No socket is opened in simulation. Hardware UDP has no acknowledgement, so neither
+Dev simulation opens no motion socket. Hardware UDP has no acknowledgement, so neither
 successful preparation nor successful stop writes establish a physical state.
 R5 diagnostics require a commissioned local gateway and isolated dog output.
 """
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from typing import Any, Dict, Tuple, Union
     from lite3_dev_server.api import (
-        AcquireResponse, ArmJoint, ControlMode, ControlStatus, DogPhase, VelocityAxis,
+        AcquireResponse, ArmJoint, ControlMode, ControlStatus, DogPhase, Environment, VelocityAxis,
         VelocityLimit, ArmOperation,
     )
 
@@ -59,14 +59,21 @@ class ControlService:
     Every stop revokes the lease, invalidating even delayed high-sequence work.
     """
 
-    def __init__(self, mode: 'ControlMode' = 'simulation', dog_host='192.168.1.120',
-                 dog_port=43893, clock=time.monotonic, arm_gateway=None, dog_enabled=True):
-        if mode not in ('disabled', 'simulation', 'readonly', 'hardware'):
+    def __init__(self, mode: 'ControlMode' = 'hardware', dog_host='192.168.1.120',
+                 dog_port=43893, clock=time.monotonic, arm_gateway=None, dog_enabled=True,
+                 environment: 'Environment' = 'dist', simulate=False):
+        if mode not in ('disabled', 'readonly', 'hardware'):
             raise ValueError('Unsupported control mode')
+        if environment not in ('dev', 'dist'):
+            raise ValueError('Unsupported environment')
+        if type(simulate) is not bool:
+            raise ValueError('simulate must be boolean')
+        if simulate and (environment != 'dev' or mode != 'hardware'):
+            raise ValueError('Simulation requires dev environment and hardware control mode')
         if type(dog_enabled) is not bool:
             raise ValueError('dog_enabled must be boolean')
-        if arm_gateway is not None and (mode != 'hardware' or dog_enabled):
-            raise ValueError('Arm diagnostics require hardware mode with dog output disabled')
+        if arm_gateway is not None and (environment != 'dev' or simulate or mode != 'hardware' or dog_enabled):
+            raise ValueError('Arm diagnostics require dev hardware control with simulation and dog output disabled')
         self._arm_gateway = arm_gateway
         self._dog_enabled = dog_enabled
         if mode == 'hardware':
@@ -81,6 +88,8 @@ class ControlService:
             if type(dog_port) is not int or not 1 <= dog_port <= 65535:
                 raise ValueError('dog_port must be an integer from 1 to 65535')
         self.mode: 'ControlMode' = mode
+        self.environment: 'Environment' = environment
+        self.simulate = simulate
         self._target = (dog_host, dog_port)
         self._clock = clock
         self._lock = threading.RLock()
@@ -115,6 +124,10 @@ class ControlService:
                 self._thread.start()
         return self
 
+    @property
+    def arm_diagnostics(self):
+        return self._arm_gateway is not None
+
     def close(self):
         with self._lock:
             if not self._closed:
@@ -143,9 +156,10 @@ class ControlService:
             return self._status_locked()
 
     def _status_locked(self) -> 'ControlStatus':
-        simulated = self.mode == 'simulation'
+        simulated = self.simulate
         result: 'ControlStatus' = {
             'mode': self.mode,
+            'environment': self.environment,
             'estop': self._estop,
             'safety_revision': self._safety_revision,
             'lease_active': self._lease is not None,
@@ -156,7 +170,7 @@ class ControlService:
                 'error': self._error,
                 'stop_verified': False,
                 'simulated': simulated,
-                'motion_enabled': (self._dog_enabled and self.mode in ('simulation', 'hardware')
+                'motion_enabled': (self._dog_enabled and self.mode == 'hardware'
                                    and not self._closed and not self._estop),
             },
             'arm': {
@@ -315,7 +329,7 @@ class ControlService:
                 self._phase = 'moving'
             elif action == 'arm/jog':
                 # Capability check precedes lease handling and any possible IO.
-                if self.mode != 'simulation' and self._arm_gateway is None:
+                if not self.simulate and self._arm_gateway is None:
                     raise ControlError(423, ARM_BLOCK_REASON)
                 self._fields(body, ('lease', 'seq', 'joint', 'delta', 'speed'),
                              ('lease', 'seq', 'joint', 'delta', 'speed'))
@@ -355,7 +369,7 @@ class ControlService:
         self._stage = 0
         if self._arm_gateway is not None:
             self._arm_gateway.stop(reason)
-        if self.mode == 'hardware' and self._dog_enabled:
+        if self.mode == 'hardware' and not self.simulate and self._dog_enabled:
             self._stop_remaining = STOP_BURSTS
             self._next_stop = self._clock()
             self._phase = 'stopping'
@@ -384,7 +398,7 @@ class ControlService:
                 if (generation != self._generation or self._lease is None
                         or self._estop or self._error or self._closed):
                     return False
-            if self.mode != 'hardware' or not self._dog_enabled:
+            if self.mode != 'hardware' or self.simulate or not self._dog_enabled:
                 return True
             try:
                 if self._socket is None:

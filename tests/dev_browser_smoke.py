@@ -25,9 +25,14 @@ OBSERVER = r"""
   }
   const calls = () => fetch('/test/calls').then(response => response.json());
   const count = async action => (await calls()).filter(row => row.action === action).length;
+  const joint = name => document.querySelector(`[data-joint="${name}"][data-delta="1"]`);
+  const visible = element => element.getClientRects().length > 0;
+  const armEnvironment = scenario => fetch('/test/arm-environment', {method: 'POST', body: JSON.stringify({scenario})});
   async function ready() {
     $('acquire').click();
     await until(() => !$('stand').disabled, 'acquired');
+    if ($('environment').textContent.includes('dist'))
+      assert(!$('notice').textContent.includes('模拟'), 'distribution acquisition describes real dog control');
     $('stand').click();
     await until(() => !document.querySelector('[data-axis="vx"]').disabled, 'stand ready');
   }
@@ -37,6 +42,10 @@ OBSERVER = r"""
   let result;
   try {
     await until(() => $('connection').textContent.includes('在线'), 'status');
+    assert($('environment')?.textContent.includes('dist'), 'distribution environment must be labeled separately');
+    assert($('mode').textContent.includes('硬件'), 'distribution hardware mode must be shown');
+    assert(!visible(joint('e')) && !visible($('arm-stop')) && !visible($('arm-operation')),
+      'distribution must hide arm diagnostics');
     assert(!$('acquire').disabled, 'control must be available when the server is online');
     await ready();
     press();
@@ -109,6 +118,60 @@ OBSERVER = r"""
     assert($('owner-state').textContent.includes('本页持有'), 'previous-session arm error revoked new lease');
     assert(await count('dog/stop') === stopsBeforePreviousFailure, 'previous-session arm error stopped new lease');
     $('release').click();
+    await until(() => !$('acquire').disabled, 'released before distribution feedback');
+    $('arm-state').click();
+    await until(() => $('joint-e').textContent === '12.5', 'distribution hardware feedback renders without a lease');
+    assert($('joint-h').textContent === '未知', 'distribution leaves the unobserved gripper unknown');
+    await delay(900);
+    assert($('joint-e').textContent === '12.5', 'ordinary hardware status polls preserve the last explicit read');
+
+    await armEnvironment('commissioned');
+    await until(() => $('environment').textContent.includes('dev'), 'development hardware environment');
+    assert($('mode').textContent.includes('硬件') && $('arm-mode').textContent.includes('诊断'),
+      'commissioned hardware keeps hardware mode and exposes its diagnostic state');
+    assert(visible(joint('e')) && visible($('arm-stop')) && visible($('arm-operation')),
+      'commissioned development must expose arm diagnostics');
+    $('acquire').click();
+    await until(() => !joint('h').disabled, 'commissioned gripper available');
+    assert(joint('s').disabled && $('stand').disabled, 'commissioned arm restricts joints and disables dog output');
+    assert($('notice').textContent.includes('诊断') && !$('notice').textContent.includes('站立准备'),
+      'commissioned acquisition directs the operator to arm diagnostics');
+    joint('h').click();
+    await until(async () => await count('arm/jog') === 1, 'commissioned jog');
+    const commissionedJog = (await calls()).find(row => row.action === 'arm/jog').body;
+    assert(commissionedJog.delta === 0.5 && commissionedJog.speed === 1, 'commissioned gripper bounds');
+    $('release').click();
+    await until(() => !$('acquire').disabled, 'released before simulation');
+
+    await armEnvironment('simulated');
+    await until(() => $('arm-mode').textContent.includes('模拟'), 'simulation indicated by arm status');
+    assert($('environment').textContent.includes('dev') && $('mode').textContent.includes('硬件'),
+      'simulation must keep the separate development and hardware labels');
+    await ready();
+    assert(!joint('s').disabled && $('joint-h').textContent === '0.0', 'simulated shoulder and gripper targets available');
+    joint('h').click();
+    await until(async () => await count('arm/jog') === 2, 'simulated jog');
+    const simulatedJog = (await calls()).filter(row => row.action === 'arm/jog')[1].body;
+    assert(simulatedJog.delta === 1 && simulatedJog.speed === 2, 'simulation uses its own jog limits');
+    $('release').click();
+    await until(() => !$('acquire').disabled, 'released before distribution restart');
+
+    await armEnvironment('distribution');
+    await until(() => $('environment').textContent.includes('dist'), 'distribution restart');
+    assert($('joint-h').textContent === '未知' && $('joint-e').textContent === '未知' &&
+      !$('arm-caption').textContent.includes('模拟'), 'distribution restart discards simulated targets');
+
+    await ready();
+    await armEnvironment('legacy');
+    await until(() => !$('environment').textContent.includes('dist'), 'legacy status replaces distribution status');
+    assert($('notice').textContent.includes('重启') && $('acquire').disabled &&
+      document.querySelector('[data-axis="vx"]').disabled, 'unknown environment blocks acquisition and motion');
+    assert(!$('dog-stop').disabled && !$('estop').disabled, 'legacy status keeps stop actions available');
+    const legacyStops = await count('dog/stop');
+    $('dog-stop').click();
+    await until(async () => await count('dog/stop') === legacyStops + 1, 'operator can stop during legacy status');
+    assert($('acquire').disabled, 'unknown environment stays blocked after releasing the lease');
+    await armEnvironment('distribution');
     await until(() => !$('acquire').disabled, 'released before status failure');
     await fetch('/test/status-offline', {method: 'POST'});
     await until(() => $('connection').textContent.includes('离线'), 'status unavailable');
@@ -140,14 +203,29 @@ def main():
     lock = threading.Lock()
     fixture = {'lease': None, 'phase': 'disarmed', 'fail': False, 'delay_acquire': False,
                'camera': True, 'dog_error': None, 'delay_status': False, 'delay_arm_failure': False,
-               'status_offline': False}
+               'status_offline': False, 'arm_environment': 'distribution'}
 
     def status():
-        return {'mode': 'simulation', 'estop': False, 'safety_revision': 'fixture-current-latch', 'lease_active': fixture['lease'] is not None,
-                'dog': {'phase': fixture['phase'], 'velocity': {'vx': 0, 'vy': 0, 'yaw': 0},
-                        'limits': {'vx': 0.2, 'vy': 0.1, 'yaw': 0.3}, 'error': fixture['dog_error'], 'stop_verified': False},
-                'arm': {'motion_enabled': True, 'reason': 'simulation', 'simulated': True,
-                        'position_deg': {'b': 0, 's': 0, 'e': 0, 'w': 0, 'h': 0}}}
+        simulated = fixture['arm_environment'] == 'simulated'
+        commissioned = fixture['arm_environment'] == 'commissioned'
+        arm = {'motion_enabled': simulated or commissioned,
+               'reason': 'Fixture arm state', 'simulated': simulated,
+               'position_deg': dict.fromkeys('bsewh', 0) if simulated else None}
+        if commissioned:
+            arm.update(operation=None, capabilities={
+                'joints': ['b', 'e', 'h'], 'max_delta_deg': {'b': .5, 'e': 2, 'h': .5},
+                'max_speed_deg_s': 1, 'max_travel_deg': 3, 'asynchronous': True,
+                'stop_verified': False, 'gripper_feedback': False,
+            })
+        result = {'mode': 'hardware', 'estop': False, 'safety_revision': 'fixture-current-latch',
+                  'lease_active': fixture['lease'] is not None,
+                  'dog': {'phase': fixture['phase'], 'velocity': {'vx': 0, 'vy': 0, 'yaw': 0},
+                          'limits': {'vx': 0.2, 'vy': 0.1, 'yaw': 0.3}, 'error': fixture['dog_error'],
+                          'stop_verified': False, 'simulated': simulated, 'motion_enabled': not commissioned},
+                  'arm': arm}
+        if fixture['arm_environment'] != 'legacy':
+            result['environment'] = 'dev' if simulated or commissioned else 'dist'
+        return result
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -206,6 +284,8 @@ def main():
                     fixture['delay_arm_failure'] = True
                 elif self.path == '/test/status-offline':
                     fixture['status_offline'] = True
+                elif self.path == '/test/arm-environment':
+                    fixture['arm_environment'] = body['scenario']
                 self.reply(200, {})
                 return
             action = self.path[len('/api/'):]
@@ -225,6 +305,11 @@ def main():
                 fixture['delay_arm_failure'] = False
                 time.sleep(0.6)
                 self.reply(503, {'error': 'old arm read failed'})
+                return
+            elif action == 'arm/state':
+                arm = status()['arm']
+                arm.update(observed=True, position_deg={'b': 0, 's': 0, 'e': 12.5, 'w': 0}, gripper_position_deg=None)
+                self.reply(200, arm)
                 return
             elif action == 'dog/velocity':
                 if fixture['fail']:
@@ -265,7 +350,7 @@ def main():
                 browser.wait()
             server.shutdown()
     assert result['ok'], result.get('error', 'Browser checks failed')
-    print('PASS: real Chrome hold/release, blur, delayed replies, HTTP failure, explicit reacquire, stale camera clearing.')
+    print('PASS: Chrome control lifecycle, stale camera clearing, distribution feedback, dev diagnostics, and simulation.')
 
 
 if __name__ == '__main__':

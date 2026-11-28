@@ -64,7 +64,7 @@ class ArmControlTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.arm = ArmOwner()
-        self.service = ControlService(mode='hardware', arm_gateway=self.arm,
+        self.service = ControlService(mode='hardware', environment='dev', arm_gateway=self.arm,
                                       dog_enabled=False, clock=self.clock)
         self.addCleanup(self.service.close)
 
@@ -123,7 +123,7 @@ class ArmControlTests(unittest.TestCase):
         for action in ('arm/stop', 'dog/stop', 'control/release', 'control/estop'):
             with self.subTest(action=action):
                 arm = ArmOwner()
-                service = ControlService(mode='hardware', arm_gateway=arm,
+                service = ControlService(mode='hardware', environment='dev', arm_gateway=arm,
                                          dog_enabled=False, clock=self.clock)
                 try:
                     lease = service.dispatch('control/acquire', {'owner': 'test'})['lease']
@@ -154,9 +154,10 @@ class ArmControlTests(unittest.TestCase):
         self.assertEqual(missing.exception.status, 404)
 
     def test_gateway_configuration_requires_hardware_and_isolated_dog_output(self):
-        for kwargs in ({'mode': 'simulation', 'dog_enabled': False},
-                       {'mode': 'readonly', 'dog_enabled': False},
-                       {'mode': 'hardware', 'dog_enabled': True}):
+        for kwargs in ({'mode': 'hardware', 'dog_enabled': False},
+                       {'environment': 'dev', 'simulate': True, 'mode': 'hardware', 'dog_enabled': False},
+                       {'environment': 'dev', 'mode': 'readonly', 'dog_enabled': False},
+                       {'environment': 'dev', 'mode': 'hardware', 'dog_enabled': True}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 ControlService(arm_gateway=ArmOwner(), **kwargs)
 

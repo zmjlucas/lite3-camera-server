@@ -493,6 +493,11 @@ class CameraRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("X-Lite3-Camera-Protocol", "1")
         self.send_header("X-Lite3-Dev-Protocol", "1")
+        control = getattr(self.server, "control", None)
+        self.send_header("X-Lite3-Environment", getattr(control, "environment", "dist"))
+        self.send_header("X-Lite3-Simulated", "true" if getattr(control, "simulate", False) else "false")
+        self.send_header("X-Lite3-Control-Mode", getattr(control, "mode", "disabled"))
+        self.send_header("X-Lite3-Arm-Diagnostics", "true" if getattr(control, "arm_diagnostics", False) else "false")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -832,16 +837,23 @@ def parse_args(argv):
                         help="retry failed capture every 5 seconds (used by the boot service)")
     parser.add_argument("--device", help="V4L2 RGB device path (required for --source v4l2)")
     parser.add_argument("--wide-angle-host", metavar="IPV4", help="enable the motion host's vendor RTSP camera")
-    parser.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"), default="simulation")
+    parser.add_argument("--env", choices=("dev", "dist"), default="dist",
+                        help="project environment (default: dist, real hardware)")
+    parser.add_argument("--simulate", action="store_true",
+                        help="use simulated dog and arm control (requires --env dev)")
+    parser.add_argument("--control-mode", choices=("disabled", "readonly", "hardware"), default="hardware")
     parser.add_argument("--dog-host", default="192.168.1.120", help="motion host IPv4 for UDP port 43893")
     parser.add_argument("--arm-device", default="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")
     parser.add_argument("--arm-host", help="optional SSH host for the read-only serial gateway")
     parser.add_argument("--arm-motion-profile", metavar="PATH",
                         help="one-use local R5 commissioning record; disables dog output")
     options = parser.parse_args(argv)
+    if options.simulate and (options.env != "dev" or options.control_mode != "hardware"):
+        parser.error("--simulate requires --env dev and hardware control mode")
     if options.arm_motion_profile is not None:
-        if options.control_mode != "hardware" or options.arm_host is not None:
-            parser.error("--arm-motion-profile requires hardware mode and a local arm")
+        if (options.env != "dev" or options.simulate or options.control_mode != "hardware"
+                or options.arm_host is not None):
+            parser.error("--arm-motion-profile requires --env dev, hardware mode and a local arm without --simulate")
         if not options.arm_motion_profile or any(ord(char) < 32 for char in options.arm_motion_profile):
             parser.error("--arm-motion-profile must be a local record path")
     if options.wide_angle_host is not None:
@@ -872,23 +884,26 @@ def development_services(options):
     if __package__:
         from .control import ControlService
         from .arm_gateway import ArmGateway
-        from .arm_motion import ArmMotionGateway
     else:
         from control import ControlService
         from arm_gateway import ArmGateway
-        from arm_motion import ArmMotionGateway
     arm_gateway = None
     profile = options.arm_motion_profile
     try:
         if profile:
             if os.name != "posix":
                 raise ValueError("Hardware arm diagnostics require a POSIX service host")
+            if __package__:
+                from .arm_motion import ArmMotionGateway
+            else:
+                from arm_motion import ArmMotionGateway
             arm_gateway = ArmMotionGateway(options.arm_device, profile)
-        elif options.control_mode in ("hardware", "readonly"):
+        elif not options.simulate and options.control_mode in ("hardware", "readonly"):
             arm_gateway = ArmGateway(device=options.arm_device, host=options.arm_host)
         control = ControlService(mode=options.control_mode, dog_host=options.dog_host,
                                  arm_gateway=arm_gateway if profile else None,
-                                 dog_enabled=not bool(profile))
+                                 dog_enabled=not bool(profile), environment=options.env,
+                                 simulate=options.simulate)
         return control, arm_gateway
     except Exception:
         if arm_gateway is not None:

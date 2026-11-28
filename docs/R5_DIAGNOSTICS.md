@@ -4,7 +4,7 @@ The default hardware arm path provides explicit read-only feedback. Current hard
 
 ## Commissioning record
 
-`--arm-motion-profile PATH` is an explicit opt-in for a separately commissioned device. It requires `--control-mode hardware`, the local Linux serial device and no `--arm-host`. `PATH` refers to a file already on the server host. Profile mode suppresses all dog UDP output, including shutdown stop packets. The service can still provide camera streaming. Leave the flag absent for routine observation.
+`--arm-motion-profile PATH` is an explicit opt-in for a separately commissioned device. It requires `--env dev`, `hardware` control mode and real transport to the local Linux serial device. `--simulate` and `--arm-host` are incompatible with the profile. `PATH` refers to a file already on the server host. Profile mode suppresses all dog UDP output, including shutdown stop packets. The service can still provide camera streaming. For routine observation, use the read-only R5 feedback available in `dist`.
 
 The record is a JSON object with these fields. Angle values are finite numbers in degrees. Verify all five commanded targets, all four observations and the gripper reference independently in the same uninterrupted controller session. The server does not infer commanded targets from `T105`, commission the gripper automatically or invoke firmware homing.
 
@@ -41,7 +41,7 @@ The `robo-comp` 180° rotation remains outside this diagnostic envelope. The bou
 
 ## Operation lifecycle
 
-Before any submission, inspect `arm.motion_enabled`, `arm.capabilities` and `dog.motion_enabled` in `/api/status`. The diagnostics capability lists supported joints, delta/speed/travel ceilings, `asynchronous: true`, `gripper_feedback: false` and `stop_verified: false`. Readiness can change after that snapshot. Each lease lasts two seconds. A jog admits one operation and returns its status promptly. A second jog is rejected while the gateway is busy.
+Before any submission, check that `/api/status` reports `environment: "dev"` and inspect `arm.motion_enabled`, `arm.capabilities` and `dog.motion_enabled`. The diagnostics capability lists supported joints, delta/speed/travel ceilings, `asynchronous: true`, `gripper_feedback: false` and `stop_verified: false`. Readiness can change after that snapshot. Each lease lasts two seconds. A jog admits one operation and returns its status promptly. A second jog is rejected while the gateway is busy.
 
 With an explicitly acquired lease, `DevClient.arm_jog(joint, delta, speed)` returns `ControlStatus`. Use the `operation_id` from `reply['arm']['operation']` to poll `DevClient.arm_operation(operation_id)`. Send `DevClient.heartbeat()` regularly during preflight and motion. The server exposes the active operation or, when idle, its most recent operation. Use `arm_state()` for an explicit feedback query while the gateway is idle.
 

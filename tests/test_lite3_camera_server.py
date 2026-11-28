@@ -45,7 +45,8 @@ class CameraServerTests(unittest.TestCase):
         command = [sys.executable, "-S"]
         if simulated_capture:
             command.append(str(FIXTURES / "camera_server.py"))
-        command.extend([str(SERVER_SCRIPT), "--source", source, "--port", "0", *options])
+        command.extend([str(SERVER_SCRIPT), "--source", source, "--port", "0",
+                        "--control-mode", "disabled", *options])
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,

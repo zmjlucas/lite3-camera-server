@@ -136,7 +136,7 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(install[:2], ["bash", "-lc"])
         self.assertEqual(install[5:], ["--source", "realsense", "--port", "8080",
                                       "--width", "640", "--height", "480",
-                                      "--fps", "15", "--quality", "70"])
+                                      "--fps", "15", "--quality", "70", "--env", "dist"])
 
     def test_deploy_passes_v4l2_boot_settings_to_installer(self):
         import shlex
@@ -146,7 +146,8 @@ class CameraCommandsTest(unittest.TestCase):
         install = shlex.split(self.calls()[-1][-1])
         self.assertEqual(install[5:], ["--source", "v4l2", "--port", "8081",
                                       "--width", "1280", "--height", "480",
-                                      "--fps", "10", "--quality", "70", "--device", "/dev/video4"])
+                                      "--fps", "10", "--quality", "70", "--device", "/dev/video4",
+                                      "--env", "dist"])
 
     def test_deploy_rejects_invalid_service_settings_before_connecting(self):
         for options in (("--backend", "ros"), ("--backend", "v4l2"),
@@ -281,7 +282,7 @@ class CameraCommandsTest(unittest.TestCase):
         import shlex
         remote = shlex.split(call[-1])
         self.assertEqual(remote[:2], ["bash", "-lc"])
-        self.assertEqual(remote[-2:], ["--serial", "abc; id"])
+        self.assertEqual(remote[remote.index("--serial") + 1], "abc; id")
         self.assertIn('"$@"', remote[2])
         self.assertNotIn("43893", call[-1])
 
@@ -297,7 +298,7 @@ class CameraCommandsTest(unittest.TestCase):
         self.assertEqual(remote[5], "8081")
         self.assertEqual(remote[6:], ["--source", "v4l2", "--port", "8081", "--width", "320",
                                       "--height", "240", "--fps", "10", "--quality", "55",
-                                      "--device", "/dev/video4"])
+                                      "--device", "/dev/video4", "--env", "dist"])
         self.assertNotIn("43893", remote[2])
 
     def test_v4l2_requires_device_and_rejects_other_backend_options(self):
@@ -505,6 +506,58 @@ class CameraCommandsTest(unittest.TestCase):
                                            "--local-port", str(port)]), 130)
         self.assertEqual(opened, [url])
 
+    def test_native_browser_waits_for_requested_control_identity(self):
+        import contextlib
+        import http.client
+        import io
+        cases = (
+            (['--env', 'dev', '--simulate'], 'X-Lite3-Environment', 'dist', 'dev', 'true', 'hardware', 'false'),
+            (['--env', 'dev', '--simulate'], 'X-Lite3-Simulated', 'false', 'dev', 'true', 'hardware', 'false'),
+            (['--control-mode', 'readonly'], 'X-Lite3-Control-Mode', 'hardware', 'dist', 'false', 'readonly', 'false'),
+            (['--env', 'dev', '--arm-motion-profile', '/etc/arm.json'], 'X-Lite3-Arm-Diagnostics', 'false',
+             'dev', 'false', 'hardware', 'true'),
+        )
+        for flags, mismatch, wrong, environment, simulated, mode, diagnostics in cases:
+            with self.subTest(header=mismatch):
+                port = self.free_port()
+                url = 'http://127.0.0.1:{}/control'.format(port)
+                headers = {'X-Lite3-Camera-Protocol': '1', 'X-Lite3-Dev-Protocol': '1',
+                           'X-Lite3-Environment': environment, 'X-Lite3-Simulated': simulated,
+                           'X-Lite3-Control-Mode': mode, 'X-Lite3-Arm-Diagnostics': diagnostics}
+                code = ("import time\nfrom http.server import BaseHTTPRequestHandler, HTTPServer\n"
+                        "ready = time.monotonic() + 0.4\n"
+                        "headers = {!r}\n"
+                        "class Handler(BaseHTTPRequestHandler):\n"
+                        "    def do_GET(self):\n"
+                        "        values = dict(headers)\n"
+                        "        if time.monotonic() < ready: values[{!r}] = {!r}\n"
+                        "        self.send_response(200)\n"
+                        "        for name, value in values.items(): self.send_header(name, value)\n"
+                        "        self.end_headers()\n"
+                        "    def log_message(self, *args): pass\n"
+                        "HTTPServer(('127.0.0.1', {}), Handler).serve_forever()\n").format(
+                            headers, mismatch, wrong, port)
+                original = subprocess.Popen
+                def spawn(command, *args, **kwargs):
+                    return original([sys.executable, '-c', code], *args, **kwargs)
+                opened = []
+                def open_viewer(viewer_url):
+                    opened.append(viewer_url)
+                    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
+                    try:
+                        connection.request('GET', '/control')
+                        with connection.getresponse() as response:
+                            self.assertEqual(response.getheader(mismatch), headers[mismatch],
+                                             'The browser opened before the requested control configuration was ready')
+                    finally:
+                        connection.close()
+                    raise KeyboardInterrupt
+                with patch.object(self.cli.subprocess, 'Popen', spawn), \
+                        patch.object(self.cli.webbrowser, 'open', open_viewer), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(self.cli.main(['view', 'robot', '--backend', 'none', '--direct', '--console',
+                                                    '--local-port', str(port), *flags]), 130)
+                self.assertEqual(opened, [url])
+
     def test_ros_topic_url_preserves_slashes_for_legacy_http_parser(self):
         result = self.run_cli("view", "robot", "--topic", "/camera/color/image_raw", "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -520,7 +573,7 @@ class CameraCommandsTest(unittest.TestCase):
         url = "http://127.0.0.1:{}/".format(port)
         command = [sys.executable, "-u", str(ROOT / "tests/fixtures/camera_server.py"),
                    str(ROOT / "src/server.py"), "--source", "v4l2", "--device", "/dev/video4",
-                   "--port", str(port)]
+                   "--port", str(port), "--control-mode", "disabled"]
         opened = []
         output = io.StringIO()
 

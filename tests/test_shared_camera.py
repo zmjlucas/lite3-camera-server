@@ -50,10 +50,11 @@ class SharedCameraTests(unittest.TestCase):
             except ProcessLookupError:
                 pass
 
-    def launch(self):
+    def launch(self, *options, control_mode="disabled"):
+        control = ["--control-mode", control_mode] if control_mode is not None else []
         return subprocess.Popen([sys.executable, str(HELPER), str(self.server), str(self.port),
                                  "--source", "v4l2", "--device", "/dev/video4", "--port", str(self.port),
-                                 "--bind", "127.0.0.1"],
+                                 "--bind", "127.0.0.1", *control, *options],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
 
     def finish(self, process):
@@ -85,12 +86,23 @@ class SharedCameraTests(unittest.TestCase):
         self.assertIn("Reusing", self.finish(self.launch()))
         self.assertEqual((self.root / "captures").read_text().splitlines(), ["capture"])
 
-    def listener(self, status, protocol=None, redirect=None):
+    def listener(self, status, protocol=None, redirect=None, dev_protocol=None, environment=None, simulated=None,
+                 control_mode=None, diagnostics=None):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 self.send_response(status)
                 if protocol:
                     self.send_header("X-Lite3-Camera-Protocol", protocol)
+                if dev_protocol is not None:
+                    self.send_header("X-Lite3-Dev-Protocol", dev_protocol)
+                if environment is not None:
+                    self.send_header("X-Lite3-Environment", environment)
+                if simulated is not None:
+                    self.send_header("X-Lite3-Simulated", simulated)
+                if control_mode is not None:
+                    self.send_header("X-Lite3-Control-Mode", control_mode)
+                if diagnostics is not None:
+                    self.send_header("X-Lite3-Arm-Diagnostics", diagnostics)
                 if redirect:
                     self.send_header("Location", redirect)
                 self.end_headers()
@@ -148,6 +160,88 @@ class SharedCameraTests(unittest.TestCase):
         self.assertIn("Reusing", self.finish(self.launch()))
         self.assertFalse(self.server.parent.exists())
         self.assertFalse((self.root / "captures").exists())
+
+    def test_control_reuses_a_listener_with_matching_environment(self):
+        self.listener(503, '1', dev_protocol='1', environment='dist', simulated='false',
+                      control_mode='disabled', diagnostics='false')
+        self.assertIn('Reusing', self.finish(self.launch('--require-dev', '--env', 'dist')))
+        self.assertFalse((self.root / 'captures').exists())
+
+    def test_control_refuses_a_legacy_server_without_environment_identity(self):
+        self.listener(503, '1', dev_protocol='1')
+        process = self.launch('--require-dev', '--env', 'dist')
+        _, stderr = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn('restart', stderr.lower())
+        self.assertFalse((self.root / 'captures').exists())
+
+    def test_camera_view_refuses_a_dev_listener_for_dist(self):
+        self.listener(503, '1', dev_protocol='1', environment='dev', simulated='false',
+                      control_mode='disabled', diagnostics='false')
+        process = self.launch('--env', 'dist')
+        _, stderr = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn('environment', stderr.lower())
+        self.assertFalse((self.root / 'captures').exists())
+
+    def test_control_refuses_a_different_simulation_setting(self):
+        self.listener(503, '1', dev_protocol='1', environment='dev', simulated='true',
+                      control_mode='disabled', diagnostics='false')
+        process = self.launch('--require-dev', '--env', 'dev')
+        _, stderr = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn('simulation', stderr.lower())
+        self.assertFalse((self.root / 'captures').exists())
+
+    def test_control_refuses_hardware_when_readonly_requested(self):
+        self.listener(503, '1', dev_protocol='1', environment='dist', simulated='false',
+                      control_mode='hardware', diagnostics='false')
+        process = self.launch('--require-dev', control_mode='readonly')
+        _, stderr = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn('control mode', stderr.lower())
+        self.assertFalse((self.root / 'captures').exists())
+
+    def test_control_refuses_dog_service_when_arm_diagnostics_requested(self):
+        self.listener(503, '1', dev_protocol='1', environment='dev', simulated='false',
+                      control_mode='hardware', diagnostics='false')
+        process = self.launch('--require-dev', '--env', 'dev', '--arm-motion-profile', '/etc/arm.json',
+                              control_mode='hardware')
+        _, stderr = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn('diagnostics', stderr.lower())
+        self.assertFalse((self.root / 'captures').exists())
+
+    def test_control_refuses_arm_diagnostics_when_dog_control_requested(self):
+        self.listener(503, '1', dev_protocol='1', environment='dev', simulated='false',
+                      control_mode='hardware', diagnostics='true')
+        process = self.launch('--require-dev', '--env', 'dev', control_mode='hardware')
+        _, stderr = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn('diagnostics', stderr.lower())
+        self.assertFalse((self.root / 'captures').exists())
+
+    def test_control_reuses_matching_arm_diagnostics(self):
+        self.listener(503, '1', dev_protocol='1', environment='dev', simulated='false',
+                      control_mode='hardware', diagnostics='true')
+        process = self.launch('--require-dev', '--env', 'dev', '--arm-motion-profile', '/etc/arm.json',
+                              control_mode='hardware')
+        self.assertIn('Reusing', self.finish(process))
+        self.assertFalse((self.root / 'captures').exists())
+
+    def test_control_reuses_default_hardware_with_matching_listener(self):
+        self.listener(503, '1', dev_protocol='1', environment='dist', simulated='false',
+                      control_mode='hardware', diagnostics='false')
+        self.assertIn('Reusing', self.finish(self.launch('--require-dev', control_mode=None)))
+        self.assertFalse((self.root / 'captures').exists())
+
+    def test_control_refuses_a_listener_without_control_identity(self):
+        self.listener(503, '1', dev_protocol='1', environment='dist', simulated='false')
+        process = self.launch('--require-dev')
+        _, stderr = process.communicate(timeout=5)
+        self.assertNotEqual(process.returncode, 0)
+        self.assertIn('restart', stderr.lower())
+        self.assertFalse((self.root / 'captures').exists())
 
     def test_missing_deployment_explains_how_to_start(self):
         self.server = self.root / "undeployed" / "server.py"

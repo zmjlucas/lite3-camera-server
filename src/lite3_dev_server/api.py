@@ -2,7 +2,8 @@
 from typing import Dict, List, Literal, Optional, TypedDict, Union
 
 
-ControlMode = Literal['disabled', 'simulation', 'readonly', 'hardware']
+Environment = Literal['dev', 'dist']
+ControlMode = Literal['disabled', 'readonly', 'hardware']
 DogPhase = Literal['disarmed', 'preparing', 'ready', 'moving', 'stopping', 'error']
 VelocityAxis = Literal['vx', 'vy', 'yaw']
 VelocityLimit = Literal['vx', 'vy', 'yaw', 'ttl']
@@ -66,6 +67,7 @@ class ArmStatus(_OptionalArmStatus):
 
 class ControlStatus(TypedDict):
     mode: ControlMode
+    environment: Environment
     estop: bool
     safety_revision: str
     lease_active: bool

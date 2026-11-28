@@ -50,7 +50,7 @@ class DatagramSink:
 class ControlTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
-        self.service = control.ControlService(clock=self.clock)
+        self.service = control.ControlService(clock=self.clock, environment='dev', simulate=True)
         self.addCleanup(self.service.close)
 
     def acquire(self, service=None):
@@ -81,6 +81,41 @@ class ControlTests(unittest.TestCase):
         service = control.ControlService(mode='hardware', dog_host='127.0.0.1', clock=self.clock)
         self.addCleanup(service.close)
         return service, sink
+
+    def test_default_dist_control_writes_real_dog_packets(self):
+        sink = DatagramSink()
+        with patch.object(control.socket, 'socket', return_value=sink):
+            service = control.ControlService(clock=self.clock)
+            try:
+                self.ready(service)
+                state = service.status()
+                self.assertEqual(state['environment'], 'dist')
+                self.assertEqual(state['mode'], 'hardware')
+                self.assertFalse(state['dog']['simulated'])
+                self.assertFalse(state['arm']['motion_enabled'])
+                self.assertTrue(sink.packets)
+                self.assertTrue(all(packet[3] == ('192.168.1.120', 43893) for packet in sink.packets))
+            finally:
+                service.close()
+
+    def test_debug_transport_requires_explicit_dev_hardware_configuration(self):
+        for options in ({'mode': 'simulation'}, {'environment': 'invalid'},
+                        {'simulate': True}, {'environment': 'dev', 'simulate': 1},
+                        {'environment': 'dev', 'simulate': True, 'mode': 'readonly'},
+                        {'environment': 'dev', 'simulate': True, 'mode': 'disabled'}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                control.ControlService(**options)
+
+    def test_dev_can_use_real_dog_transport_without_simulation(self):
+        sink = DatagramSink()
+        with patch.object(control.socket, 'socket', return_value=sink):
+            service = control.ControlService(clock=self.clock, environment='dev')
+            try:
+                self.ready(service)
+                self.assertFalse(service.status()['dog']['simulated'])
+                self.assertTrue(sink.packets)
+            finally:
+                service.close()
 
     def test_lease_is_exclusive_unpredictable_and_absent_from_public_status(self):
         lease = self.acquire()
@@ -183,7 +218,7 @@ class ControlTests(unittest.TestCase):
 
     def test_revision_from_previous_server_cannot_reset_a_restarted_service(self):
         previous = self.service.status().get('safety_revision')
-        restarted = control.ControlService(clock=self.clock)
+        restarted = control.ControlService(clock=self.clock, environment='dev', simulate=True)
         self.addCleanup(restarted.close)
         self.assertNotEqual(previous, restarted.status().get('safety_revision'))
         self.assert_error(409, 'control/reset', {'revision': previous}, restarted)

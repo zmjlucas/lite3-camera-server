@@ -15,17 +15,23 @@ The camera viewer remains at `/`; the control console is `/control`. Existing de
 
 Use `ysc@192.168.1.103` for SSH. Enter `'` at SSH or sudo password prompts. The camera page is `http://192.168.1.103:8080/`, and the control console is `http://192.168.1.103:8080/control`. All dev server endpoints are available without authentication. The server assumes a secure, trusted network with no public internet access. Do not add authentication to the dev server.
 
+## Environments and control modes
+
+The server and native `view` and `deploy` commands default to `--env dist` with `--control-mode hardware`. That configuration sends real Lite3 commands and offers read-only R5 feedback. Use `--env dev` for engineering work. Dev also uses real transport unless you add `--simulate`. Simulation and commissioned R5 diagnostics are dev features.
+
+Set `--control-mode readonly` to use real camera capture and R5 feedback with motion disabled. Use `--control-mode disabled` to disable the control service. Both environments support these settings. `--simulate` requires `dev` and `hardware` mode.
+
 ## Run locally in simulation
 
 Python 3.8+ is recommended for development. No camera, SSH, serial package or robot is needed:
 
 ```bash
-python3 src/server.py --source none --bind 127.0.0.1 --port 8080
+python3 src/server.py --env dev --simulate --source none --bind 127.0.0.1 --port 8080
 ```
 
-Open `http://127.0.0.1:8080/control` and acquire control. Simulation is the default and never opens a motion UDP socket, SSH session or serial port. The console and SDK can use the API as soon as the server is ready.
+Open `http://127.0.0.1:8080/control` and acquire control. Simulation runs without a motion UDP socket, arm SSH session or serial port. The console and SDK can use the API as soon as the server is ready.
 
-The console provides camera snapshots plus a link to the full streaming/source-selection viewer. It distinguishes simulated targets, sent commands and observed arm feedback. Camera failure does not disable the control API.
+The console labels the environment separately from control mode. It distinguishes simulated targets, sent commands and observed arm feedback. It shows jog widgets when dev simulation or commissioned diagnostics are available. Camera previews link to the full streaming and source-selection viewer. Camera failure does not disable the control API.
 
 ## Deploy on the perception host
 
@@ -36,7 +42,7 @@ Deploy from the checkout:
 ```bash
 python3 src/client.py deploy ysc@192.168.1.103 \
   --backend v4l2 --device /dev/v4l/by-id/CONFIRMED_RGB_CAMERA \
-  --control-mode simulation
+  --env dist
 ```
 
 Use the confirmed camera path in place of the example. Use `--backend none` for a service without camera capture. Deployment writes the current launch options to the service unit. For an existing installation, deploy again and check local systemd overrides for obsolete options. Once ready to replace the current process, use the existing service lifecycle:
@@ -55,17 +61,17 @@ python3 src/client.py view ysc@192.168.1.103 --backend v4l2 \
   --device /dev/v4l/by-id/CONFIRMED_RGB_CAMERA --console
 ```
 
-Use `--jump ysc@192.168.2.1` if needed, or existing automatic macOS route selection. This opens the console through the local SSH tunnel. Closing this tunnel does not stop the shared server; motion lease/command expiry still applies. `view` reuses existing camera **and control** settings; changing launch options never reconfigures a running service. `--console` or control flags refuse an old camera-only listener and request an explicit upgrade/restart.
+Use `--jump ysc@192.168.2.1` if needed, or existing automatic macOS route selection. This opens the console through the local SSH tunnel. Closing this tunnel does not stop the shared server. Lease and command expiry still apply. `view` requires a control-capable listener to report the requested environment, simulation setting, control mode and R5 diagnostics setting. Restart with the requested settings or select a different server port when those settings differ. A reused server keeps its camera configuration. An older camera-only listener can still serve ordinary camera viewing. Deploy and restart it to use `--console` or explicit control settings.
 
 ## Hardware capabilities
 
-For deployment acceptance with **no motion output**, use `--control-mode readonly`. This mode provides real camera streams and explicit R5 feedback reads, but rejects every control/ownership/motion action and never creates a dog UDP socket, including on shutdown. Check `/api/status` reports `readonly` after explicitly restarting the service; a reused server keeps its old settings. Serial opening can still affect a controller's reset lines, so use the verified DTR/RTS configuration and an unoccupied device. The service needs access to the serial device group (on Ubuntu, a service-only `SupplementaryGroups=dialout` drop-in can provide it without changing the login account).
+For deployment acceptance with **no motion output**, use `--control-mode readonly` with both `deploy` and `view`. This mode provides real camera streams and explicit R5 feedback reads. It rejects ownership and motion actions without opening a dog UDP socket, including on shutdown. Check `/api/status` reports `readonly` after explicitly restarting the service. Serial opening can still affect a controller's reset lines, so use the verified DTR/RTS configuration and an unoccupied device. The service needs access to the serial device group (on Ubuntu, a service-only `SupplementaryGroups=dialout` drop-in can provide it without changing the login account).
 
-Real dog output requires `--control-mode hardware`. The default motion target is `192.168.1.120:43893`; use `--dog-host 192.168.1.120` to set the same host explicitly. The default serial device is `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`; `--arm-device` selects a confirmed serial node. The service account needs serial permissions and pySerial; the service does not run interactive sudo.
+Real dog output is available with the default `hardware` control mode in `dist` and in `dev` when using real transport without an arm commissioning profile. The default motion target is `192.168.1.120:43893`. Use `--dog-host 192.168.1.120` to set the same host explicitly. The default serial device is `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`. Use `--arm-device` to select a confirmed serial node. The service account needs serial permissions and pySerial and runs without interactive sudo.
 
 R5 is attached by USB to the perception host. Normally the server owns serial locally, avoiding per-command SSH. If the server runs on another Linux host and needs remote serial access to the perception host, configure `--arm-host ysc@192.168.1.103` with verified OpenSSH configuration/known hosts and noninteractive authentication. One fixed persistent helper handles serialized queries. Opening serial is explicit via arm state retrieval; no background scan or automatic reconnect opens it. A failed session requires explicit `arm/reconnect` before another read. DTR/RTS are cleared before opening; opening may still reset a controller, so confirm its behavior on the device. Exclusive serial locking does not prevent unrelated software that ignores locks.
 
-**Hardware R5 motion is disabled by default.** `--arm-motion-profile PATH` opts a local arm into bounded diagnostics in hardware mode and disables all dog UDP output. It requires a one-use commissioning record for the local Linux host, boot and serial device. The SSH gateway remains read-only. Current hardware verification covers read-only feedback. [R5 diagnostics guide](R5_DIAGNOSTICS.md)
+**Hardware R5 motion is available only in commissioned dev sessions.** `--env dev --arm-motion-profile PATH` opts a local arm into bounded diagnostics in `hardware` mode and disables all dog UDP output. It requires real transport and a one-use commissioning record for the local Linux host, boot and serial device. The SSH gateway provides read-only feedback. [R5 diagnostics guide](R5_DIAGNOSTICS.md)
 
 The read-only R5 helper sends `{"T":105}` and validates `T=1051` replies. The gateway converts `b`, `s`, `e` and `w` feedback from radians to degrees. `gripper_position_deg` is always `null` for hardware feedback. Simulation exposes target values for all five joints.
 
@@ -97,7 +103,7 @@ Software emergency stop latches motion and requests cancellation. Dog hardware m
 
 ## HTTP contract
 
-All camera and control endpoints use anonymous trusted-LAN access. `GET /api/status` is public and returns mode, latch, lease occupancy, dog phase, limits and arm capability. The lease ID is omitted. It includes an opaque `safety_revision`: pass the value observed by the operator to reset. Every emergency stop, newly latched transport fault and successful reset changes it, so a delayed reset cannot clear a newer latch. Every control POST requires `Content-Type: application/json`, one bounded Content-Length and an object body. Body limit is 4096 bytes. Browser requests with an Origin must match the server origin.
+All camera and control endpoints use anonymous trusted-LAN access. `GET /api/status` is public and returns `environment`, `mode`, latch, lease occupancy, dog phase, limits and arm capability. `dog.simulated` and `arm.simulated` identify simulated transport. The lease ID is omitted. Pass the opaque `safety_revision` observed by the operator to reset. Every emergency stop, newly latched transport fault and successful reset changes it, so a delayed reset cannot clear a newer latch. Every control POST requires `Content-Type: application/json`, one bounded Content-Length and an object body. Body limit is 4096 bytes. Browser requests with an Origin must match the server origin.
 
 | POST path | JSON body |
 | --- | --- |
@@ -109,10 +115,10 @@ All camera and control endpoints use anonymous trusted-LAN access. `GET /api/sta
 | `/api/dog/stand` | `{"lease":"...","seq":1}` |
 | `/api/dog/velocity` | `{"lease":"...","seq":2,"vx":0.1,"vy":0,"yaw":0,"ttl":0.3}` |
 | `/api/dog/stop` | `{}` for an observer stop, or current `lease`; a stale supplied lease is rejected |
-| `/api/arm/jog` | `{"lease":"...","seq":3,"joint":"e","delta":1,"speed":2}` for simulation. Commissioned hardware diagnostics use an explicit speed at or below 1°/s and return control status with an asynchronous operation. |
+| `/api/arm/jog` | Dev only. `{"lease":"...","seq":3,"joint":"e","delta":1,"speed":2}` for simulation. Commissioned hardware diagnostics use an explicit speed at or below 1°/s and return control status with an asynchronous operation. |
 | `/api/arm/state` | `{}`; explicit hardware serial query or simulated state |
 | `/api/arm/reconnect` | `{}`; clear a failed read session and leave the transport unopened until the next read. Diagnostics require fresh commissioning after reconnect. |
-| `/api/arm/operation` | `{"id":"<operation_id>"}`; read the active or latest matching hardware operation without a lease |
+| `/api/arm/operation` | `{"id":"<operation_id>"}`; in commissioned dev sessions, read the active or latest matching hardware operation without a lease |
 | `/api/arm/stop` | `{}` for an observer stop, or `{"lease":"..."}` for the current owner. Requests cancellation, revokes the shared lease and returns control status. |
 
 Success is HTTP 200; validation 400, origin 403, missing action 404, ownership conflicts 409, too-large body 413, safety latch/capability block 423, transport/unavailable 503. Error bodies contain `error`. POST requests are never automatically retried. A transport failure can mean an operation was accepted but the response was lost; reacquire only after inspecting status and taking appropriate stop action.
@@ -125,7 +131,7 @@ Install the SDK from the repository root on your development machine. It needs P
 python -m pip install .
 ```
 
-The `lite3_dev_server` package exports `DevClient`, `DevClientError`, and typed JSON dictionaries for requests and responses. Existing checkout imports through `src.dev_client` or `dev_client` with `src` on the module search path still work. Robot deployment continues to use the standalone server files.
+The `lite3_dev_server` package exports `DevClient`, `DevClientError`, the `Environment` and `ControlMode` type aliases, and typed JSON dictionaries for requests and responses. Existing checkout imports through `src.dev_client` or `dev_client` with `src` on the module search path still work. Robot deployment continues to use the standalone server files.
 
 The client retains a private lease and serializes motion requests with increasing sequence numbers. Reads, heartbeats and stop/estop use separate HTTP requests and can run concurrently. Requests have bounded timeouts, refuse redirects and never retry motion. Responses and errors are scoped to their originating session. Superseded acquire or motion calls raise `DevClientError`. Call heartbeat explicitly while holding a lease.
 
@@ -147,9 +153,9 @@ with DevClient('http://127.0.0.1:8080') as robot:
     robot.stop()
 ```
 
-Run this against the simulation command above first. Normal context exit releases a held lease. An HTTP error clears the lease belonging to its originating SDK session.
+Run this example against the local `--env dev --simulate` server above. Normal context exit releases a held lease. An HTTP error clears the lease belonging to its originating SDK session.
 
-Check `state = robot.status()` and `state["mode"]` before reading control fields. An endpoint with no control service may return only `{"mode": "disabled"}`. In simulation or hardware mode, pass `state["safety_revision"]` to `robot.reset()` after deciding to reset the observed latch. For arm-only simulated development, acquire a lease, call `arm_jog('e', 1)` and read `arm_state()`. The `observed` flag distinguishes hardware feedback from the arm status summary. Hardware feedback includes four measured angles and `gripper_position_deg` is `None`.
+Check `state = robot.status()` and `state["mode"]` before reading control fields. An endpoint with no control service may return only `{"mode": "disabled"}`. With `hardware` control mode, pass `state["safety_revision"]` to `robot.reset()` after deciding to reset the observed latch. For arm-only simulated development, check `state["environment"] == "dev"` and `state["arm"]["simulated"]` before acquiring a lease and calling `arm_jog('e', 1)`. Then read `arm_state()`. Its `observed` flag identifies actual feedback. Hardware feedback includes four measured angles and `gripper_position_deg` is `None`.
 
 In commissioned arm diagnostics, `arm_jog()` returns `ControlStatus` with `arm.operation`. Keep the operation's `operation_id`, call `arm_operation(id)` to read its `ArmOperation` status and send explicit heartbeats while it runs. `arm_stop()` cancels the operation and releases ownership. Inspect `arm.capabilities` for the diagnostic limits and `arm.motion_enabled` for current readiness. [R5 operation lifecycle](R5_DIAGNOSTICS.md#operation-lifecycle)
 

@@ -25,7 +25,8 @@ class DeployedDevTests(unittest.TestCase):
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 destination.write_bytes(source.read_bytes())
             process = subprocess.Popen([sys.executable,'-B','-u',str(root/'server.py'),
-                                        '--source','none','--bind','127.0.0.1','--port','0'],
+                                        '--source','none','--bind','127.0.0.1','--port','0',
+                                        '--env','dev','--simulate'],
                                        stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,cwd=directory)
             lines = queue.Queue()
             threading.Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True).start()
@@ -35,12 +36,16 @@ class DeployedDevTests(unittest.TestCase):
                 reader = build_opener(ProxyHandler({}))
                 with reader.open(origin+'/control', timeout=2) as response:
                     self.assertIn(b'Lite3 Dev Server', response.read())
+                    self.assertEqual(response.headers['X-Lite3-Environment'], 'dev')
+                    self.assertEqual(response.headers['X-Lite3-Simulated'], 'true')
                 with self.assertRaises(HTTPError) as missing:
                     reader.open(origin+'/healthz', timeout=2)
                 self.assertEqual(missing.exception.code,503)
                 missing.exception.close()
                 with DevClient(origin) as robot:
-                    self.assertEqual(robot.status()['mode'],'simulation')
+                    self.assertEqual(robot.status()['mode'], 'hardware')
+                    self.assertEqual(robot.status()['environment'], 'dev')
+                    self.assertTrue(robot.status()['dog']['simulated'])
                     first = robot.acquire()
                     robot.arm_jog('e',1)
                     self.assertEqual(robot.arm_state()['position_deg']['e'],1)

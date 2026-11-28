@@ -5,7 +5,7 @@
 
 Share cameras and bounded robot communications through one development service. The browser console and Python SDK offer Lite3 UDP control, simulation and R5 serial feedback. RealSense/V4L2 camera streaming and existing SSH workflows remain supported; ROS mode remains camera-only.
 
-**Start with the [Dev Server guide](docs/DEV_SERVER.md)** for simulation, the `/control` console, API/SDK and deployment. Motion defaults to simulation. Real dog output requires explicit hardware mode. The R5 supports hardware feedback and simulated jogs. Bounded hardware diagnostics require a local commissioning profile and disable dog output. Physical motion and stopping remain unverified. [R5 diagnostics guide](docs/R5_DIAGNOSTICS.md)
+Native deployment defaults to `dist` with hardware control, including real Lite3 commands and read-only R5 feedback. `--env dev --simulate` enables offline development. Commissioned R5 motion diagnostics require `dev` and a local profile that disables dog output. Physical motion and stopping remain unverified. [Dev Server guide](docs/DEV_SERVER.md) · [R5 diagnostics guide](docs/R5_DIAGNOSTICS.md)
 
 Install the Python SDK from this checkout with `python -m pip install .` and import `DevClient` from `lite3_dev_server`. It supports Python 3.8 and later and uses only the standard library at runtime.
 
@@ -86,7 +86,7 @@ On Windows with robot Wi-Fi and a phone USB hotspot connected together, select t
 
 The native RealSense/V4L2 server trusts the local network and listens on `0.0.0.0:8080` by default. Open `http://192.168.1.103:8080/` directly from any reachable LAN device, or use `view` for an SSH tunnel at `http://127.0.0.1:18080/`. All camera and control endpoints are available to clients on the trusted LAN. The local tunnel still binds to `127.0.0.1`.
 
-Multiple clients can run `view` against the same native server and remote port. Clients reuse the boot service when it is listening; if no server is listening, the first client starts a detached shared server. Each client can disconnect independently. **Ctrl+C closes that client's tunnel; the native server keeps running**, even after all clients disconnect. All viewers share the selected camera and capture settings. Options such as `--depth`, `--device`, and resolution on `view` only apply when starting a new detached server. On one computer, use different `--local-port` values for separate launcher processes, or open multiple tabs on one tunnel.
+Multiple clients can run `view` against the same native server and remote port. Clients reuse a control-capable listener when its environment, simulation setting, control mode and R5 diagnostics setting match the request. If no server is listening, the first client starts a detached shared server. **Ctrl+C closes that client's tunnel. The native server keeps running**, even after all clients disconnect. All viewers share the selected camera and capture settings. Options such as `--depth`, `--device`, and resolution on `view` only apply when starting a new detached server. On one computer, use different `--local-port` values for separate launcher processes, or open multiple tabs on one tunnel.
 
 See [shared server lifecycle](docs/CAMERA_STREAM.md#shared-server-lifecycle) for stopping, restarting and updating the server. A manual foreground server can use `--bind 127.0.0.1` to listen only on loopback. Requests carrying an Origin header must still match the request's origin. ROS mode continues to use the upstream `web_video_server` and its foreground SSH lifecycle.
 

@@ -204,6 +204,8 @@ def camera_options(args):
 
 def control_options(args):
     values = []
+    if getattr(args, "simulate", False):
+        values.append("--simulate")
     for name in ("control_mode", "dog_host", "arm_device", "arm_host", "arm_motion_profile"):
         value = getattr(args, name, None)
         if value is not None:
@@ -211,9 +213,14 @@ def control_options(args):
     return values
 
 
+def environment_options(args):
+    return ["--env", getattr(args, "env", None) or "dist"]
+
+
 def real_script(args):
-    options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args) + control_options(args)
-    if getattr(args, "console", False) or control_options(args):
+    options = (["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args)
+               + environment_options(args) + control_options(args))
+    if getattr(args, "console", False) or control_options(args) or getattr(args, "env", None) is not None:
         options.insert(0, "--require-dev")
     return remote_shell("view_camera.sh", remote_source("ensure_camera.py"),
                         args.remote_port, *options)
@@ -319,7 +326,8 @@ def deploy(args, jump):
         scp_target = "[{}]".format(args.target) if len(args.target) == 1 else args.target
         commands.extend(["scp"] + ssh_options(jump) + [str(path), scp_target + ":" + destination]
                         for path, destination in sources)
-        options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args) + control_options(args)
+        options = (["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args)
+                   + environment_options(args) + control_options(args))
         # A remote terminal lets sudo prompt normally; no password crosses our Python process.
         commands.append(["ssh"] + ssh_options(jump) + ["-tt", args.target,
                         remote_shell("install_service.sh", installer, *options)])
@@ -333,7 +341,7 @@ def deploy(args, jump):
     return 0
 
 
-def run_foreground(command, url, open_browser, native=False):
+def run_foreground(command, url, open_browser, native=False, expected_identity=None, require_dev=False):
     with socket.socket() as listener:
         # Windows SO_REUSEADDR permits stealing an occupied listener's address.
         listener.setsockopt(socket.SOL_SOCKET,
@@ -367,6 +375,14 @@ def run_foreground(command, url, open_browser, native=False):
                         if native:
                             ready = (ready and response.geturl() == url and
                                      response.headers.get("X-Lite3-Camera-Protocol") == "1")
+                            if expected_identity is not None:
+                                dev_protocol = response.headers.get("X-Lite3-Dev-Protocol")
+                                reported = any(response.headers.get(name) is not None for name in expected_identity)
+                                # Preserve legacy camera-only viewing; control consoles need a complete identity.
+                                if require_dev or dev_protocol is not None or reported:
+                                    ready = (ready and (not require_dev or dev_protocol == "1")
+                                             and all(response.headers.get(name) == value
+                                                     for name, value in expected_identity.items()))
                     if ready and process.poll() is None:
                         if not webbrowser.open(url):
                             print("Open the viewer: " + url, flush=True)
@@ -430,7 +446,12 @@ def parser():
             command.add_argument("--height", type=bounded_int(1, 2160))
             command.add_argument("--fps", type=bounded_int(1, 60))
             command.add_argument("--quality", type=bounded_int(1, 95))
-            command.add_argument("--control-mode", choices=("disabled", "simulation", "readonly", "hardware"))
+            command.add_argument("--env", choices=("dev", "dist"),
+                                 help="project environment (default: dist; native backends only)")
+            command.add_argument("--simulate", action="store_true",
+                                 help="simulate robot control in the dev environment")
+            command.add_argument("--control-mode", choices=("disabled", "readonly", "hardware"),
+                                 help="control permission (default: hardware)")
             command.add_argument("--dog-host", help="motion host IPv4 (server default: 192.168.1.120, UDP port 43893)")
             command.add_argument("--arm-device", help="serial device on the arm host")
             command.add_argument("--arm-host", type=target, help="optional SSH target for remote arm access: ysc@192.168.1.103")
@@ -450,11 +471,14 @@ def main(argv=None):
                 cli.error(str(error))
             if args.backend not in ("realsense", "v4l2"):
                 cli.error("--wide-angle-host requires --backend realsense or v4l2")
-        if args.backend == "ros" and (control_options(args) or getattr(args, "console", False)):
+        if args.backend == "ros" and (control_options(args) or args.env is not None or getattr(args, "console", False)):
             cli.error("Robot control and --console require a native backend (use --backend none without cameras)")
+        if args.simulate and (args.env != "dev" or (args.control_mode or "hardware") != "hardware"):
+            cli.error("--simulate requires --env dev and --control-mode hardware")
         if args.arm_motion_profile is not None:
-            if args.control_mode != "hardware" or args.arm_host is not None:
-                cli.error("--arm-motion-profile requires local --control-mode hardware without --arm-host")
+            if (args.env != "dev" or (args.control_mode or "hardware") != "hardware"
+                    or args.simulate or args.arm_host is not None):
+                cli.error("--arm-motion-profile requires --env dev and local --control-mode hardware without --simulate or --arm-host")
             if not args.arm_motion_profile or any(ord(char) < 32 or ord(char) == 127 for char in args.arm_motion_profile):
                 cli.error("--arm-motion-profile requires a nonempty path without control characters")
         if args.backend == "ros" and any((args.width, args.height, args.fps, args.quality)):
@@ -494,7 +518,15 @@ def main(argv=None):
             show_command(command)
             print("Viewer: " + url)
             return 0
-        return run_foreground(command, url, not args.no_open, native=args.backend != "ros")
+        expected_identity = None
+        if args.backend != "ros":
+            expected_identity = {"X-Lite3-Environment": args.env or "dist",
+                                 "X-Lite3-Simulated": "true" if args.simulate else "false",
+                                 "X-Lite3-Control-Mode": args.control_mode or "hardware",
+                                 "X-Lite3-Arm-Diagnostics": "true" if args.arm_motion_profile is not None else "false"}
+        require_dev = bool(getattr(args, "console", False) or control_options(args) or args.env is not None)
+        return run_foreground(command, url, not args.no_open, native=args.backend != "ros",
+                              expected_identity=expected_identity, require_dev=require_dev)
     except KeyboardInterrupt:
         return 130
     except OSError as exc:

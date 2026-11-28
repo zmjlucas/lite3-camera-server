@@ -1,7 +1,7 @@
 """Static consumer fixture. Copy outside the checkout to check the installed SDK."""
 from typing import Optional
 
-from lite3_dev_server import ArmCapabilities, ArmJoint, ArmOperation, ControlStatus, DevClient, DevClientError, DogPhase
+from lite3_dev_server import ArmCapabilities, ArmJoint, ArmOperation, ControlStatus, DevClient, DevClientError, DogPhase, Environment
 
 
 def status_phase(url: str) -> Optional[DogPhase]:
@@ -14,7 +14,10 @@ def status_phase(url: str) -> Optional[DogPhase]:
 
 def jog_in_simulation(robot: DevClient, joint: ArmJoint) -> Optional[ControlStatus]:
     state = robot.status()
-    if state['mode'] != 'simulation':
+    if state['mode'] != 'hardware':
+        return None
+    environment: Environment = state['environment']
+    if environment != 'dev' or not state['arm']['simulated']:
         return None
     acquired = robot.acquire('typed-client')
     if acquired['status']['arm']['motion_enabled']:
@@ -37,9 +40,7 @@ def arm_elbow(robot: DevClient) -> Optional[float]:
 
 def arm_diagnostics_capabilities(robot: DevClient) -> Optional[ArmCapabilities]:
     state = robot.status()
-    if state['mode'] == 'disabled':
-        return None
-    if state['mode'] == 'hardware' and not state['dog']['motion_enabled']:
+    if state['mode'] == 'hardware' and state['environment'] == 'dev' and not state['arm']['simulated']:
         return state['arm'].get('capabilities')
     return None
 

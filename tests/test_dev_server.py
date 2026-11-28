@@ -1,7 +1,10 @@
 """Exercise the dev API through the real HTTP parser without hardware."""
 import json
+import contextlib
+import io
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from src import arm_gateway, control, server
 from src.remote.arm_worker import observed_state
@@ -12,7 +15,7 @@ class Control:
     def __init__(self):
         self.calls = []
     def status(self):
-        return {'mode': 'simulation', 'estop': False}
+        return {'mode': 'hardware', 'environment': 'dev', 'estop': False}
     def dispatch(self, action, body):
         self.calls.append((action, body))
         return self.status()
@@ -32,11 +35,64 @@ class DevHTTPTests(unittest.TestCase):
         host = SimpleNamespace(frames=frames, control=self.control, arm_gateway=self.gateway)
         server.CameraRequestHandler(conn, ('127.0.0.1', 1), host)
         head, value = bytes(conn.output).split(b'\r\n\r\n', 1)
+        self.response_head = head
         return int(head.split()[1]), value
     def test_status_does_not_depend_on_camera(self):
         code, value = self.request('GET', '/api/status')
         self.assertEqual(code, 200)
-        self.assertEqual(json.loads(value)['mode'], 'simulation')
+        self.assertEqual(json.loads(value)['mode'], 'hardware')
+
+    def test_default_server_constructs_real_dist_control(self):
+        options = server.parse_args(['--source', 'none'])
+        service, gateway = server.development_services(options)
+        try:
+            self.assertEqual(service.status()['mode'], 'hardware')
+            self.assertEqual(service.status()['environment'], 'dist')
+            self.assertIsInstance(gateway, arm_gateway.ArmGateway)
+            self.assertFalse(service.status()['arm']['simulated'])
+        finally:
+            service.close()
+            if gateway:
+                gateway.close()
+
+    def test_dev_simulation_never_constructs_hardware_gateways(self):
+        with patch.object(arm_gateway, 'ArmGateway', side_effect=AssertionError('real arm gateway')):
+            options = server.parse_args(['--source', 'none', '--env', 'dev', '--simulate'])
+            service, gateway = server.development_services(options)
+            try:
+                self.assertIsNone(gateway)
+                self.assertEqual(service.status()['environment'], 'dev')
+                self.assertEqual(service.status()['mode'], 'hardware')
+                self.assertTrue(service.status()['arm']['simulated'])
+            finally:
+                service.close()
+
+    def test_health_identity_includes_control_permissions_and_diagnostics(self):
+        from test_arm_control import ArmOwner
+
+        for options, mode, diagnostics in (({}, b'hardware', b'false'),
+                                          ({'mode': 'readonly'}, b'readonly', b'false'),
+                                          ({'environment': 'dev', 'arm_gateway': ArmOwner(),
+                                            'dog_enabled': False}, b'hardware', b'true')):
+            with self.subTest(mode=mode, diagnostics=diagnostics):
+                self.control = control.ControlService(**options)
+                try:
+                    self.request('GET', '/healthz')
+                    self.assertIn(b'X-Lite3-Control-Mode: ' + mode + b'\r\n', self.response_head)
+                    self.assertIn(b'X-Lite3-Arm-Diagnostics: ' + diagnostics + b'\r\n', self.response_head)
+                finally:
+                    self.control.close()
+
+    def test_invalid_debug_startup_is_rejected_before_service_creation(self):
+        for flags in (['--simulate'], ['--env', 'dist', '--simulate'],
+                      ['--control-mode', 'simulation'],
+                      ['--env', 'dev', '--simulate', '--control-mode', 'readonly'],
+                      ['--arm-motion-profile', '/tmp/record'],
+                      ['--env', 'dev', '--simulate', '--arm-motion-profile', '/tmp/record']):
+            with self.subTest(flags=flags), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    server.parse_args(['--source', 'none'] + flags)
+                self.assertEqual(error.exception.code, 2)
     def test_trusted_lan_control_and_explicit_arm_read(self):
         self.assertEqual(self.request('POST', '/api/control/acquire', b'{"owner":"test"}')[0], 200)
         self.assertEqual(self.control.calls, [('control/acquire', {'owner':'test'})])
@@ -70,7 +126,7 @@ class DevHTTPTests(unittest.TestCase):
         _, body = self.request('GET', '/api/status')
         self.assertEqual(json.loads(body).keys(), ControlStatus.__annotations__.keys())
 
-        self.control = control.ControlService()
+        self.control = control.ControlService(environment='dev', simulate=True)
         self.addCleanup(self.control.close)
         code, body = self.request('POST', '/api/control/acquire', b'{"owner":"contract"}')
         reply = json.loads(body)
@@ -85,7 +141,7 @@ class DevHTTPTests(unittest.TestCase):
     def test_arm_state_and_reconnect_keep_distinct_gateway_shapes(self):
         from src.lite3_dev_server import ArmGatewayReconnect, ObservedArmState, UnobservedArmState
 
-        self.control = control.ControlService()
+        self.control = control.ControlService(environment='dev', simulate=True)
         self.addCleanup(self.control.close)
         self.gateway = None
         for action in ('state', 'reconnect'):
@@ -139,11 +195,11 @@ class DevHTTPTests(unittest.TestCase):
         self.assertIn('emergency stop', state['reason'].lower())
 
     def test_arm_profile_is_local_hardware_only(self):
-        args = server.parse_args(['--source', 'none', '--control-mode', 'hardware',
+        args = server.parse_args(['--source', 'none', '--env', 'dev', '--control-mode', 'hardware',
                                   '--arm-motion-profile', '/home/ysc/arm/session.json'])
         self.assertEqual(args.arm_motion_profile, '/home/ysc/arm/session.json')
-        for options in ([], ['--control-mode', 'readonly'],
-                        ['--control-mode', 'hardware', '--arm-host', 'robot']):
+        for options in ([], ['--env', 'dev', '--control-mode', 'readonly'],
+                        ['--env', 'dev', '--control-mode', 'hardware', '--arm-host', 'robot']):
             with self.subTest(options=options), self.assertRaises(SystemExit):
                 server.parse_args(['--source', 'none', '--arm-motion-profile', '/tmp/profile'] + options)
 
