@@ -28,8 +28,8 @@ class CameraServiceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
-        (self.home / "lite3-camera-server").mkdir()
-        (self.home / "lite3-camera-server/server.py").write_text("# deployed server")
+        (self.home / "lite3-dev-server").mkdir()
+        (self.home / "lite3-dev-server/server.py").write_text("# deployed server")
         self.calls = []
         self.installed = None
 
@@ -77,8 +77,8 @@ class CameraServiceTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("systemd-analyze"), "systemd-analyze is only available on Linux")
     def test_generated_unit_is_accepted_by_systemd(self):
         self.home = self.home / 'camera home $cash %percent "quotes"'
-        (self.home / "lite3-camera-server").mkdir(parents=True)
-        (self.home / "lite3-camera-server/server.py").write_text("# deployed server")
+        (self.home / "lite3-dev-server").mkdir(parents=True)
+        (self.home / "lite3-dev-server/server.py").write_text("# deployed server")
         self.install(uid=os.getuid())
         unit = self.home / "lite3-camera-server.service"
         unit.write_text(self.installed)

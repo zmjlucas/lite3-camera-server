@@ -27,21 +27,21 @@ else:
 SERVER = Path(__file__).resolve().with_name("server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
 # Upload new dependencies before changing existing files, then replace the entry point last.
-SERVER_BUNDLE = ((SERVER.parent / "wide_angle.py", "lite3-camera-server/"),
-                 (SERVER.parent / "dog_actions.py", "lite3-camera-server/"),
-                 (SERVER.parent / "dog_state.py", "lite3-camera-server/"),
-                 (SERVER.parent / "camera_sources.py", "lite3-camera-server/"),
-                 (SERVER.parent / "camera.py", "lite3-camera-server/"),
-                 (SERVER.parent / "application.py", "lite3-camera-server/"),
-                 (SERVER.parent / "http_server.py", "lite3-camera-server/"),
-                 (SERVER.parent / "arm_motion.py", "lite3-camera-server/"),
-                 (SERVER.parent / "web" / "camera.html", "lite3-camera-server/web/"),
-                 (SERVER.parent / "control.py", "lite3-camera-server/"),
-                 (SERVER.parent / "arm_gateway.py", "lite3-camera-server/"),
-                 (SERVER.parent / "remote" / "arm_worker.py", "lite3-camera-server/remote/"),
-                 (SERVER.parent / "web" / "control.html", "lite3-camera-server/web/"),
-                 (SERVER.parent / "web" / "dev_client.js", "lite3-camera-server/web/"),
-                 (SERVER, "lite3-camera-server/"))
+SERVER_BUNDLE = ((SERVER.parent / "wide_angle.py", "lite3-dev-server/"),
+                 (SERVER.parent / "dog_actions.py", "lite3-dev-server/"),
+                 (SERVER.parent / "dog_state.py", "lite3-dev-server/"),
+                 (SERVER.parent / "camera_sources.py", "lite3-dev-server/"),
+                 (SERVER.parent / "camera.py", "lite3-dev-server/"),
+                 (SERVER.parent / "application.py", "lite3-dev-server/"),
+                 (SERVER.parent / "http_server.py", "lite3-dev-server/"),
+                 (SERVER.parent / "arm_motion.py", "lite3-dev-server/"),
+                 (SERVER.parent / "web" / "camera.html", "lite3-dev-server/web/"),
+                 (SERVER.parent / "control.py", "lite3-dev-server/"),
+                 (SERVER.parent / "arm_gateway.py", "lite3-dev-server/"),
+                 (SERVER.parent / "remote" / "arm_worker.py", "lite3-dev-server/remote/"),
+                 (SERVER.parent / "web" / "control.html", "lite3-dev-server/web/"),
+                 (SERVER.parent / "web" / "dev_client.js", "lite3-dev-server/web/"),
+                 (SERVER, "lite3-dev-server/"))
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
 ROBOT_NETWORK = ipaddress.IPv4Network("192.168.1.0/24")

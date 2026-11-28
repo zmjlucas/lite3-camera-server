@@ -2,7 +2,7 @@
 
 Dev Server centralizes camera streaming, Lite3 UDP commands and R5 serial feedback. Scripts and the browser call one HTTP service; SSH is used for deployment, tunnels and an optional persistent arm helper. No caller can upload arbitrary programs or send arbitrary robot packets through this API.
 
-The camera viewer is at `/`; the control console is `/control`. The service runs from `~/lite3-camera-server/` as `lite3-camera-server.service`. ROS mode uses the external camera-only `web_video_server`.
+The camera viewer is at `/`; the control console is `/control`. The service runs from `~/lite3-dev-server/` as `lite3-camera-server.service`. ROS mode uses the external camera-only `web_video_server`.
 
 ## Default robot connection
 

@@ -6,6 +6,7 @@ import sys
 import tempfile
 
 
+# Keep the existing unit name so redeployment updates the same boot service.
 SERVICE = "lite3-camera-server.service"
 
 
@@ -22,7 +23,7 @@ def unit_quote(value, command=False):
 
 def install_service(home, options):
     home = Path(home).absolute()
-    directory = home / "lite3-camera-server"
+    directory = home / "lite3-dev-server"
     server = directory / "server.py"
     if not server.is_file():
         raise RuntimeError("The deployed camera server is missing: " + str(server))

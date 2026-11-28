@@ -120,21 +120,21 @@ class CameraCommandsTest(unittest.TestCase):
         for command in calls[1:]:
             self.assertNotIn("-r", command)
         self.assertEqual([(Path(call[-2]).name, call[-1]) for call in calls[1:-1]], [
-            ("wide_angle.py", "robot:lite3-camera-server/"),
-            ("dog_actions.py", "robot:lite3-camera-server/"),
-            ("dog_state.py", "robot:lite3-camera-server/"),
-            ("camera_sources.py", "robot:lite3-camera-server/"),
-            ("camera.py", "robot:lite3-camera-server/"),
-            ("application.py", "robot:lite3-camera-server/"),
-            ("http_server.py", "robot:lite3-camera-server/"),
-            ("arm_motion.py", "robot:lite3-camera-server/"),
-            ("camera.html", "robot:lite3-camera-server/web/"),
-            ("control.py", "robot:lite3-camera-server/"),
-            ("arm_gateway.py", "robot:lite3-camera-server/"),
-            ("arm_worker.py", "robot:lite3-camera-server/remote/"),
-            ("control.html", "robot:lite3-camera-server/web/"),
-            ("dev_client.js", "robot:lite3-camera-server/web/"),
-            ("server.py", "robot:lite3-camera-server/"),
+            ("wide_angle.py", "robot:lite3-dev-server/"),
+            ("dog_actions.py", "robot:lite3-dev-server/"),
+            ("dog_state.py", "robot:lite3-dev-server/"),
+            ("camera_sources.py", "robot:lite3-dev-server/"),
+            ("camera.py", "robot:lite3-dev-server/"),
+            ("application.py", "robot:lite3-dev-server/"),
+            ("http_server.py", "robot:lite3-dev-server/"),
+            ("arm_motion.py", "robot:lite3-dev-server/"),
+            ("camera.html", "robot:lite3-dev-server/web/"),
+            ("control.py", "robot:lite3-dev-server/"),
+            ("arm_gateway.py", "robot:lite3-dev-server/"),
+            ("arm_worker.py", "robot:lite3-dev-server/remote/"),
+            ("control.html", "robot:lite3-dev-server/web/"),
+            ("dev_client.js", "robot:lite3-dev-server/web/"),
+            ("server.py", "robot:lite3-dev-server/"),
         ])
         self.assertFalse(Path(calls[1][-2]).exists(), "Temporary deployment files must be removed")
         self.assertIn("-tt", calls[-1])  # Allow sudo to prompt on the perception host.
@@ -215,7 +215,7 @@ class CameraCommandsTest(unittest.TestCase):
         server.write_text("runtime")
         private.write_text("synthetic-secret")
         self.symlink(page, private)
-        bundle = ((server, "lite3-camera-server/"), (page, "lite3-camera-server/web/"))
+        bundle = ((server, "lite3-dev-server/"), (page, "lite3-dev-server/web/"))
         with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env), \
                 contextlib.redirect_stderr(io.StringIO()):
             result = self.cli.main(["deploy", "robot", "--direct"])
@@ -232,7 +232,7 @@ class CameraCommandsTest(unittest.TestCase):
         private.write_text("synthetic-secret")
         copies = root / "copied.jsonl"
         self.env["CAMERA_TEST_COPY_LOG"] = str(copies)
-        bundle = ((server, "lite3-camera-server/"), (page, "lite3-camera-server/web/"))
+        bundle = ((server, "lite3-dev-server/"), (page, "lite3-dev-server/web/"))
         original_call = self.cli.subprocess.call
 
         def replace_after_prepare(command):
@@ -259,7 +259,7 @@ class CameraCommandsTest(unittest.TestCase):
         page.write_text("viewer")
         (root / "web/.env").write_text("synthetic-secret")
         (root / "web/private.jpg").write_bytes(b"private-photo")
-        bundle = ((server, "lite3-camera-server/"), (page, "lite3-camera-server/web/"))
+        bundle = ((server, "lite3-dev-server/"), (page, "lite3-dev-server/web/"))
         with patch.object(self.cli, "SERVER_BUNDLE", bundle), patch.dict(os.environ, self.env):
             self.assertEqual(self.cli.main(["deploy", "robot", "--direct"]), 0)
         copies = [cmd for cmd in self.calls() if cmd[0] == "scp"]

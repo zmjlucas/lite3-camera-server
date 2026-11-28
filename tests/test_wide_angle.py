@@ -180,7 +180,7 @@ class CommandTests(unittest.TestCase):
                     else:
                         self.assertNotIn("--wide-angle-host", remote_options)
                     if command == "deploy":
-                        self.assertIn(("wide_angle.py", "ysc@192.168.1.103:lite3-camera-server/"),
+                        self.assertIn(("wide_angle.py", "ysc@192.168.1.103:lite3-dev-server/"),
                                       [(Path(item[-2]).name, item[-1]) for item in commands if item[0] == "scp"])
 
 
