@@ -24,6 +24,16 @@ Set `--control-mode readonly` to use real camera capture and R5 feedback with mo
 
 ## Run locally in simulation
 
+After `python -m pip install '.[tools]'`, start the installed command from any directory:
+
+```bash
+lite3-sim --port 8080
+```
+
+This command uses dev simulation, no camera, and the loopback address `127.0.0.1`. Use `--port 0` to let the operating system choose a free port. The command prints its actual URL. It needs no camera, serial device or SSH. Press Ctrl+C to stop it.
+
+The source entry point also remains available:
+
 Python 3.8+ is recommended for development. No camera, SSH, serial package or robot is needed:
 
 ```bash
@@ -167,7 +177,7 @@ python -m pip install .
 
 The `lite3_dev_server` package exports `DevClient`, `DevClientError`, the `Environment` and `ControlMode` type aliases, and typed JSON dictionaries for requests and responses. Dog action contracts include `DogActionName`, `DogActionRequest`, `DogActionStatusRequest`, `DogActionStatus` and `DogFeedback`; `DogStatus` includes `feedback`, `action` and `actions_enabled`. Use the installed `lite3_dev_server` package for Python callers. Robot deployment uses the standalone server files.
 
-Use `src/launcher.py` for deployment and tunnels. The console loads its HTTP client from `/static/dev_client.js`; UI timers and local lease state remain in the control page.
+Use the installed `lite3-launcher` command or `src/launcher.py` for deployment and tunnels. Both use the bundled server modules, browser assets and remote helpers. The console loads its HTTP client from `/static/dev_client.js`; UI timers and local lease state remain in the control page.
 
 The client retains a private lease and serializes motion requests with increasing sequence numbers. Reads, heartbeats and stop/estop use separate HTTP requests and can run concurrently. Requests have bounded timeouts, refuse redirects and never retry motion. Responses and errors are scoped to their originating session. Superseded acquire or motion calls raise `DevClientError`. Call heartbeat explicitly while holding a lease.
 
@@ -227,9 +237,31 @@ Check `state = robot.status()` and `state["mode"]` before reading control fields
 
 In commissioned arm diagnostics, `arm_jog()` returns `ControlStatus` with `arm.operation`. Keep the operation's `operation_id`, call `arm_operation(id)` to read its `ArmOperation` status and send explicit heartbeats while it runs. `arm_stop()` cancels the operation and releases ownership. Inspect `arm.capabilities` for the diagnostic limits and `arm.motion_enabled` for current readiness. [R5 operation lifecycle](R5_DIAGNOSTICS.md#operation-lifecycle)
 
+## Simulation in Python tests
+
+The installed `lite3_dev_server_tools.testing` module owns a local server process for each context. Use its URL with the existing SDK in plain Python, unittest or pytest:
+
+```python
+from lite3_dev_server import DevClient
+from lite3_dev_server_tools.testing import simulated_server
+
+with simulated_server() as url:
+    with DevClient(url) as robot:
+        assert robot.status()['dog']['simulated']
+        robot.acquire('integration-test')
+        robot.arm_jog('e', 1)
+        assert robot.arm_state()['position_deg']['e'] == 1
+```
+
+Each server binds `127.0.0.1` with port zero. The context reads the server's actual URL, then checks `GET /api/status` and the simulation headers before yielding it. `/healthz` describes camera readiness and can return 503 during camera-free simulation. Multiple contexts can run at the same time with separate ports and state. HTTP checks bypass proxy environment settings.
+
+`simulated_server(startup_timeout=10.0, shutdown_timeout=5.0)` accepts finite, positive timeouts in seconds. Startup exit or timeout raises `RuntimeError` with captured stdout and stderr. Context exit terminates the child and waits for it; if the shutdown timeout expires, it kills and reaps the child. Cleanup also runs when the test raises an exception or receives `KeyboardInterrupt`. Close SDK contexts inside the simulation context so their release requests finish before server shutdown.
+
+The context selects dev simulation without camera capture, serial access or SSH. Test the same API parameters and action sequences as your application. Dog stand preparation, leases, heartbeat requirements and action limits still apply.
+
 ## Verification
 
 `python3 -B scripts/check.py --shell` runs offline syntax, unit and integration checks. `make browser-test` includes viewer and dev console behavior. Fakes and loopback cover UDP, serial, SSH and control lifecycle checks.
 
 Dog feedback decoding and predefined actions have offline coverage only. Robot upload configuration, firmware compatibility, physical direction, motion timing and stopping still require hardware acceptance.
-For package acceptance, install `.[dev]` in a development virtual environment and run `python -B scripts/check_distribution.py`. It checks SDK types, service return types, a built wheel and an external consumer using the installed package, then runs an HTTP control lifecycle against a copied deployment bundle. `node tests/dev_client_test.js` checks browser command serialization, errors and protocol enforcement. Use Python 3.8–3.12 for `python -B scripts/check.py --device-syntax`; this parses every deployed Python module with the device's Python 3.6 grammar. Device runtime and physical motion acceptance remain separate checks.
+For package acceptance, install `.[dev]` in a development virtual environment and run `python -B scripts/check_distribution.py`. It checks SDK and context types, service return types, the source distribution and its wheel, and an external typed consumer. An empty environment installs the tools with package-index access disabled. It exercises both console commands, launcher dry runs, browser assets, the Python context and the packaged deployment bundle. `node tests/dev_client_test.js` checks browser command serialization, errors and protocol enforcement. Use Python 3.8–3.12 for `python -B scripts/check.py --device-syntax`; this parses every deployed Python module with the device's Python 3.6 grammar. Device runtime and physical motion acceptance remain separate checks.

@@ -1,4 +1,4 @@
-"""Build, install and type-check the SDK outside this checkout; simulate HTTP only.
+"""Build, install and check the SDK and tools outside this checkout; simulate HTTP only.
 
 Install development tools first: python -m pip install '.[dev]'.
 """
@@ -21,23 +21,26 @@ def run(arguments, **kwargs):
 def main():
     # All source checks use the declared Python 3.8 consumer contract.
     run([sys.executable, '-m', 'mypy', '--strict', 'src/lite3_dev_server'], cwd=ROOT)
+    run([sys.executable, '-m', 'mypy', '--strict', 'src/testing.py'], cwd=ROOT)
     run([sys.executable, '-m', 'mypy', '--follow-imports=silent',
          'src/application.py', 'src/control.py', 'src/arm_gateway.py'], cwd=ROOT)
 
     with tempfile.TemporaryDirectory(prefix='lite3-sdk-check-') as directory:
         temporary = Path(directory)
         wheels = temporary / 'wheels'
-        run([sys.executable, '-m', 'build', '--wheel', '--no-isolation', '--outdir', wheels, ROOT], cwd=temporary)
+        # Build the wheel from the sdist so both release formats must contain the tools.
+        run([sys.executable, '-m', 'build', '--no-isolation', '--outdir', wheels, ROOT], cwd=temporary)
         wheel, = wheels.glob('*.whl')
         environment = temporary / 'environment'
         # Managed macOS interpreters resolve libpython relative to their real executable.
         venv.EnvBuilder(with_pip=True, symlinks=os.name != 'nt').create(str(environment))
         python = environment / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
-        run([python, '-I', '-m', 'pip', 'install', '--no-index', '--no-deps', wheel], cwd=temporary)
+        # With no index and no preinstalled runtime packages, mandatory tool dependencies fail here.
+        run([python, '-I', '-m', 'pip', 'install', '--no-index', str(wheel) + '[tools]'], cwd=temporary)
 
         consumer = temporary / 'consumer'
         consumer.mkdir()
-        for name in ('sdk_typecheck.py', 'installed_sdk_smoke.py'):
+        for name in ('sdk_typecheck.py', 'installed_sdk_smoke.py', 'installed_tools_smoke.py'):
             shutil.copy2(str(ROOT / 'tests/fixtures' / name), str(consumer / name))
         # Do not inherit source lookup paths when checking the installed SDK.
         environment_variables = dict(os.environ)
@@ -49,18 +52,9 @@ def main():
              '--python-executable', python, 'sdk_typecheck.py'],
             cwd=consumer, env=environment_variables)
 
-        # Use the same allowlisted artifacts as robot deployment, without SSH.
-        sys.path.insert(0, str(ROOT))
-        from src.launcher import SERVER, SERVER_BUNDLE
-        deployed = temporary / 'deployed'
-        deployed.mkdir()
-        for source, _ in SERVER_BUNDLE:
-            destination = deployed / source.relative_to(SERVER.parent)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(str(source), str(destination))
-        run([python, '-I', '-B', consumer / 'installed_sdk_smoke.py', deployed / 'server.py'],
+        run([python, '-I', '-B', consumer / 'installed_tools_smoke.py'],
             cwd=consumer, env=environment_variables)
-    print('PASS: SDK source types, wheel, isolated consumer types and deployed simulation')
+    print('PASS: SDK types, sdist, wheel, installed tools and deployed simulation')
 
 
 if __name__ == '__main__':

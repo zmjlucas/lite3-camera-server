@@ -5,6 +5,12 @@ from lite3_dev_server import (
     ArmCapabilities, ArmJoint, ArmOperation, ControlStatus, DevClient, DevClientError,
     DogActionName, DogActionRequest, DogActionStatus, DogActionStatusRequest, DogFeedback, DogPhase, Environment,
 )
+from lite3_dev_server_tools.testing import simulated_server
+
+
+def isolated_simulation() -> ControlStatus:
+    with simulated_server(startup_timeout=10.0) as url, DevClient(url) as robot:
+        return robot.status()
 
 
 def status_phase(url: str) -> Optional[DogPhase]:

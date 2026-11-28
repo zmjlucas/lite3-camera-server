@@ -51,9 +51,13 @@ jobs:
         run: python -B scripts/check.py --device-syntax
 
   sdk:
-    name: Installed SDK and contracts
-    runs-on: ubuntu-22.04
+    name: Installed SDK and tools (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15, windows-2022]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -66,7 +70,7 @@ jobs:
           node-version: '22'
       - name: Install development checks
         run: python -m pip install '.[dev]'
-      - name: Check installed SDK types and simulated HTTP contract
+      - name: Check installed SDK, tools and simulated HTTP contract
         run: python -B scripts/check_distribution.py
       - name: Check browser client command contracts
         run: node tests/dev_client_test.js

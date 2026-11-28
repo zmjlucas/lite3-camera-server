@@ -5,22 +5,32 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lite3-dev-server"
 version = "0.1.0"
-description = "Typed, standard-library Python client for the Lite3 Dev Server"
+description = "Typed Lite3 SDK, local simulation and robot deployment tools"
 readme = "README.md"
 requires-python = ">=3.8"
 
 [project.optional-dependencies]
+tools = []
+arm = ["pyserial>=3.5,<4"]
+camera = ["numpy>=1.19.5", "opencv-python>=4.5"]
+realsense = ["numpy>=1.19.5", "opencv-python>=4.5", "pyrealsense2>=2.50"]
 dev = ["build>=1.2,<2", "mypy==1.14.1", "setuptools>=61", "wheel"]
+
+[project.scripts]
+lite3-sim = "lite3_dev_server_tools.simulation:main"
+lite3-launcher = "lite3_dev_server_tools.launcher:main"
 
 [project.urls]
 Repository = "https://github.com/zmjlucas/lite3-dev-server"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
-packages = ["lite3_dev_server"]
+package-dir = {"" = "src", lite3_dev_server_tools = "src"}
+packages = ["lite3_dev_server", "lite3_dev_server_tools"]
+include-package-data = false
 
 [tool.setuptools.package-data]
 lite3_dev_server = ["py.typed"]
+lite3_dev_server_tools = ["py.typed", "remote/*.py", "remote/*.sh", "web/*.html", "web/*.js"]
 
 [tool.mypy]
 python_version = "3.8"

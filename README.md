@@ -13,11 +13,38 @@ The SDK and control console provide timed `forward`, `backward`, `turn_left` and
 
 Use `DevClient.dog_action_status(action_id)` to read an active or retained action without a lease. Terminal results remain available for up to 5 minutes and 128 records, including after another action starts.
 
-The launcher, simulation and tests use the Python standard library. R5 hardware feedback additionally needs pySerial on its host. The client does not need ROS.
+The launcher, simulation and tests use the Python standard library. The same distribution includes `lite3-sim`, `lite3-launcher`, and the `lite3_dev_server_tools.testing` module. R5 hardware feedback additionally needs pySerial on its host. The client does not need ROS.
 
 The RealSense/V4L2 viewer has a **Source** dropdown for the Lite3's D435i RGB camera and arm-mounted **SXW USB Camera**. It discovers their usable `/dev/videoN` capture nodes and labels each camera. Add `--wide-angle-host IPV4` to enable the motion host's vendor RTSP stream as a third source. Switching stops the previous capture and briefly interrupts video. All viewers of that server share the selected source. See [camera selection](docs/CAMERA_STREAM.md#switch-camera-sources) and [wide-angle setup](docs/CAMERA_STREAM.md#enable-the-lite3-wide-angle-camera).
 
 ## Quick start
+
+Install the tools from this checkout, then run the commands from any directory:
+
+```bash
+python -m pip install '.[tools]'
+lite3-sim --port 8080
+```
+
+Open `http://127.0.0.1:8080/control` for the simulated control console. `lite3-sim` selects dev simulation with no camera and binds to `127.0.0.1`. Use `--port 0` to select a free port; the command prints the actual URL. Press Ctrl+C to stop it. Simulation requires no camera, serial device, SSH client or robot connection.
+
+In another terminal, preview deployment with the installed launcher:
+
+```bash
+lite3-launcher deploy ysc@192.168.1.103 --direct --dry-run
+```
+
+The wheel includes the server modules, remote scripts and browser assets. The `tools` extra adds no dependencies; these tools also ship with a base SDK installation. Hardware dependencies are optional:
+
+| Install from this checkout | Packages selected |
+| --- | --- |
+| `python -m pip install '.[arm]'` | pySerial for R5 serial feedback |
+| `python -m pip install '.[camera]'` | NumPy and OpenCV for V4L2 capture |
+| `python -m pip install '.[realsense]'` | NumPy, OpenCV and pyrealsense2 for RealSense capture |
+
+Select hardware packages on the capture or serial host. They must support that host's architecture, Python version and vendor SDK. Device-specific vendor installation can still be required. OpenSSH, systemd, camera drivers and the wide-angle camera's FFmpeg executable are system dependencies. The standalone deployment bundle retains support for Python 3.6 devices; installing the Python distribution requires Python 3.8 or later.
+
+For Python integration tests, use `from lite3_dev_server_tools.testing import simulated_server`. The context yields a ready HTTP URL and reaps its child process on exit. See the [simulation test example](docs/DEV_SERVER.md#simulation-in-python-tests).
 
 Use these default robot connection values in code and examples:
 
@@ -40,9 +67,9 @@ cd lite3-dev-server
 python3 src/launcher.py --help
 ```
 
-Run the Python entry points in `src/` directly. You do not need `pip install`. See the [camera guide](docs/CAMERA_STREAM.md) for all procedures.
+You can also run the Python entry points in `src/` directly without installation. See the [camera guide](docs/CAMERA_STREAM.md) for all procedures.
 
-`src/launcher.py` is the SSH deployment and viewing CLI. Python applications use the separately installable `lite3_dev_server.DevClient` HTTP SDK.
+`lite3-launcher` and `src/launcher.py` provide the same SSH deployment and viewing CLI. Python applications use the `lite3_dev_server.DevClient` HTTP SDK.
 
 On Windows, use PowerShell and replace `python3` in the examples with `py -3` (or `python` if that is your Python 3 command):
 
@@ -78,7 +105,7 @@ python3 src/launcher.py view ysc@192.168.1.103
 | RealSense | A camera that is not in use, compatible `pyrealsense2`, `numpy`, and `cv2` | Run `deploy ysc@192.168.1.103`. Then run `view ysc@192.168.1.103 --backend realsense`. |
 | V4L2 RGB | Linux, OpenCV with V4L2 support, and a confirmed RGB device node that is not in use | Run `deploy ysc@192.168.1.103 --backend v4l2 --device /dev/videoN`. Then run `view ysc@192.168.1.103 --backend v4l2 --device /dev/videoN`. |
 
-Camera dependencies must match the device architecture, Python version, and vendor SDK. The repository does not install these dependencies from a shared requirements file. The server uses Python 3.6-compatible syntax. The full test suite requires Python 3.8 or later.
+Camera dependencies must match the device architecture, Python version, and vendor SDK. The package extras above select optional Python dependencies; deployment uses the packages already installed on the device. The server uses Python 3.6-compatible syntax. The full test suite requires Python 3.8 or later.
 
 On macOS, `doctor`, `deploy`, and `view` read local routes and Wi-Fi interfaces to select a path to `192.168.1.*` targets. If the target route uses robot Wi-Fi, the launcher connects directly. If the target route uses another interface or gateway, the launcher checks for a direct Wi-Fi link to `192.168.2.1`. If that link is available, the launcher uses `192.168.2.1` as an SSH jump host. When the phone and robot subnets overlap, the launcher uses robot Wi-Fi. The same commands work with robot Wi-Fi alone or with a phone USB hotspot, without changes to system routes.
 
@@ -150,7 +177,7 @@ python -B scripts/check_distribution.py
 node tests/dev_client_test.js  # Node 22+ for browser client contract checks
 ```
 
-The distribution check runs strict SDK typing and typed service checks, builds a wheel, installs it into a temporary environment, checks an external typed consumer and exercises HTTP control against the deployed simulation bundle. Hardware packages are excluded from the SDK. CI runs these checks in its installed-SDK job; ordinary SDK installations retain standard-library-only runtime dependencies.
+The distribution check runs SDK and simulation-context typing checks, builds a source distribution and its wheel, and installs the tools into a clean temporary environment. It checks an external typed consumer, both console commands, launcher previews, browser assets, the simulation context and HTTP control against the packaged deployment bundle. CI runs these checks on Linux, macOS and Windows. SDK and tools installations use only the standard library at runtime; hardware extras are opt-in.
 
 ## Camera limitations
 
@@ -170,6 +197,8 @@ src/control.py   Control ownership, watchdog and UDP writer
 src/arm_gateway.py  Read-only serial gateway
 src/arm_motion.py   Commissioned arm operations
 src/launcher.py  SSH deployment, diagnosis and viewing CLI
+src/simulation.py  Installed loopback simulation command
+src/testing.py   Reusable subprocess simulation context
 src/lite3_dev_server/  Installable HTTP SDK, types and response validation
 src/remote/      Remote diagnostic and startup helpers
 src/web/         Camera viewer, control UI and browser HTTP client
@@ -181,5 +210,7 @@ tests/           Unit tests and the optional Chrome test
 Reserve `scripts/` for repository maintenance scripts. Runtime helpers belong in `src/remote/`. Offline camera inputs and browser fixtures belong in `tests/fixtures/` and are not deployed.
 
 HTTP requests reach `ControlApplication`, which coordinates `ControlService` and arm gateways. Serial reads reconcile capabilities with the current control state after I/O; the independently scheduled watchdog continues to own command expiry. `launcher.SERVER_BUNDLE` lists deployed modules and assets explicitly, with the server entry point uploaded last. Device modules keep Python 3.6 syntax and avoid runtime imports of the Python 3.8 SDK.
+
+Setuptools maps the runtime modules in `src/` to the installed `lite3_dev_server_tools` package. The SDK remains in `lite3_dev_server`. Both packages use the same distribution; runtime files have one source tree for installation and deployment.
 
 The project uses the MIT license. See [LICENSE](LICENSE).
