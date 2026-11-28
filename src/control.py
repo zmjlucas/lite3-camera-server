@@ -418,8 +418,10 @@ class ControlService:
                     return
                 self._next_cycle = now + PERIOD
         if stopping:
-            # Failure of one datagram must not skip any other axis or stationary.
-            for packet in (_command(HEARTBEAT), _velocity(0x0140, 0.0),
+            # VOICE=1 keeps repeating until VOICE=0 cancels it. Clear that
+            # persistent action before sending the other stop packets.
+            # Failure of any datagram must not skip the remaining stop attempts.
+            for packet in (_command(VOICE, 0), _command(HEARTBEAT), _velocity(0x0140, 0.0),
                            _velocity(0x0145, 0.0), _velocity(0x0141, 0.0),
                            _command(STATIONARY)):
                 self._send(packet)
