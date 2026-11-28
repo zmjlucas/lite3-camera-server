@@ -11,14 +11,16 @@ import socket
 import struct
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from typing import Any, Dict, Tuple, Union
+    from typing import Any, Dict, Literal, Optional, Tuple, Union
     from lite3_dev_server.api import (
         AcquireResponse, ArmJoint, ControlMode, ControlStatus, DogPhase, VelocityAxis,
         VelocityLimit, ArmOperation,
     )
+
+    ControlErrorCode = Literal['invalid_request', 'not_found', 'conflict', 'locked', 'unavailable']
 
 HEARTBEAT = 0x21040001
 VOICE = 0x21010C0A
@@ -45,9 +47,9 @@ def _velocity(code, value):
 
 
 class ControlError(ValueError):
-    def __init__(self, status, message):
+    def __init__(self, code: 'ControlErrorCode', message: str) -> None:
         super().__init__(message)
-        self.status = status
+        self.code = code
 
 
 class ControlService:
@@ -68,6 +70,7 @@ class ControlService:
         if arm_gateway is not None and (mode != 'hardware' or dog_enabled):
             raise ValueError('Arm diagnostics require hardware mode with dog output disabled')
         self._arm_gateway = arm_gateway
+        self._gateway_to_close = arm_gateway
         self._dog_enabled = dog_enabled
         if mode == 'hardware':
             if not isinstance(dog_host, str):
@@ -91,7 +94,7 @@ class ControlService:
         self._estop = False
         self._error = None
         self._safety_revision = secrets.token_urlsafe(32)
-        self._lease = None
+        self._lease: 'Optional[str]' = None
         self._lease_deadline = 0.0
         self._sequence = 0
         self._generation = 0
@@ -108,11 +111,11 @@ class ControlService:
     def start(self):
         with self._lock:
             if self._closed:
-                raise ControlError(503, 'Control service is closed')
+                raise ControlError('unavailable', 'Control service is closed')
             if self._thread is None:
-                self._thread = threading.Thread(target=self._run, name='lite3-dog-writer')
-                self._thread.daemon = True
-                self._thread.start()
+                worker = threading.Thread(target=self._run, name='lite3-dog-writer', daemon=True)
+                worker.start()
+                self._thread = worker
         return self
 
     def close(self):
@@ -134,8 +137,16 @@ class ControlService:
             if worker.is_alive():
                 with self._lock:
                     self._error = 'UDP worker shutdown timed out'
-        if self._arm_gateway is not None:
-            self._arm_gateway.close()
+        # A failed gateway close can be retried while control stays revoked.
+        with self._lock:
+            gateway, self._gateway_to_close = self._gateway_to_close, None
+        if gateway is not None:
+            try:
+                gateway.close()
+            except BaseException:
+                with self._lock:
+                    self._gateway_to_close = gateway
+                raise
 
     def status(self) -> 'ControlStatus':
         with self._lock:
@@ -183,33 +194,33 @@ class ControlService:
     @staticmethod
     def _fields(body, allowed, required=()):
         if not isinstance(body, dict):
-            raise ControlError(400, 'Expected a JSON object')
+            raise ControlError('invalid_request', 'Expected a JSON object')
         if set(body) - set(allowed) or set(required) - set(body):
-            raise ControlError(400, 'Unexpected or missing request fields')
+            raise ControlError('invalid_request', 'Unexpected or missing request fields')
 
     @staticmethod
     def _number(body, name, low, high):
         value = body.get(name)
         if (isinstance(value, bool) or not isinstance(value, (float, int))
                 or not low <= value <= high or not math.isfinite(value)):
-            raise ControlError(400, '{} is outside the permitted range'.format(name))
+            raise ControlError('invalid_request', '{} is outside the permitted range'.format(name))
         return float(value)
 
     def _owner_locked(self, body):
         if (self._lease is None or not isinstance(body.get('lease'), str)
                 or not secrets.compare_digest(body['lease'].encode('ascii', 'replace'),
                                               self._lease.encode('ascii'))):
-            raise ControlError(409, 'A current control lease is required')
+            raise ControlError('conflict', 'A current control lease is required')
 
     def _motion_locked(self, body):
         self._owner_locked(body)
         sequence = body.get('seq')
         if type(sequence) is not int or sequence < 1:
-            raise ControlError(400, 'seq must be a positive integer')
+            raise ControlError('invalid_request', 'seq must be a positive integer')
         if sequence <= self._sequence:
-            raise ControlError(409, 'Motion sequence has already been superseded')
+            raise ControlError('conflict', 'Motion sequence has already been superseded')
         if self._estop or self._error:
-            raise ControlError(423, 'Control is latched; explicit reset is required')
+            raise ControlError('locked', 'Control is latched; explicit reset is required')
         return sequence
 
     def dispatch(self, action: str, body: 'Any') -> 'Union[AcquireResponse, ControlStatus, ArmOperation]':
@@ -217,29 +228,29 @@ class ControlService:
         with self._lock:
             self._expire_locked()
             if self._closed or self.mode in ('disabled', 'readonly'):
-                raise ControlError(503, 'Control service is unavailable')
+                raise ControlError('unavailable', 'Control service is unavailable')
             self._fields(body, body.keys() if isinstance(body, dict) else ())
             if action == 'arm/operation':
                 self._fields(body, ('id',), ('id',))
                 if not isinstance(body['id'], str) or not 1 <= len(body['id']) <= 128:
-                    raise ControlError(400, 'id must identify an arm operation')
+                    raise ControlError('invalid_request', 'id must identify an arm operation')
                 if self._arm_gateway is None:
-                    raise ControlError(404, 'No hardware arm operation is available')
+                    raise ControlError('not_found', 'No hardware arm operation is available')
                 try:
                     return self._arm_gateway.operation(body['id'])
                 except KeyError:
-                    raise ControlError(404, 'Unknown or superseded arm operation') from None
+                    raise ControlError('not_found', 'Unknown or superseded arm operation') from None
             if action == 'control/acquire':
                 self._fields(body, ('owner',), ('owner',))
                 owner = body['owner']
                 if (not isinstance(owner, str) or not owner.strip() or len(owner) > 80
                         or any(ord(char) < 32 for char in owner)):
-                    raise ControlError(400, 'owner must be a short nonempty label')
+                    raise ControlError('invalid_request', 'owner must be a short nonempty label')
                 if self._estop or self._error:
-                    raise ControlError(423, 'Control is latched; explicit reset is required')
+                    raise ControlError('locked', 'Control is latched; explicit reset is required')
                 if (self._lease is not None or self._stop_remaining or
                         (self._arm_gateway is not None and self._arm_gateway.status()['active_operation'])):
-                    raise ControlError(409, 'Control is owned or a stop is still in progress')
+                    raise ControlError('conflict', 'Control is owned or a stop is still in progress')
                 self._lease = secrets.token_urlsafe(32)
                 self._lease_deadline = self._clock() + LEASE_SECONDS
                 self._sequence = 0
@@ -259,11 +270,11 @@ class ControlService:
                 revision = body['revision']
                 if (not isinstance(revision, str) or not 1 <= len(revision) <= 128
                         or any(ord(character) > 127 for character in revision)):
-                    raise ControlError(400, 'revision must be an observed safety revision')
+                    raise ControlError('invalid_request', 'revision must be an observed safety revision')
                 if not secrets.compare_digest(revision, self._safety_revision):
-                    raise ControlError(409, 'Safety state changed; inspect status before resetting')
+                    raise ControlError('conflict', 'Safety state changed; inspect status before resetting')
                 if self._stop_remaining:
-                    raise ControlError(409, 'Wait for the bounded stop attempt before resetting')
+                    raise ControlError('conflict', 'Wait for the bounded stop attempt before resetting')
                 self._error = None
                 self._estop = False
                 # Consume the observation so delayed duplicate resets cannot
@@ -275,7 +286,7 @@ class ControlService:
                 else:
                     self._phase = 'disarmed'
             elif action in ('dog/stop', 'arm/stop', 'control/estop'):
-                self._fields(body, ('lease', 'seq'))
+                self._fields(body, () if action == 'control/estop' else ('lease',))
                 if action in ('dog/stop', 'arm/stop') and 'lease' in body:
                     self._owner_locked(body)
                 if action == 'control/estop':
@@ -284,11 +295,11 @@ class ControlService:
                 self._stop_locked(action)
             elif action == 'dog/stand':
                 if not self._dog_enabled:
-                    raise ControlError(423, 'Dog output is disabled during arm diagnostics')
+                    raise ControlError('locked', 'Dog output is disabled during arm diagnostics')
                 self._fields(body, ('lease', 'seq'), ('lease', 'seq'))
                 sequence = self._motion_locked(body)
                 if self._phase != 'disarmed' or self._stop_remaining:
-                    raise ControlError(409, 'Stop and acquire again before preparing')
+                    raise ControlError('conflict', 'Stop and acquire again before preparing')
                 self._sequence = sequence
                 self._generation += 1
                 self._phase = 'preparing'
@@ -297,7 +308,7 @@ class ControlService:
                 self._next_cycle = self._clock()
             elif action == 'dog/velocity':
                 if not self._dog_enabled:
-                    raise ControlError(423, 'Dog output is disabled during arm diagnostics')
+                    raise ControlError('locked', 'Dog output is disabled during arm diagnostics')
                 self._fields(body, ('lease', 'seq', 'vx', 'vy', 'yaw', 'ttl'),
                              ('lease', 'seq', 'vx', 'vy', 'yaw', 'ttl'))
                 sequence = self._motion_locked(body)
@@ -305,9 +316,9 @@ class ControlService:
                               for name, _ in AXES)
                 ttl = self._number(body, 'ttl', 0.0, LIMITS['ttl'])
                 if ttl <= 0:
-                    raise ControlError(400, 'ttl must be greater than zero')
+                    raise ControlError('invalid_request', 'ttl must be greater than zero')
                 if self._phase not in ('ready', 'moving'):
-                    raise ControlError(409, 'Explicit dog preparation is required')
+                    raise ControlError('conflict', 'Explicit dog preparation is required')
                 self._sequence = sequence
                 self._generation += 1
                 self._velocity = values
@@ -316,33 +327,34 @@ class ControlService:
             elif action == 'arm/jog':
                 # Capability check precedes lease handling and any possible IO.
                 if self.mode != 'simulation' and self._arm_gateway is None:
-                    raise ControlError(423, ARM_BLOCK_REASON)
+                    raise ControlError('locked', ARM_BLOCK_REASON)
                 self._fields(body, ('lease', 'seq', 'joint', 'delta', 'speed'),
                              ('lease', 'seq', 'joint', 'delta', 'speed'))
                 sequence = self._motion_locked(body)
-                joint = body['joint']
-                if not isinstance(joint, str) or joint not in JOINT_LIMITS:
-                    raise ControlError(400, 'Unsupported arm joint')
+                name = body['joint']
+                if not isinstance(name, str) or name not in JOINT_LIMITS:
+                    raise ControlError('invalid_request', 'Unsupported arm joint')
+                joint = cast('ArmJoint', name)
                 delta = self._number(body, 'delta', -2.0, 2.0)
                 speed = self._number(body, 'speed', 0.0, 5.0)
                 if speed <= 0:
-                    raise ControlError(400, 'speed must be greater than zero')
+                    raise ControlError('invalid_request', 'speed must be greater than zero')
                 if self._arm_gateway is not None:
                     try:
                         self._arm_gateway.jog(joint, delta, speed, self._lease_deadline)
                     except ValueError as error:
-                        raise ControlError(400, str(error)) from None
+                        raise ControlError('invalid_request', str(error)) from None
                     except RuntimeError as error:
-                        raise ControlError(423, str(error)) from None
+                        raise ControlError('locked', str(error)) from None
                     self._sequence = sequence
                     return self._status_locked()
                 target = self._positions[joint] + delta
                 if abs(target) > JOINT_LIMITS[joint]:
-                    raise ControlError(400, 'Simulated joint target exceeds its limit')
+                    raise ControlError('invalid_request', 'Simulated joint target exceeds its limit')
                 self._sequence = sequence
                 self._positions[joint] = target
             else:
-                raise ControlError(404, 'Unknown control action')
+                raise ControlError('not_found', 'Unknown control action')
             self._wake.set()
             return self._status_locked()
 

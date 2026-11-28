@@ -6,7 +6,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from src import client
+from src import launcher as client
 
 TARGET = "ysc@192.168.1.103"
 GATEWAY = "192.168.2.1"

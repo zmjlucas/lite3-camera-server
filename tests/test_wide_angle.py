@@ -17,7 +17,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-from src import client, server, wide_angle
+from src import camera, server, wide_angle
+from src import launcher as client
 
 
 HOST = "192.168.1.120"
@@ -384,16 +385,16 @@ class CaptureTests(unittest.TestCase):
 
         def local_sources():
             return [{"id": "front", "kind": "d435i", "device": "/dev/video4",
-                     "label": "D435i RGB", "pixel_format": "YUYV"},
+                     "label": "D435i RGB", "pixel_format": "YUYV", "available": True, "error": None},
                     {"id": "arm", "kind": "sxw", "device": "/dev/video8",
-                     "label": "Arm camera", "pixel_format": "MJPG"}]
+                     "label": "Arm camera", "pixel_format": "MJPG", "available": True, "error": None}]
 
         options = server.parse_args(["--source", "v4l2", "--device", "/dev/video4",
                                      "--wide-angle-host", HOST, "--retry-camera"])
-        controller = server.CaptureController(options, discover=local_sources, stop_timeout=0.1)
+        controller = camera.CaptureController(options, discover=local_sources, stop_timeout=0.1)
         with patch.object(wide_angle.subprocess, "Popen", return_value=process) as launch, \
-                patch.object(wide_angle, "probe"), patch.object(server, "v4l2_frames", local_frames), \
-                patch.object(server, "discover_sources", local_sources), contextlib.redirect_stderr(io.StringIO()):
+                patch.object(wide_angle, "probe"), patch.object(camera, "v4l2_frames", local_frames), \
+                patch.object(camera, "discover_sources", local_sources), contextlib.redirect_stderr(io.StringIO()):
             try:
                 controller.start()
                 wide = controller.catalog()["sources"][-1]["id"]
@@ -429,7 +430,7 @@ class CaptureTests(unittest.TestCase):
 import sys
 import threading
 from unittest.mock import patch
-from src import server, wide_angle
+from src import camera, server, wide_angle
 
 started = threading.Event()
 
@@ -444,7 +445,7 @@ def capture(options, frames, stop):
         stop.wait()
 
 options = server.parse_args(["--wide-angle-host", "192.168.1.120"])
-controller = server.CaptureController(options, discover=lambda: [], capture_fn=capture, stop_timeout=0.05)
+controller = camera.CaptureController(options, discover=lambda: [], capture_fn=capture, stop_timeout=0.05)
 with patch.object(wide_angle, "probe"):
     controller.start()
     assert controller.producer.daemon

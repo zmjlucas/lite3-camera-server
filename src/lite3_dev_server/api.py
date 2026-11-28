@@ -2,6 +2,21 @@
 from typing import Dict, List, Literal, Optional, TypedDict, Union
 
 
+# Every API response carries exactly one protocol version header.
+PROTOCOL_HEADER = 'X-Lite3-Dev-Protocol'
+PROTOCOL_VERSION = '1'
+
+
+class _OptionalErrorCode(TypedDict, total=False):
+    code: str
+
+
+class ErrorResponse(_OptionalErrorCode):
+    """HTTP error envelope. A semantic code, when present, is stable across messages."""
+
+    error: str
+
+
 ControlMode = Literal['disabled', 'simulation', 'readonly', 'hardware']
 DogPhase = Literal['disarmed', 'preparing', 'ready', 'moving', 'stopping', 'error']
 VelocityAxis = Literal['vx', 'vy', 'yaw']
@@ -73,15 +88,6 @@ class ControlStatus(TypedDict):
     arm: ArmStatus
 
 
-class DisabledStatus(TypedDict):
-    """Minimal status when the HTTP server has no control service."""
-
-    mode: Literal['disabled']
-
-
-StatusResponse = Union[ControlStatus, DisabledStatus]
-
-
 class AcquireResponse(TypedDict):
     lease: str
     status: ControlStatus
@@ -134,7 +140,6 @@ class MotionRequest(LeaseRequest):
 
 class StopRequest(TypedDict, total=False):
     lease: str
-    seq: int
 
 
 class ResetRequest(TypedDict):

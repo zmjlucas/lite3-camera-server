@@ -18,5 +18,6 @@ if __name__ == "__main__":
     spec = importlib.util.spec_from_file_location("camera_server_under_test", sys.argv[1])
     server = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(server)
-    with patch.object(server, "v4l2_frames", camera_frames):
+    import camera
+    with patch.object(camera, "v4l2_frames", camera_frames):
         sys.exit(server.main(sys.argv[2:]))

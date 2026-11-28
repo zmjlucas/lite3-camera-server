@@ -4,15 +4,18 @@ from types import SimpleNamespace
 import unittest
 
 from src import arm_gateway, control, server
+from src.application import ControlApplication
+from src.camera import LatestFrame
+from src.http_server import CameraRequestHandler
 from src.remote.arm_worker import observed_state
 from fixtures.http_connection import MemoryConnection
 
 
-class Control:
+class Control(control.ControlService):
     def __init__(self):
+        super().__init__()
         self.calls = []
-    def status(self):
-        return {'mode': 'simulation', 'estop': False}
+
     def dispatch(self, action, body):
         self.calls.append((action, body))
         return self.status()
@@ -21,16 +24,18 @@ class Control:
 class DevHTTPTests(unittest.TestCase):
     def setUp(self):
         self.control = Control()
-        self.gateway = SimpleNamespace(read_state=lambda: {'observed': True}, reconnect=lambda: {})
+        self.addCleanup(self.control.close)
+        self.measured = observed_state({'b': 1., 's': 2., 'e': 3., 'w': 4.})
+        self.gateway = SimpleNamespace(read_state=lambda: dict(self.measured))
     def request(self, method, path, body=b'{}', headers=()):
         fields = [('Host', 'localhost:8080'), ('Content-Type', 'application/json'),
                   ('Content-Length', str(len(body)))]
         fields.extend(headers)
         raw = '{} {} HTTP/1.1\r\n{}\r\n\r\n'.format(method, path, '\r\n'.join('{}: {}'.format(*x) for x in fields))
         conn = MemoryConnection(raw.encode() + body)
-        frames = server.LatestFrame('realsense')
-        host = SimpleNamespace(frames=frames, control=self.control, arm_gateway=self.gateway)
-        server.CameraRequestHandler(conn, ('127.0.0.1', 1), host)
+        frames = LatestFrame('realsense')
+        host = SimpleNamespace(frames=frames, application=ControlApplication(self.control, self.gateway))
+        CameraRequestHandler(conn, ('127.0.0.1', 1), host)
         head, value = bytes(conn.output).split(b'\r\n\r\n', 1)
         return int(head.split()[1]), value
     def test_status_does_not_depend_on_camera(self):
@@ -40,7 +45,7 @@ class DevHTTPTests(unittest.TestCase):
     def test_trusted_lan_control_and_explicit_arm_read(self):
         self.assertEqual(self.request('POST', '/api/control/acquire', b'{"owner":"test"}')[0], 200)
         self.assertEqual(self.control.calls, [('control/acquire', {'owner':'test'})])
-        self.assertEqual(json.loads(self.request('POST', '/api/arm/state')[1]), {'observed': True})
+        self.assertEqual(json.loads(self.request('POST', '/api/arm/state')[1]), self.measured)
     def test_cross_origin_never_dispatches(self):
         self.assertEqual(self.request('POST', '/api/dog/stand', headers=[('Origin','http://evil')])[0], 403)
         self.assertFalse(self.control.calls)
@@ -53,20 +58,34 @@ class DevHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('POST', '/api/shell')[0], 404)
         self.assertEqual(self.request('POST', '/api/arm/state', b'{"command":"move"}')[0], 400)
         self.assertFalse(self.control.calls)
+    def test_domain_errors_keep_their_http_status_and_semantic_code(self):
+        self.control = control.ControlService()
+        self.addCleanup(self.control.close)
+        for action, body, status, code in (
+                ('arm/state', b'{"extra":1}', 400, 'invalid_request'),
+                ('arm/operation', b'{"id":"unknown"}', 404, 'not_found'),
+                ('control/heartbeat', b'{"lease":"expired"}', 409, 'conflict')):
+            with self.subTest(action=action):
+                received, value = self.request('POST', '/api/' + action, body)
+                self.assertEqual(received, status)
+                self.assertEqual(json.loads(value)['code'], code)
+        self.control.dispatch('control/estop', {})
+        status, body = self.request('POST', '/api/control/acquire', b'{"owner":"operator"}')
+        self.assertEqual((status, json.loads(body)['code']), (423, 'locked'))
+        self.control.close()
+        status, body = self.request('POST', '/api/control/acquire', b'{"owner":"operator"}')
+        self.assertEqual((status, json.loads(body)['code']), (503, 'unavailable'))
+
     def test_ambiguous_http_framing_rejected(self):
         for headers in ([('Content-Length','2')], [('Transfer-Encoding','chunked')]):
             self.assertEqual(self.request('POST','/api/dog/stop',headers=headers)[0],400)
 
 
     def test_status_and_control_responses_match_sdk_dictionary_shapes(self):
-        from src.lite3_dev_server import AcquireResponse, ArmStatus, ControlStatus, DisabledStatus, DogStatus
-
-        self.control = None
-        status, body = self.request('GET', '/api/status')
-        self.assertEqual((status, json.loads(body)), (200, {'mode': 'disabled'}))
-        self.assertEqual(json.loads(body).keys(), DisabledStatus.__annotations__.keys())
+        from src.lite3_dev_server import AcquireResponse, ArmStatus, ControlStatus, DogStatus
 
         self.control = control.ControlService(mode='disabled')
+        self.addCleanup(self.control.close)
         _, body = self.request('GET', '/api/status')
         self.assertEqual(json.loads(body).keys(), ControlStatus.__annotations__.keys())
 

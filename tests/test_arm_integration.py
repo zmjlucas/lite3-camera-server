@@ -11,7 +11,8 @@ from src.arm_motion import ArmMotionGateway
 from src.control import ControlService
 from src.lite3_dev_server import DevClient
 from src.remote.arm_worker import SerialSession
-from src.server import CameraHTTPServer, LatestFrame
+from src.camera import LatestFrame
+from src.http_server import CameraHTTPServer
 from test_arm_motion import Controller
 
 

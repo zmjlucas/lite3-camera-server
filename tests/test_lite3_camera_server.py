@@ -21,12 +21,16 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 class CameraServerTests(unittest.TestCase):
     def test_lan_server_starts_without_reverse_dns(self):
-        from src.server import CameraHTTPServer, LatestFrame
+        from src.camera import LatestFrame
+        from src.control import ControlService
+        from src.http_server import CameraHTTPServer
 
         frames = LatestFrame("realsense")
+        control = ControlService(mode="disabled")
+        self.addCleanup(control.close)
         # Loopback HTTP must work when the host's DNS resolver stops responding.
         with patch("socket.getfqdn", side_effect=AssertionError("The server made an unexpected reverse DNS lookup")):
-            with CameraHTTPServer(0, frames) as server:
+            with CameraHTTPServer(0, frames, control=control) as server:
                 self.assertEqual(server.server_address[0], "0.0.0.0")
                 self.assertGreater(server.server_port, 0)
                 worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -191,7 +195,8 @@ class CameraServerTests(unittest.TestCase):
                 self.assertIn(diagnostic, result.stderr.splitlines()[-1])
 
     def test_v4l2_configures_only_selected_device_and_releases_after_read_failure(self):
-        from src.server import LatestFrame, capture, parse_args
+        from src.camera import LatestFrame, capture
+        from src.server import parse_args
 
         device = "/dev/v4l/by-id/usb-Intel_RealSense-video-index0"
         options = parse_args([
@@ -228,7 +233,8 @@ class CameraServerTests(unittest.TestCase):
         self.assertIsNone(frame)
 
     def test_v4l2_releases_device_when_open_fails(self):
-        from src.server import LatestFrame, capture, parse_args
+        from src.camera import LatestFrame, capture
+        from src.server import parse_args
 
         options = parse_args(["--source", "v4l2", "--device", "/dev/video4"])
         camera = Mock()
@@ -248,12 +254,16 @@ class CameraServerTests(unittest.TestCase):
 
     def buffered_server(self, stale_after=2):
         try:
-            from src.server import CameraHTTPServer, LatestFrame
+            from src.camera import LatestFrame
+            from src.control import ControlService
+            from src.http_server import CameraHTTPServer
         except ModuleNotFoundError as failure:
             self.fail(str(failure))
 
         frames = LatestFrame("realsense", stale_after=stale_after)
-        server = CameraHTTPServer(0, frames)
+        control = ControlService(mode="disabled")
+        self.addCleanup(control.close)
+        server = CameraHTTPServer(0, frames, control=control)
         thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
         thread.start()
         self.addCleanup(thread.join, 4)

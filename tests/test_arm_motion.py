@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from src.arm_gateway import ArmGatewayError
+from src.control import ControlService
 from src.remote.arm_worker import SerialSession
 
 from src.arm_motion import ArmMotionGateway
@@ -389,6 +390,19 @@ class MotionTests(unittest.TestCase):
         result = self.finish(g, self.jog(g, delta=.5, speed=.1))
         self.assertEqual(result["phase"], "completed", result)
         self.assertAlmostEqual(self.board.motions[-1]["e"], 8.5)
+
+    def test_session_close_can_be_retried_if_retirement_thread_cannot_start(self):
+        gateway = self.gateway()
+        gateway.read_state()
+        service = ControlService(mode="hardware", dog_enabled=False, arm_gateway=gateway)
+        with mock.patch.object(self.board, "close", wraps=self.board.close) as close:
+            with mock.patch.object(threading.Thread, "start", side_effect=RuntimeError("thread limit")):
+                with self.assertRaisesRegex(RuntimeError, "thread limit"):
+                    service.close()
+                close.assert_not_called()
+            service.close()
+            close.assert_called_once_with()
+            self.assertFalse(gateway.status()["connected"])
 
     def test_slow_device_close_keeps_admission_responsive(self):
         entered, release = threading.Event(), threading.Event()

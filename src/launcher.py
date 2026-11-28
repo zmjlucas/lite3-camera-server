@@ -28,12 +28,17 @@ SERVER = Path(__file__).resolve().with_name("server.py")
 REMOTE_SCRIPTS = SERVER.parent / "remote"
 # Upload new dependencies before changing existing files, then replace the entry point last.
 SERVER_BUNDLE = ((SERVER.parent / "wide_angle.py", "lite3-camera-server/"),
+                 (SERVER.parent / "camera_sources.py", "lite3-camera-server/"),
+                 (SERVER.parent / "camera.py", "lite3-camera-server/"),
+                 (SERVER.parent / "application.py", "lite3-camera-server/"),
+                 (SERVER.parent / "http_server.py", "lite3-camera-server/"),
                  (SERVER.parent / "arm_motion.py", "lite3-camera-server/"),
                  (SERVER.parent / "web" / "camera.html", "lite3-camera-server/web/"),
                  (SERVER.parent / "control.py", "lite3-camera-server/"),
                  (SERVER.parent / "arm_gateway.py", "lite3-camera-server/"),
                  (SERVER.parent / "remote" / "arm_worker.py", "lite3-camera-server/remote/"),
                  (SERVER.parent / "web" / "control.html", "lite3-camera-server/web/"),
+                 (SERVER.parent / "web" / "dev_client.js", "lite3-camera-server/web/"),
                  (SERVER, "lite3-camera-server/"))
 SSH_OPTIONS = ["-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=15",
                "-o", "ServerAliveCountMax=3"]
@@ -213,8 +218,6 @@ def control_options(args):
 
 def real_script(args):
     options = ["--source", args.backend, "--port", str(args.remote_port)] + camera_options(args) + control_options(args)
-    if getattr(args, "console", False) or control_options(args):
-        options.insert(0, "--require-dev")
     return remote_shell("view_camera.sh", remote_source("ensure_camera.py"),
                         args.remote_port, *options)
 
@@ -366,7 +369,8 @@ def run_foreground(command, url, open_browser, native=False):
                         ready = response.status == 200
                         if native:
                             ready = (ready and response.geturl() == url and
-                                     response.headers.get("X-Lite3-Camera-Protocol") == "1")
+                                     response.headers.get("X-Lite3-Camera-Protocol") == "1" and
+                                     response.headers.get("X-Lite3-Dev-Protocol") == "1")
                     if ready and process.poll() is None:
                         if not webbrowser.open(url):
                             print("Open the viewer: " + url, flush=True)

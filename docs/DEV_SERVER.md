@@ -2,7 +2,7 @@
 
 Dev Server centralizes camera streaming, Lite3 UDP commands and R5 serial feedback. Scripts and the browser call one HTTP service; SSH is used for deployment, tunnels and an optional persistent arm helper. No caller can upload arbitrary programs or send arbitrary robot packets through this API.
 
-The camera viewer remains at `/`; the control console is `/control`. Existing deployment directories and `lite3-camera-server.service` remain in use so an upgrade does not create a competing camera owner. ROS mode still uses the external camera-only `web_video_server`.
+The camera viewer is at `/`; the control console is `/control`. The service runs from `~/lite3-camera-server/` as `lite3-camera-server.service`. ROS mode uses the external camera-only `web_video_server`.
 
 ## Default robot connection
 
@@ -29,12 +29,12 @@ The console provides camera snapshots plus a link to the full streaming/source-s
 
 ## Deploy on the perception host
 
-Existing camera commands remain valid. New deployment captures and uploads the server, control modules, fixed arm helper and both pages. It installs/enables the existing system service without interrupting the running process.
+Deployment captures and uploads the server, control modules, fixed arm helper and browser assets. It installs/enables the system service without interrupting the running process.
 
 Deploy from the checkout:
 
 ```bash
-python3 src/client.py deploy ysc@192.168.1.103 \
+python3 src/launcher.py deploy ysc@192.168.1.103 \
   --backend v4l2 --device /dev/v4l/by-id/CONFIRMED_RGB_CAMERA \
   --control-mode simulation
 ```
@@ -51,11 +51,11 @@ A manually started detached server must first be stopped using the existing [cam
 From the development computer:
 
 ```bash
-python3 src/client.py view ysc@192.168.1.103 --backend v4l2 \
+python3 src/launcher.py view ysc@192.168.1.103 --backend v4l2 \
   --device /dev/v4l/by-id/CONFIRMED_RGB_CAMERA --console
 ```
 
-Use `--jump ysc@192.168.2.1` if needed, or existing automatic macOS route selection. This opens the console through the local SSH tunnel. Closing this tunnel does not stop the shared server; motion lease/command expiry still applies. `view` reuses existing camera **and control** settings; changing launch options never reconfigures a running service. `--console` or control flags refuse an old camera-only listener and request an explicit upgrade/restart.
+Use `--jump ysc@192.168.2.1` if needed, or automatic macOS route selection. This opens the console through the local SSH tunnel. Closing this tunnel does not stop the shared server; motion lease/command expiry still applies. `view` reuses existing camera **and control** settings; changing launch options never reconfigures a running service. Every native `view` requires the current camera and development protocol headers from the listener.
 
 ## Hardware capabilities
 
@@ -117,6 +117,16 @@ All camera and control endpoints use anonymous trusted-LAN access. `GET /api/sta
 
 Success is HTTP 200; validation 400, origin 403, missing action 404, ownership conflicts 409, too-large body 413, safety latch/capability block 423, transport/unavailable 503. Error bodies contain `error`. POST requests are never automatically retried. A transport failure can mean an operation was accepted but the response was lost; reacquire only after inspecting status and taking appropriate stop action.
 
+Control-service errors also carry an optional stable `code`: `invalid_request`, `not_found`, `conflict`, `locked` or `unavailable`. The HTTP adapter maps these to 400, 404, 409, 423 and 503. Other errors can contain only the `error` string. SDK callers can inspect `DevClientError.status` and use the error message for context.
+
+### Protocol contract
+
+Responses must advertise exactly one `X-Lite3-Dev-Protocol: 1` header. The Python SDK and browser client reject missing, empty, ambiguous or different protocol values. A failed check never replays a command. Update the server, SDK and browser assets together.
+
+The Python SDK validates required response fields, nested objects, discriminators and finite numeric values before returning its typed dictionaries. Additional fields, including additional capability metadata, are retained. Unknown values of existing enums and missing or incorrectly typed required fields raise `DevClientError`; these changes require an updated contract. Validation failures clear ownership for the originating session, while a newer session remains intact. Keep wire-incompatible changes behind a new protocol version and update the SDK, browser client and contract tests together.
+
+`GET /api/status` returns a full `ControlStatus`, including when its mode is `disabled`. Control, dog and arm fields are required. An SDK release version is independent of the HTTP protocol version.
+
 ## Python scripts
 
 Install the SDK from the repository root on your development machine. It needs Python 3.8 or later and has no runtime dependencies beyond the standard library.
@@ -125,7 +135,9 @@ Install the SDK from the repository root on your development machine. It needs P
 python -m pip install .
 ```
 
-The `lite3_dev_server` package exports `DevClient`, `DevClientError`, and typed JSON dictionaries for requests and responses. Existing checkout imports through `src.dev_client` or `dev_client` with `src` on the module search path still work. Robot deployment continues to use the standalone server files.
+The `lite3_dev_server` package exports `DevClient`, `DevClientError`, and typed JSON dictionaries for requests and responses. Robot deployment uses the standalone server files.
+
+Use `src/launcher.py` for deployment and tunnels. The console loads its HTTP client from `/static/dev_client.js`; UI timers and local lease state remain in the control page.
 
 The client retains a private lease and serializes motion requests with increasing sequence numbers. Reads, heartbeats and stop/estop use separate HTTP requests and can run concurrently. Requests have bounded timeouts, refuse redirects and never retry motion. Responses and errors are scoped to their originating session. Superseded acquire or motion calls raise `DevClientError`. Call heartbeat explicitly while holding a lease.
 
@@ -149,10 +161,12 @@ with DevClient('http://127.0.0.1:8080') as robot:
 
 Run this against the simulation command above first. Normal context exit releases a held lease. An HTTP error clears the lease belonging to its originating SDK session.
 
-Check `state = robot.status()` and `state["mode"]` before reading control fields. An endpoint with no control service may return only `{"mode": "disabled"}`. In simulation or hardware mode, pass `state["safety_revision"]` to `robot.reset()` after deciding to reset the observed latch. For arm-only simulated development, acquire a lease, call `arm_jog('e', 1)` and read `arm_state()`. The `observed` flag distinguishes hardware feedback from the arm status summary. Hardware feedback includes four measured angles and `gripper_position_deg` is `None`.
+Use `state = robot.status()` to inspect the mode and capabilities before controlling the robot. In simulation or hardware mode, pass `state["safety_revision"]` to `robot.reset()` after deciding to reset the observed latch. For arm-only simulated development, acquire a lease, call `arm_jog('e', 1)` and read `arm_state()`. The `observed` flag distinguishes hardware feedback from the arm status summary. Hardware feedback includes four measured angles and `gripper_position_deg` is `None`.
 
 In commissioned arm diagnostics, `arm_jog()` returns `ControlStatus` with `arm.operation`. Keep the operation's `operation_id`, call `arm_operation(id)` to read its `ArmOperation` status and send explicit heartbeats while it runs. `arm_stop()` cancels the operation and releases ownership. Inspect `arm.capabilities` for the diagnostic limits and `arm.motion_enabled` for current readiness. [R5 operation lifecycle](R5_DIAGNOSTICS.md#operation-lifecycle)
 
 ## Verification
 
 `python3 -B scripts/check.py --shell` runs offline syntax, unit and integration checks. `make browser-test` includes viewer and dev console behavior. Fakes and loopback cover UDP, serial, SSH and control lifecycle checks.
+
+For package acceptance, install `.[dev]` in a development virtual environment and run `python -B scripts/check_distribution.py`. It checks SDK types, service return types, a built wheel and an external consumer using the installed package, then runs an HTTP control lifecycle against a copied deployment bundle. `node tests/dev_client_test.js` checks browser command serialization, errors and protocol enforcement. Use Python 3.8–3.12 for `python -B scripts/check.py --device-syntax`; this parses every deployed Python module with the device's Python 3.6 grammar. Device runtime and physical motion acceptance remain separate checks.

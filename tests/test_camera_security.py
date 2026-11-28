@@ -2,7 +2,8 @@
 from types import SimpleNamespace
 import unittest
 
-from src.server import CameraRequestHandler, LatestFrame
+from src.camera import LatestFrame
+from src.http_server import CameraRequestHandler
 from fixtures.http_connection import MemoryConnection
 
 

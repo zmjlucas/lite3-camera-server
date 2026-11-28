@@ -4,7 +4,7 @@ import io
 import shlex
 import unittest
 from unittest.mock import patch
-from src import client
+from src import launcher as client
 
 
 class DevDeployTests(unittest.TestCase):
@@ -15,7 +15,6 @@ class DevDeployTests(unittest.TestCase):
                     'view', 'robot', '--backend', 'none', '--console',
                     '--control-mode', mode, '--dog-host', '192.168.1.120'])
                 command = shlex.split(client.real_script(args))
-                self.assertIn('--require-dev', command)
                 self.assertEqual(command[-4:], [
                     '--control-mode', mode, '--dog-host', '192.168.1.120'])
 

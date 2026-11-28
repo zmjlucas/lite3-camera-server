@@ -158,6 +158,7 @@ def main():
             try:
                 self.send_response(code)
                 self.send_header('Content-Type', content_type)
+                self.send_header('X-Lite3-Dev-Protocol', '1')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -167,6 +168,9 @@ def main():
         def do_GET(self):
             if self.path == '/':
                 self.reply(200, page, 'text/html; charset=utf-8')
+            elif self.path == '/static/dev_client.js':
+                script = (Path(__file__).resolve().parents[1] / 'src/web/dev_client.js').read_bytes()
+                self.reply(200, script, 'application/javascript; charset=utf-8')
             elif self.path == '/api/status':
                 if fixture['status_offline']:
                     self.reply(503, {'error': 'status unavailable'})

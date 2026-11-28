@@ -8,16 +8,21 @@ import json
 import math
 import threading
 from types import TracebackType
-from typing import IO, Any, Dict, Literal, Mapping, Optional, Type, cast
+from typing import IO, Callable, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Type, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from . import _responses
 from .api import (
     AcquireRequest, AcquireResponse, ArmJoint, ArmReconnectResponse, ArmState,
     ArmOperation, ArmOperationRequest,
-    ControlStatus, LeaseRequest, ResetRequest, StatusResponse, StopRequest,
+    ControlStatus, LeaseRequest, ResetRequest, StopRequest,
+    PROTOCOL_HEADER, PROTOCOL_VERSION,
 )
+
+
+_Response = TypeVar('_Response')
 
 
 class DevClientError(RuntimeError):
@@ -35,6 +40,27 @@ class _NoRedirect(HTTPRedirectHandler):
                          headers: HTTPMessage, newurl: str) -> None:
         # Send robot commands only to the configured service.
         return None
+
+
+def _check_protocol(versions: Optional[Sequence[str]]) -> None:
+    if versions is None or len(versions) != 1 or versions[0].strip(' \t') != PROTOCOL_VERSION:
+        raise DevClientError('Missing, unsupported or ambiguous Lite3 Dev protocol version')
+
+
+def _parse_json_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError('Non-finite JSON number')
+    return number
+
+
+def _unique_json_object(pairs: List[Tuple[str, object]]) -> Dict[str, object]:
+    fields: Dict[str, object] = {}
+    for key, value in pairs:
+        if key in fields:
+            raise ValueError('Duplicate JSON field')
+        fields[key] = value
+    return fields
 
 
 class DevClient:
@@ -86,8 +112,8 @@ class DevClient:
             if epoch == self._epoch:
                 self._forget_locked()
 
-    def _request(self, action: str, body: Optional[Mapping[str, object]] = None,
-                 epoch: Optional[int] = None) -> Dict[str, Any]:
+    def _request(self, action: str, validate: Callable[[object], _Response],
+                 body: Optional[Mapping[str, object]] = None, epoch: Optional[int] = None) -> _Response:
         with self._lock:
             if epoch is None:
                 epoch = self._epoch
@@ -101,30 +127,35 @@ class DevClient:
                 headers['Content-Type'] = 'application/json'
             request = Request(self.url + '/api/' + action, data=data, headers=headers)
             with self._opener.open(request, timeout=self.timeout) as response:
+                _check_protocol(response.headers.get_all(PROTOCOL_HEADER))
                 raw = response.read(self.MAX_RESPONSE + 1)
-            if len(raw) > self.MAX_RESPONSE:
-                raise DevClientError('Server response is too large')
-            result = json.loads(raw.decode('utf-8'))
-            if not isinstance(result, dict):
-                raise DevClientError('Server response is not a JSON object')
-            return result
+            return validate(self._decode_response(raw))
         except HTTPError as error:
             self._forget(epoch)
             message = 'Control request rejected (HTTP {})'.format(error.code)
             try:
-                detail = json.loads(error.read(self.MAX_RESPONSE).decode('utf-8'))
-                if isinstance(detail, dict) and isinstance(detail.get('error'), str):
-                    message = detail['error']
-            except (ValueError, UnicodeError, OSError):
+                _check_protocol(error.headers.get_all(PROTOCOL_HEADER) if error.headers is not None else None)
+                raw = error.read(self.MAX_RESPONSE + 1)
+                message = _responses.error_response(self._decode_response(raw))['error']
+            except DevClientError as protocol_error:
+                message = str(protocol_error)
+            except (ValueError, OSError, HTTPException, RecursionError):
                 pass
             finally:
                 error.close()
             raise DevClientError(message, error.code) from None
-        except (URLError, OSError, HTTPException, ValueError, UnicodeError, DevClientError) as error:
+        except (URLError, OSError, HTTPException, ValueError, RecursionError, DevClientError) as error:
             self._forget(epoch)
             if isinstance(error, DevClientError):
                 raise
             raise DevClientError('Control request failed: ' + str(error)) from None
+
+    def _decode_response(self, raw: bytes) -> object:
+        if len(raw) > self.MAX_RESPONSE:
+            raise ValueError('Server response is too large')
+        return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_json_object,
+                          parse_constant=_parse_json_float,
+                          parse_float=_parse_json_float)
 
     def _owned(self, action: str, values: Optional[Mapping[str, object]] = None,
                motion: bool = False) -> ControlStatus:
@@ -147,14 +178,14 @@ class DevClient:
             if motion:
                 self._sequence += 1
                 body['seq'] = self._sequence
-        result = self._request(action, body, epoch)
+        result = self._request(action, _responses.control_status, body, epoch)
         with self._lock:
             if epoch != self._epoch:
                 raise DevClientError('Control operation was superseded by a session change')
-        return cast(ControlStatus, result)
+        return result
 
-    def status(self) -> StatusResponse:
-        return cast(StatusResponse, self._request('status'))
+    def status(self) -> ControlStatus:
+        return self._request('status', _responses.control_status)
 
     def acquire(self, owner: str = 'python-sdk') -> AcquireResponse:
         with self._lock:
@@ -164,17 +195,16 @@ class DevClient:
             epoch = self._epoch
             self._acquiring = True
         body: AcquireRequest = {'owner': owner}
-        result = self._request('control/acquire', body, epoch)
-        if not isinstance(result.get('lease'), str) or not result['lease']:
-            self._forget(epoch)
-            raise DevClientError('Server did not provide a control lease')
+        result = self._request('control/acquire', _responses.acquire, body, epoch)
         with self._lock:
             if epoch != self._epoch:
                 raise DevClientError('Control acquisition was superseded by a session change')
+            # Reads started during acquisition belong to the pending attempt.
+            self._epoch += 1
             self._lease = result['lease']
             self._sequence = 0
             self._acquiring = False
-            return cast(AcquireResponse, result)
+            return result
 
     def heartbeat(self) -> ControlStatus:
         return self._owned('control/heartbeat')
@@ -193,7 +223,7 @@ class DevClient:
         with self._lock:
             body: StopRequest = {'lease': self._lease} if self._lease else {}
             epoch = self._forget_locked()
-        return cast(ControlStatus, self._request('dog/stop', body, epoch))
+        return self._request('dog/stop', _responses.control_status, body, epoch)
 
     def release(self) -> Optional[ControlStatus]:
         with self._lock:
@@ -202,19 +232,19 @@ class DevClient:
             if lease is None:
                 return None
         body: LeaseRequest = {'lease': lease}
-        return cast(ControlStatus, self._request('control/release', body, epoch))
+        return self._request('control/release', _responses.control_status, body, epoch)
 
     def estop(self) -> ControlStatus:
         with self._lock:
             epoch = self._forget_locked()
-        return cast(ControlStatus, self._request('control/estop', {}, epoch))
+        return self._request('control/estop', _responses.control_status, {}, epoch)
 
     def reset(self, revision: str) -> ControlStatus:
         """Clear only the explicitly observed status['safety_revision'] latch."""
         with self._lock:
             epoch = self._forget_locked()
         body: ResetRequest = {'revision': revision}
-        return cast(ControlStatus, self._request('control/reset', body, epoch))
+        return self._request('control/reset', _responses.control_status, body, epoch)
 
     def arm_jog(self, joint: ArmJoint, delta: float, speed: float = 2.0) -> ControlStatus:
         """Relative degrees; commissioned hardware returns an asynchronous operation.
@@ -227,21 +257,21 @@ class DevClient:
     def arm_operation(self, operation_id: str) -> ArmOperation:
         """Read an active/last operation; this never resubmits its target."""
         body: ArmOperationRequest = {'id': operation_id}
-        return cast(ArmOperation, self._request('arm/operation', body))
+        return self._request('arm/operation', _responses.arm_operation, body)
 
     def arm_stop(self) -> ControlStatus:
         """Cancel arm work and revoke ownership; physical stopping stays unverified."""
         with self._lock:
             body: StopRequest = {'lease': self._lease} if self._lease else {}
             epoch = self._forget_locked()
-        return cast(ControlStatus, self._request('arm/stop', body, epoch))
+        return self._request('arm/stop', _responses.control_status, body, epoch)
 
     def arm_state(self) -> ArmState:
-        return cast(ArmState, self._request('arm/state', {}))
+        return self._request('arm/state', _responses.arm_state, {})
 
     def arm_reconnect(self) -> ArmReconnectResponse:
         """Clear the read latch; the next read opens transport, motion stays disarmed."""
-        return cast(ArmReconnectResponse, self._request('arm/reconnect', {}))
+        return self._request('arm/reconnect', _responses.arm_reconnect, {})
 
     def close(self) -> None:
         self.release()

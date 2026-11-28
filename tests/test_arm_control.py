@@ -88,7 +88,7 @@ class ArmControlTests(unittest.TestCase):
                                                    'vy': 0, 'yaw': 0, 'ttl': .3})]:
                 with self.subTest(action=action), self.assertRaises(ControlError) as error:
                     self.service.dispatch(action, body)
-                self.assertEqual(error.exception.status, 423)
+                self.assertEqual(error.exception.code, 'locked')
             self.service.dispatch('arm/stop', {})
             self.service._tick()
             self.service.close()
@@ -98,12 +98,12 @@ class ArmControlTests(unittest.TestCase):
         lease = self.acquire()
         with self.assertRaises(ControlError) as wrong:
             self.jog('wrong')
-        self.assertEqual(wrong.exception.status, 409)
+        self.assertEqual(wrong.exception.code, 'conflict')
         self.assertEqual(self.arm.admitted, 0)
         self.jog(lease)
         with self.assertRaises(ControlError) as stale:
             self.jog(lease)
-        self.assertEqual(stale.exception.status, 409)
+        self.assertEqual(stale.exception.code, 'conflict')
         self.assertEqual(self.arm.admitted, 1)
 
     def test_heartbeat_extends_arm_deadline_and_expiry_cancels(self):
@@ -142,7 +142,7 @@ class ArmControlTests(unittest.TestCase):
                 finally:
                     service.close()
 
-    def test_operation_lookup_is_read_only_and_unknown_ids_are_404(self):
+    def test_operation_lookup_is_read_only_and_unknown_ids_raise_not_found(self):
         lease = self.acquire()
         self.jog(lease)
         op = self.service.dispatch('arm/operation', {'id': '1'})
@@ -151,7 +151,13 @@ class ArmControlTests(unittest.TestCase):
         self.assertTrue(self.service.status()['lease_active'])
         with self.assertRaises(ControlError) as missing:
             self.service.dispatch('arm/operation', {'id': 'other'})
-        self.assertEqual(missing.exception.status, 404)
+        self.assertEqual(missing.exception.code, 'not_found')
+
+    def test_repeated_shutdown_releases_owned_gateway_once(self):
+        with patch.object(self.arm, 'close', wraps=self.arm.close) as close:
+            self.service.close()
+            self.service.close()
+            close.assert_called_once_with()
 
     def test_gateway_configuration_requires_hardware_and_isolated_dog_output(self):
         for kwargs in ({'mode': 'simulation', 'dog_enabled': False},
