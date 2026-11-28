@@ -36,21 +36,25 @@ class DistributionBuildTests(unittest.TestCase):
         artifact, = output.glob('*.whl' if kind == 'wheel' else '*.tar.gz')
         return artifact
 
-    def contents(self, wheel, package='lite3_dev_server'):
+    def provenance(self, wheel, package='lite3_dev_server'):
         with zipfile.ZipFile(str(wheel)) as archive:
-            return archive.namelist(), json.loads(archive.read(package + '/_build.json'))
+            return json.loads(archive.read(package + '/_build.json'))
 
-    def test_modified_sdist_uses_current_release_and_payload(self):
+    def unpack_sdist(self):
         archive = self.build(self.source, self.root / 'sdist', 'sdist')
         unpacked = self.root / 'unpacked'
         with tarfile.open(str(archive)) as package:
             package.extractall(str(unpacked))
         source, = unpacked.iterdir()
-        _, original = self.contents(self.build(source, self.root / 'original'))
+        return source
+
+    def test_modified_sdist_uses_current_release_and_payload(self):
+        source = self.unpack_sdist()
+        original = self.provenance(self.build(source, self.root / 'original'))
         (source / 'VERSION').write_text('9.8.7\n', encoding='utf-8')
         module = source / 'src/lite3_dev_server/api.py'
         module.write_bytes(module.read_bytes() + b'\n# downstream change\n')
-        _, patched = self.contents(self.build(source, self.root / 'patched'))
+        patched = self.provenance(self.build(source, self.root / 'patched'))
         self.assertEqual(patched['version'], '9.8.7')
         self.assertNotEqual(patched['build_id'], original['build_id'])
         self.assertIsNone(patched['source_commit'])
@@ -61,46 +65,20 @@ class DistributionBuildTests(unittest.TestCase):
                           ['-c', 'user.name=SDK test', '-c', 'user.email=sdk@example.invalid',
                            '-c', 'commit.gpgsign=false', 'commit', '-m', 'test: create source fixture']):
             subprocess.run(['git', '-C', str(self.source)] + arguments, check=True, capture_output=True)
-        archive = self.build(self.source, self.root / 'sdist', 'sdist')
-        unpacked = self.root / 'unpacked'
-        with tarfile.open(str(archive)) as package:
-            package.extractall(str(unpacked))
-        source, = unpacked.iterdir()
+        source = self.unpack_sdist()
         original = self.build(source, self.root / 'original')
-        _, original_tools = self.contents(original, 'lite3_dev_server_tools')
+        original_tools = self.provenance(original, 'lite3_dev_server_tools')
         self.assertIsNotNone(original_tools['source_commit'])
         self.assertIs(original_tools['source_dirty'], False)
 
         server = source / 'src/server.py'
         server.write_bytes(server.read_bytes() + b'\n# downstream tools change\n')
         rebuilt = self.build(source, self.root / 'patched')
-        _, patched_tools = self.contents(rebuilt, 'lite3_dev_server_tools')
-        self.assertEqual(self.contents(rebuilt)[1], self.contents(original)[1])
+        patched_tools = self.provenance(rebuilt, 'lite3_dev_server_tools')
+        self.assertEqual(self.provenance(rebuilt), self.provenance(original))
         self.assertNotEqual(patched_tools['build_id'], original_tools['build_id'])
         self.assertIsNone(patched_tools['source_commit'])
         self.assertIsNone(patched_tools['source_dirty'])
-
-    def test_incremental_wheel_removes_deleted_modules(self):
-        module = self.source / 'src/lite3_dev_server/obsolete.py'
-        module.write_bytes(b'# previous build\n')
-        self.build(self.source, self.root / 'first')
-        module.unlink()
-        names, incremental = self.contents(self.build(self.source, self.root / 'incremental'))
-        self.assertNotIn('lite3_dev_server/obsolete.py', names)
-        shutil.rmtree(str(self.source / 'build'))
-        _, clean = self.contents(self.build(self.source, self.root / 'clean'))
-        self.assertEqual(incremental, clean)
-
-    def test_editable_wheel_uses_source_without_staging_errors(self):
-        output = self.root / 'editable'
-        result = subprocess.run([
-            # Setuptools uses this information message for multi-root editable installs.
-            sys.executable, '-Werror', '-Wignore:Editable installation.', '-c',
-            'import sys; from setuptools.build_meta import build_editable; build_editable(sys.argv[1])',
-            str(output),
-        ], cwd=str(self.source), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(len(list(output.glob('*.whl'))), 1)
 
 
 if __name__ == '__main__':

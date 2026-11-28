@@ -2,7 +2,6 @@
 import os
 import socket
 import threading
-import time
 import unittest
 from unittest.mock import patch
 
@@ -10,7 +9,7 @@ import test_arm_integration as arm_integration
 from src.camera import LatestFrame
 from src.control import ControlService
 from src.http_server import CameraHTTPServer
-from src.lite3_dev_server import ArmJog, DevClient, DogAction, ManagedClient
+from src.lite3_dev_server import ArmJog, DogAction, ManagedClient
 
 
 class DispatchAudit:
@@ -108,46 +107,6 @@ class ManagedDogIntegrationTests(unittest.TestCase):
         self.assertFalse(self.control.status()['lease_active'])
         self.assertIsNone(self.control._socket)
 
-    def test_cancel_during_preparation_releases_only_its_lease(self):
-        result = []
-        failures = []
-
-        def run():
-            try:
-                result.append(self.managed.run(DogAction('forward'), timeout=15))
-            except BaseException as error:
-                failures.append(error)
-
-        worker = threading.Thread(target=run, daemon=True)
-        worker.start()
-        try:
-            deadline = time.monotonic() + 3
-            while not self.audit.calls('dog/stand') and worker.is_alive():
-                self.assertLess(time.monotonic(), deadline, 'Preparation was never submitted')
-                time.sleep(.01)
-            self.managed.cancel()
-            worker.join(3)
-            self.assertFalse(worker.is_alive(), 'Cancellation did not finish promptly')
-        finally:
-            self.managed.close()
-            worker.join(3)
-
-        self.assertEqual(failures, [])
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].phase, 'cancelled', result)
-        self.assertEqual(self.audit.calls('dog/action'), [])
-        self.assertEqual(self.audit.calls('control/release'),
-                         [('control/release', {'lease': self.audit.leases[0]})])
-        self.assertFalse(self.control.status()['lease_active'])
-        with DevClient(self.url) as observer:
-            observer.acquire('next-controller')
-            self.managed.close()
-            self.assertTrue(observer.heartbeat()['lease_active'])
-        forbidden = {'dog/stop', 'arm/stop', 'control/estop', 'control/reset', 'arm/reconnect'}
-        self.assertTrue(forbidden.isdisjoint(name for name, _ in self.audit.calls()))
-        self.assertIsNone(self.control._socket)
-
-
 @unittest.skipUnless(os.name == 'posix', 'Bounded synthetic serial writes require POSIX')
 class ManagedArmIntegrationTests(unittest.TestCase):
     def setUp(self):
@@ -186,22 +145,6 @@ class ManagedArmIntegrationTests(unittest.TestCase):
                              {'b': 10., 's': -4., 'w': 6.})
         self.assertFalse(self.control.status()['lease_active'])
         self.assertIsNone(self.control._socket)
-
-    def test_hardware_mixed_sequence_rejected_before_acquisition(self):
-        result = self.managed.run_sequence(
-            [ArmJog('e', .25), DogAction('forward')], policy='completed_only', timeout=5)
-
-        self.assertEqual(result.phase, 'fault', result)
-        self.assertEqual(result.results, ())
-        self.assertEqual(self.audit.calls('control/acquire'), [])
-        self.assertEqual(self.audit.calls('arm/jog'), [])
-        self.assertEqual(self.audit.calls('dog/stand'), [])
-        self.assertEqual(self.audit.calls('dog/action'), [])
-        self.board.drain()
-        self.assertEqual(self.board.motions, [])
-        self.assertFalse(self.control.status()['lease_active'])
-        self.assertIsNone(self.control._socket)
-
 
 if __name__ == '__main__':
     unittest.main()

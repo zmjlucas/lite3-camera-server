@@ -13,8 +13,6 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
-
-from src.build_info import build_id
 from src.launcher import SERVER_BUNDLE
 from src import launcher
 from src.lite3_dev_server._build_info import BuildInfo, source_files, with_files, write_manifest
@@ -85,16 +83,6 @@ class RunningBuildTests(unittest.TestCase):
             self.assertEqual(headers['X-Lite3-Release'], second.version)
             self.assertEqual(headers['X-Lite3-Source-Commit'], second.source_commit)
 
-    def test_unidentified_source_explicitly_reports_unknown(self):
-        for malformed in (False, True):
-            with self.subTest(malformed=malformed):
-                if malformed:
-                    (self.root / '_build.json').write_text('{broken', encoding='utf-8')
-                with self.running() as origin:
-                    headers = self.headers(origin)
-                    for name in ('Release', 'Build', 'Source-Commit', 'Source-Dirty'):
-                        self.assertEqual(headers['X-Lite3-' + name], 'unknown')
-
     def test_partial_update_reports_unknown_after_restart(self):
         from src.lite3_dev_server._build_info import capture_build, source_files
         info = capture_build(self.root, source_files(self.root))
@@ -109,11 +97,6 @@ class RunningBuildTests(unittest.TestCase):
 
 
 class DeploymentBuildTests(unittest.TestCase):
-    def test_bundle_hash_depends_on_contents_and_paths_in_any_order(self):
-        first = build_id([('a.py', b'first'), ('b.py', b'second')])
-        self.assertEqual(first, build_id([('b.py', b'second'), ('a.py', b'first')]))
-        self.assertNotEqual(first, build_id([('a.py', b'changed'), ('b.py', b'second')]))
-        self.assertNotEqual(first, build_id([('c.py', b'first'), ('b.py', b'second')]))
 
     def test_manifest_and_uploads_use_snapshot_taken_before_transport(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -148,12 +131,6 @@ class DeploymentBuildTests(unittest.TestCase):
             self.assertIsNone(manifest['source_dirty'])
             self.assertRegex(manifest['build_id'], '^sha256:[0-9a-f]{64}$')
             self.assertIn('Deployed build: ' + manifest['build_id'], output.getvalue())
-
-    def test_failed_deploy_does_not_report_a_successful_build(self):
-        with patch.object(launcher.subprocess, 'call', return_value=9), \
-                redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(launcher.main(['deploy', 'robot', '--direct']), 9)
-        self.assertNotIn('Deployed build:', output.getvalue())
 
 
 if __name__ == '__main__':

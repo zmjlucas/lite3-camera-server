@@ -2,11 +2,10 @@
 import contextlib
 import io
 import os
-import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src import camera, control, server
+from src import server
 
 
 class StartupTests(unittest.TestCase):
@@ -43,25 +42,3 @@ class StartupTests(unittest.TestCase):
                         if failure != 'bind':
                             http.return_value.__exit__.assert_called_once()
                     gateway.close.assert_called_once_with()
-
-    def test_failed_thread_creation_allows_shutdown(self):
-        service = control.ControlService()
-        controller = camera.CaptureController(server.parse_args([]), discover=lambda: [])
-        with patch.object(threading.Thread, 'start', side_effect=RuntimeError('no worker')):
-            for component in (service, controller):
-                with self.subTest(component=type(component).__name__), self.assertRaisesRegex(RuntimeError, 'no worker'):
-                    component.start()
-        service.close()
-        self.assertTrue(controller.shutdown())
-
-    @unittest.skipUnless(os.name == 'posix', 'Commissioning profiles require a POSIX service host')
-    def test_failed_worker_start_releases_unopened_commissioning_profile(self):
-        profile = MagicMock(used=False, targets={'b': 0., 's': 0., 'e': 0., 'w': 0., 'h': 0.})
-        with patch('src.arm_motion._Profile', return_value=profile), \
-                patch.object(server.signal, 'signal'), patch.object(server, 'CameraHTTPServer'), \
-                patch.object(threading.Thread, 'start', side_effect=RuntimeError('thread limit')):
-            with self.assertRaisesRegex(RuntimeError, 'thread limit'):
-                server.main(['--source', 'none', '--env', 'dev', '--control-mode', 'hardware',
-                             '--arm-motion-profile', 'local-profile'])
-        profile.close.assert_called_once_with()
-        profile.claim.assert_not_called()

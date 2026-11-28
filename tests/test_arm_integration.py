@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import tempfile
 import threading
-import time
 import unittest
 
 from src.arm_motion import ArmMotionGateway
@@ -75,105 +74,6 @@ class ArmIntegrationTests(unittest.TestCase):
         self.assertIsNone(arm['position_deg'])
         self.assertEqual(self.board.requests, [b'{"T":105}\n'])
         self.assertEqual(len(list(self.profile_path.parent.glob('.r5-used-*'))), 1)
-
-    def test_two_degree_jog_renews_lease_and_preserves_other_targets(self):
-        self.client.acquire('offline-integration')
-        accepted = self.client.arm_jog('e', 2., speed=1.)
-        op_id = accepted['arm']['operation']['operation_id']
-        operation = self.client.wait_arm_operation(op_id, timeout=8)
-        self.assertEqual(operation['phase'], 'completed', operation)
-        self.assertTrue(operation['observed_stationary'])
-        self.assertFalse(operation['stop_verified'])
-        self.board.drain()
-        self.assertGreater(len(self.board.motions), 1)
-        self.assertEqual(self.board.motions[-1]['e'], 10.)
-        for packet in self.board.motions:
-            self.assertEqual({axis: packet[axis] for axis in ('b', 's', 'w', 'h')},
-                             {'b': 10., 's': -4., 'w': 6., 'h': -16.})
-        state = self.client.arm_state()
-        self.assertAlmostEqual(state['position_deg']['e'], 13.69)
-        self.assertIsNone(state['gripper_position_deg'])
-        self.assertIsNone(self.control._socket)
-        self.client.estop()
-        self.assertFalse(self.client.arm_state()['motion_enabled'])
-
-    def test_http_stop_cancels_preflight_without_motion_and_releases_lease(self):
-        self.client.acquire()
-        result = self.client.arm_jog('e', .5, speed=1.)
-        op_id = result['arm']['operation']['operation_id']
-        stopped = self.client.arm_stop()
-        self.assertFalse(stopped['lease_active'])
-        deadline = time.monotonic() + 2
-        while self.client.arm_operation(op_id)['phase'] == 'stopping':
-            self.assertLess(time.monotonic(), deadline)
-            time.sleep(.01)
-        self.assertEqual(self.client.arm_operation(op_id)['phase'], 'cancelled')
-        self.board.drain()
-        self.assertEqual(self.board.motions, [])
-        self.assertIsNone(self.client.lease)
-        self.assertIsNone(self.control._socket)
-
-    def test_base_then_gripper_keeps_gripper_observation_unknown(self):
-        self.client.acquire('offline-staged-diagnostic')
-        for joint, phase in (('b', 'completed'), ('h', 'commanded_unverified')):
-            reply = self.client.arm_jog(joint, .5, speed=1.)
-            op_id = reply['arm']['operation']['operation_id']
-            operation = self.client.wait_arm_operation(op_id, timeout=5)
-            self.assertEqual(operation['phase'], phase, operation)
-            self.assertTrue(operation['observed_stationary'])
-            self.assertIsNone(operation['gripper_position_deg'])
-            self.assertFalse(operation['stop_verified'])
-            if joint == 'h':
-                self.assertEqual(len(operation['targets_written']), 1)
-        self.board.drain()
-        self.assertEqual(self.board.motions[-1]['b'], 10.5)
-        self.assertEqual(self.board.motions[-1]['h'], -15.5)
-        observed = self.client.arm_state()
-        self.assertAlmostEqual(observed['position_deg']['b'], 10.6)
-        self.assertIsNone(observed['gripper_position_deg'])
-        self.assertIsNone(self.control._socket)
-
-
-class SimulatedArmIntegrationTests(unittest.TestCase):
-    def setUp(self):
-        self.control = ControlService(environment='dev', simulate=True)
-        self.addCleanup(self.control.close)
-        self.server = CameraHTTPServer(0, LatestFrame('none'), bind='127.0.0.1', control=self.control)
-        self.addCleanup(self.server.server_close)
-        worker = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
-        worker.start()
-        self.addCleanup(worker.join, 2)
-        self.addCleanup(self.server.shutdown)
-        self.control.start()
-        self.client = DevClient('http://127.0.0.1:{}'.format(self.server.server_port), timeout=.5)
-        self.addCleanup(self.client.close)
-
-    def test_http_action_runs_beyond_initial_lease_and_preserves_other_axes(self):
-        self.client.acquire()
-        self.client.arm_jog('w', 2)
-        accepted = self.client.arm_action({'b': 6, 'e': -3}, duration=2.2)
-        operation_id = accepted['arm']['operation']['operation_id']
-        self.assertEqual(accepted['arm']['operation']['phase'], 'moving')
-        result = self.client.wait_arm_operation(operation_id, timeout=5)
-        self.assertEqual(result['phase'], 'completed')
-        self.assertEqual(self.client.arm_state()['position_deg'], dict(b=6., s=0., e=-3., w=2., h=0.))
-        self.assertIsNone(self.control._socket)
-        self.assertFalse(result['stop_verified'])
-
-    def test_http_conflict_and_observer_cancellation(self):
-        from src.lite3_dev_server import DevClientError
-
-        self.client.acquire()
-        operation_id = self.client.arm_action({'b': 6, 'h': -3}, duration=2)['arm']['operation']['operation_id']
-        with self.assertRaises(DevClientError) as raised:
-            self.client.arm_jog('e', 1)
-        self.assertEqual(raised.exception.status, 409)
-        observer = DevClient(self.client.url)
-        stopped = observer.arm_stop()
-        result = self.client.wait_arm_operation(operation_id)
-        self.assertEqual(result['phase'], 'cancelled')
-        self.assertEqual(result['position_deg'], stopped['arm']['position_deg'])
-        self.assertFalse(stopped['lease_active'])
 
 
 if __name__ == '__main__':

@@ -62,7 +62,7 @@ class DeployedDevTests(unittest.TestCase):
                     robot.arm_jog('e',1)
                     self.assertEqual(robot.arm_state()['position_deg']['e'],1)
                     self.assertNotIn(first['lease'],json.dumps(robot.status()))
-                    # No heartbeat: the actual worker must revoke ownership by itself.
+                    # Stop renewing the lease and check that the server revokes it.
                     deadline = time.monotonic()+3
                     while robot.status()['lease_active'] and time.monotonic()<deadline:
                         time.sleep(.05)

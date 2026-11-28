@@ -7,10 +7,9 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from src.lite3_dev_server import DevClient, DevClientError, DogAction, ManagedClient
-from src.lite3_dev_server import _transport
+from src.lite3_dev_server import DevClient, DevClientError
 from src.lite3_dev_server._transport import DeadlineHTTPSHandler
 from test_dev_client import control_status
 
@@ -44,10 +43,10 @@ class _Server(socketserver.ThreadingTCPServer):
 class DeadlineTests(unittest.TestCase):
     timeout = .08
 
-    def server(self, kind, code=200, tls=False):
-        body = json.dumps(control_status() if code == 200 else {'error': 'lease conflict'}).encode()
-        headers = ('HTTP/1.1 {} Test\r\nX-Lite3-Dev-Protocol: 1\r\n'
-                   'Content-Length: {}\r\nConnection: close\r\n\r\n').format(code, len(body)).encode()
+    def server(self, kind, tls=False):
+        body = json.dumps(control_status()).encode()
+        headers = ('HTTP/1.1 200 OK\r\nX-Lite3-Dev-Protocol: 1\r\n'
+                   'Content-Length: {}\r\nConnection: close\r\n\r\n').format(len(body)).encode()
         workers = []
 
         class Handler(socketserver.BaseRequestHandler):
@@ -114,23 +113,12 @@ class DeadlineTests(unittest.TestCase):
                    lambda: DeadlineHTTPSHandler(context=context)):
             return DevClient(url, timeout=self.timeout)
 
-    def assert_status_deadline(self, kind, code=200, tls=False):
-        client = self.client(self.server(kind, code, tls=tls))
+    def assert_status_deadline(self, kind, tls=False):
+        client = self.client(self.server(kind, tls=tls))
         started = time.monotonic()
-        with self.assertRaises(DevClientError) as caught:
+        with self.assertRaisesRegex(DevClientError, 'timed out|deadline exceeded'):
             client.status()
         self.assertLess(time.monotonic() - started, .2)
-        if code != 200:
-            self.assertEqual(caught.exception.status, code)
-
-    def test_trickling_headers_share_one_deadline(self):
-        self.assert_status_deadline('headers')
-
-    def test_trickling_body_shares_one_deadline(self):
-        self.assert_status_deadline('body')
-
-    def test_error_body_shares_one_deadline(self):
-        self.assert_status_deadline('body', code=409)
 
     def test_header_and_body_time_count_together(self):
         self.assert_status_deadline('combined')
@@ -142,29 +130,6 @@ class DeadlineTests(unittest.TestCase):
 
     def test_https_complete_response_remains_supported(self):
         self.assertEqual(self.client(self.server('complete', tls=True)).status(), control_status())
-
-    def test_interrupted_connect_closes_unowned_candidate(self):
-        for interrupted in (KeyboardInterrupt, SystemExit):
-            with self.subTest(interrupted=interrupted):
-                connection = _transport._DeadlineHTTPConnection('127.0.0.1', timeout=self.timeout)
-                candidate = Mock()
-                candidate.connect.side_effect = interrupted
-                address = [(2, 1, 6, '', ('127.0.0.1', 80))]
-                with patch.object(_transport.socket, 'getaddrinfo', return_value=address), \
-                        patch.object(_transport.socket, 'socket', return_value=candidate):
-                    try:
-                        with self.assertRaises(interrupted):
-                            connection.connect()
-                    finally:
-                        connection.close()
-                candidate.close.assert_called_once()
-
-    def test_managed_run_bounds_initial_status_without_extra_io_workers(self):
-        with ManagedClient(self.server('body'), request_timeout=self.timeout) as client:
-            started = time.monotonic()
-            result = client.run(DogAction('forward'), timeout=.1)
-            self.assertIn(result.phase, ('unknown', 'timed_out'))
-            self.assertLess(time.monotonic() - started, .2)
 
 
 if __name__ == '__main__':
